@@ -1,0 +1,191 @@
+How to generate orders intra-bar in MultiCharts .NET?
+Situation
+You want to know how to generate orders intra-bar, so in this example we'll look at submitting orders based on the number of ticks intra-bar.
+
+Programming example
+using System;
+using System.Drawing;
+using System.Linq;
+using PowerLanguage.Function;
+using ATCenterProxy.interop;
+
+namespace PowerLanguage.Strategy
+{
+    [IOGMode(IOGMode.Enabled)]
+    public class Example_IOG : SignalObject
+    {
+        private IOrderMarket buyOrder, sellOrder;
+        int numOfTicks = 0;
+
+        public Example_IOG(object _ctx) : base(_ctx) { }
+
+        protected override void Create()
+        {
+            buyOrder  = OrderCreator.MarketNextBar(new
+                SOrderParameters(Contracts.Default, EOrderAction.Buy));
+            sellOrder = OrderCreator.MarketNextBar(new
+                SOrderParameters(Contracts.Default, EOrderAction.Sell));
+        }
+
+        protected override void StartCalc()
+        {
+            Output.Clear();     // Clear Output tab of PowerLanguage Editor
+        }
+
+        protected override void CalcBar()
+        {
+            // Skip if there are more than 20 trades; prevents log cluttering
+            if (TotalTrades > 20)
+                return;
+
+            // No open position
+            if (StrategyInfo.MarketPosition == 0)
+            {
+                // For every fifth bar, send a long order
+                // during the first 9 ticks of the bar
+                if ((Bars.CurrentBar % 5 == 0) && (numOfTicks &lt; 10))
+                {
+                    buyOrder.Send();
+
+                    Output.WriteLine("{0} - {1} {2}",
+                        Bars.TimeValue.ToString("dd-MM-yy HH:mm:ss"),
+                        "Sending BUY order, tick number of bar: ",
+                        numOfTicks);
+                }
+            }
+
+            // Long position
+            else if (StrategyInfo.MarketPosition > 0)
+            {
+                Output.WriteLine("{0} - {1} {2}",
+                    Bars.TimeValue.ToString("dd-MM-yy HH:mm:ss"),
+                    "Open position. Tick number of bar: ",
+                    numOfTicks);
+
+                // Send a sell order intra-bar after 30 ticks
+                if (numOfTicks > 30)
+                {
+                    sellOrder.Send();
+
+                    Output.WriteLine("{0} - {1} {2}",
+                        Bars.TimeValue.ToString("dd-MM-yy HH:mm:ss"),
+                        "Sending SELL order, tick number of bar: ",
+                        numOfTicks);
+                }
+            }
+
+            // Reset the tick counter to 0 on bar close
+            if (Bars.Status == EBarState.Close)
+                numOfTicks = 0;
+
+            // Increment tick counter by one
+            numOfTicks++;
+        }
+    }
+}
+Output of programming example
+Applied to a chart, the strategy looks like:
+
+Examples of intra-bar orders in MultiCharts .NET
+With an output similar to the following:
+
+21-11-13 01:05:00 - Sending BUY order, tick number of bar:  1
+21-11-13 01:05:00 - Open position. Tick number of bar:  2
+21-11-13 01:05:00 - Open position. Tick number of bar:  3
+21-11-13 01:05:00 - Open position. Tick number of bar:  4
+21-11-13 01:05:00 - Open position. Tick number of bar:  5
+21-11-13 01:05:00 - Open position. Tick number of bar:  6
+21-11-13 01:05:00 - Open position. Tick number of bar:  7
+21-11-13 01:05:00 - Open position. Tick number of bar:  8
+21-11-13 01:05:00 - Open position. Tick number of bar:  9
+21-11-13 01:05:00 - Open position. Tick number of bar:  10
+21-11-13 01:05:00 - Open position. Tick number of bar:  11
+21-11-13 01:05:00 - Open position. Tick number of bar:  12
+21-11-13 01:05:00 - Open position. Tick number of bar:  13
+21-11-13 01:05:00 - Open position. Tick number of bar:  14
+21-11-13 01:05:00 - Open position. Tick number of bar:  15
+21-11-13 01:05:00 - Open position. Tick number of bar:  16
+21-11-13 01:05:00 - Open position. Tick number of bar:  17
+21-11-13 01:05:00 - Open position. Tick number of bar:  18
+21-11-13 01:05:00 - Open position. Tick number of bar:  19
+21-11-13 01:05:00 - Open position. Tick number of bar:  20
+21-11-13 01:05:00 - Open position. Tick number of bar:  21
+21-11-13 01:05:00 - Open position. Tick number of bar:  22
+21-11-13 01:05:00 - Open position. Tick number of bar:  23
+21-11-13 01:05:00 - Open position. Tick number of bar:  24
+21-11-13 01:05:00 - Open position. Tick number of bar:  25
+21-11-13 01:05:00 - Open position. Tick number of bar:  26
+21-11-13 01:05:00 - Open position. Tick number of bar:  27
+21-11-13 01:05:00 - Open position. Tick number of bar:  28
+21-11-13 01:05:00 - Open position. Tick number of bar:  29
+21-11-13 01:05:00 - Open position. Tick number of bar:  30
+21-11-13 01:05:00 - Open position. Tick number of bar:  31
+21-11-13 01:05:00 - Sending SELL order, tick number of bar:  31
+Intra-bar order generation in MultiCharts .NET
+To generate orders during a bar, instead of the default on bar close behaviour, we set the Intra-Bar Order Generation attribute to enabled in line 9. Since we are working on the level of individual ticks in this example, we also need to enable the Bar Magnifier in the Strategy Properties.
+
+To keep track of the number of ticks that occur intra-bar, a counter variable (numOfTicks) is added in line 13:
+
+int numOfTicks = 0;
+Then in the Create() override method the enter long and exit long orders are created with default parameters (lines 17-23).
+
+When Intra-Bar Order Generation is turned on, MarketNextBar (sending a market order at the open of the next bar) works in effect as “MarketNextTick” by sending a market order at the next price update (MultiCharts, 2013).
+
+Next we arrive at the CalcBar() method, which consists out of several code segments. First, the return statement ensures that no additional orders are triggered when there are more than 20 trades:
+
+// Skip if there are more than 20 trades; prevents log cluttering
+if (TotalTrades > 20)
+    return;
+Opening trading positions in MultiCharts .NET
+When there is no open position (in which case the StrategyInfo.MarketPosition property equals zero), an enter long market order is send every fifth bar during the first ticks of a bar:
+
+// No open position
+if (StrategyInfo.MarketPosition == 0)
+{
+    // For every fifth bar, send a long order
+    // during the first 9 ticks of the bar
+    if ((Bars.CurrentBar % 5 == 0) && (numOfTicks < 10))
+    {
+        buyOrder.Send();
+
+        Output.WriteLine("{0} - {1} {2}",
+            Bars.TimeValue.ToString("dd-MM-yy HH:mm:ss"),
+            "Sending BUY order, tick number of bar: ",
+            numOfTicks);
+    }
+}
+This long position is closed after more than 30 ticks have been registered in the same price bar:
+
+// Long position
+else if (StrategyInfo.MarketPosition > 0)
+{
+    Output.WriteLine("{0} - {1} {2}",
+        Bars.TimeValue.ToString("dd-MM-yy HH:mm:ss"),
+        "Open position. Tick number of bar: ",
+        numOfTicks);
+
+    // Send a sell order intra-bar after 30 ticks
+    if (numOfTicks > 30)
+    {
+        sellOrder.Send();
+
+        Output.WriteLine("{0} - {1} {2}",
+            Bars.TimeValue.ToString("dd-MM-yy HH:mm:ss"),
+            "Sending SELL order, tick number of bar: ",
+            numOfTicks);
+    }
+}
+To make sure that the tick counter variable displays the right amount of ticks, this variable needs to be reset on every bar close:
+
+// Reset the tick counter to 0 on bar close
+if (Bars.Status == EBarState.Close)
+    numOfTicks = 0;
+Here we use the Bars.Status property, which can equal one of four EBarState enumeration values: None, Open, Inside, or Close.
+
+Use the Bar.Status property for controlling how your code is calculated. For example, use Bars.Status == EBarState.Close to only execute calculations that need to be performed on bar close.
+
+Finally, the tick counter integer is incremented every time the CalcBar() override method is executed:
+
+// Increment tick counter by one
+numOfTicks++;
+For convenience the postfix increment operator (++) is used here, which increments a variable and then returns its value (Liberty & MacDonald, 2009). Note that the statement numOfTicks++ is equivalent to numOfTicks = numOfTicks + 1 — choose whichever variant you are most comfortable with.

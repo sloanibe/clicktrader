@@ -70,12 +70,18 @@ namespace PowerLanguage.Indicator
         {
             try
             {
-                Output.WriteLine("VERSION 3.0: Using simplified drawing method");
+                Output.WriteLine("VERSION 4.0: Using safer drawing method");
 
+                // Get the current time for the first point
+                DateTime currentTime = Bars.Time[0];
+                
+                // Create a second time point that's just slightly different to avoid errors
+                // Instead of using a bar index that might not exist
+                DateTime endTime = currentTime.AddSeconds(1);
+                
                 // Create two ChartPoints with the same price but different times
-                // This creates a horizontal line
-                ChartPoint begin = new ChartPoint(Bars.Time[0], price);
-                ChartPoint end = new ChartPoint(Bars.Time[10], price); // Use a wider span
+                ChartPoint begin = new ChartPoint(currentTime, price);
+                ChartPoint end = new ChartPoint(endTime, price);
 
                 // Create the horizontal trend line with minimal styling
                 ITrendLineObject trendLine = DrwTrendLine.Create(begin, end);
@@ -94,7 +100,7 @@ namespace PowerLanguage.Indicator
                 m_Lines.Add(trendLine);
 
                 // Output confirmation
-                Output.WriteLine("Indicator drew horizontal line at price " + price + " (simplified version)");
+                Output.WriteLine("Indicator drew horizontal line at price " + price + " (safer version)");
             }
             catch (Exception ex)
             {

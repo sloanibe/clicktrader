@@ -1,0 +1,192 @@
+How to use a stop-limit order in MultiCharts .NET?
+Situation
+You want to know how to use a stop loss limit order in MultiCharts .NET. In this example we will use a buy market order and a sell market order coupled a stop-limit order.
+
+Programming example
+using System;
+using System.Drawing;
+using System.Linq;
+using PowerLanguage.Function;
+using ATCenterProxy.interop;
+
+namespace PowerLanguage.Strategy
+{
+    public class Example_StopLimit : SignalObject
+    {
+        private IOrderMarket buyMarketOrder, sellMarketOrder;
+        private IOrderStopLimit sellStopLimitOrder;
+        private double sellStopPrice, sellLimitPrice;
+
+        public Example_StopLimit(object _ctx) : base(_ctx) { }
+
+        protected override void Create()
+        {
+            buyMarketOrder = OrderCreator.MarketNextBar(new SOrderParameters(
+                Contracts.Default, "EnterLong", EOrderAction.Buy));
+
+            sellMarketOrder = OrderCreator.MarketNextBar(new SOrderParameters(
+                Contracts.Default, "ExitLong", EOrderAction.Sell));
+
+            sellStopLimitOrder = OrderCreator.StopLimit(new SOrderParameters(
+                Contracts.Default, "StopLMT", EOrderAction.Sell));
+        }
+
+        protected override void StartCalc()
+        {
+            Output.Clear(); // Clear PowerLanguage Editor output tab
+        }
+
+        protected override void CalcBar()
+        {
+            // When flat, enter long on first bar of day
+            if ((StrategyInfo.MarketPosition == 0) && (Bars.Time[0].Date != Bars.Time[1].Date))
+            {
+                buyMarketOrder.Send();
+
+                sellStopPrice  = Bars.Low[0] - Bars.Range();
+                sellLimitPrice = Bars.Low[0] - (Bars.Range() * 1.5);
+
+                Output.WriteLine("{0} - Buy order submitted. Sell stop calculated @ {1} with limit {2}",
+                    Bars.Time[0].ToString("d-M HH:mm:ss"),
+                    sellStopPrice,
+                    sellLimitPrice);
+            }
+
+            // Long order management
+            if (StrategyInfo.MarketPosition > 0)
+            {
+                // Submit the stop-limit order as long as there is an open position
+                sellStopLimitOrder.Send(sellStopPrice, sellLimitPrice);
+
+                Output.WriteLine("{0} - Submitting sell stop @ {1} with limit {2}",
+                    Bars.Time[0].ToString("d-M HH:mm:ss"),
+                    sellStopPrice,
+                    sellLimitPrice);
+
+                // Time stop; exit the position after 15 bars
+                double barsInPosition = Bars.CurrentBar - CurrentPosition.OpenTrades[0].EntryOrder.BarNumber;
+                if (barsInPosition >= 15)
+                {
+                    sellMarketOrder.Send();
+
+                    Output.WriteLine("{0} - Position open for {1} bars, submitting exit long market order",
+                        Bars.Time[0].ToString("d-M HH:mm:ss"),
+                        barsInPosition);
+                }
+            }
+        }
+    }
+}
+Output of the programming example
+Applied to a chart the trading strategy looks like:
+
+Example of stop-limit order of MultiCharts .NET
+With the following output (corresponding to the trades in the image displayed above):
+
+20-11 02:00:00 - Buy order submitted. Sell stop calculated @ 1,3489 with limit 1,34668
+20-11 04:00:00 - Submitting sell stop @ 1,3489 with limit 1,34668
+20-11 06:00:00 - Submitting sell stop @ 1,3489 with limit 1,34668
+20-11 08:00:00 - Submitting sell stop @ 1,3489 with limit 1,34668
+20-11 10:00:00 - Submitting sell stop @ 1,3489 with limit 1,34668
+20-11 12:00:00 - Submitting sell stop @ 1,3489 with limit 1,34668
+20-11 14:00:00 - Submitting sell stop @ 1,3489 with limit 1,34668
+20-11 16:00:00 - Submitting sell stop @ 1,3489 with limit 1,34668
+21-11 02:00:00 - Buy order submitted. Sell stop calculated @ 1,34012 with limit 1,33918
+21-11 04:00:00 - Submitting sell stop @ 1,34012 with limit 1,33918
+21-11 06:00:00 - Submitting sell stop @ 1,34012 with limit 1,33918
+21-11 08:00:00 - Submitting sell stop @ 1,34012 with limit 1,33918
+22-11 02:00:00 - Buy order submitted. Sell stop calculated @ 1,34567 with limit 1,345155
+22-11 04:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+22-11 06:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+22-11 08:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+22-11 10:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+22-11 12:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+22-11 14:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+22-11 16:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+22-11 18:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+22-11 20:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+22-11 22:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+22-11 23:59:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+25-11 02:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+25-11 04:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+25-11 06:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+25-11 08:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+25-11 10:00:00 - Submitting sell stop @ 1,34567 with limit 1,345155
+25-11 10:00:00 - Position open for 15 bars, submitting exit long market order
+Stop-limit orders in MultiCharts .NET
+When using stop-limit orders, which submit a buy or sell limit order when the user-specified stop trigger price is attained or penetrated, the IOrderStopLimit order interface needs to be used (MultiCharts, 2013):
+
+private IOrderMarket buyMarketOrder, sellMarketOrder;
+private IOrderStopLimit sellStopLimitOrder;
+private double sellStopPrice, sellLimitPrice;
+Here we declared three order objects: two market orders (buyMarketOrder and sellMarketOrder) that use the IOrderMarket order interface and the stop-limit order (sellStopLimitOrder) which uses the IOrderStopLimit order interface.
+
+Since a stop-limit order requires both a stop price and a limit price, two double variables were added to store these (line 13).
+
+Next the order objects need to be initialised, which is done in the Create() MultiCharts override method:
+
+protected override void Create()
+{
+    buyMarketOrder = OrderCreator.MarketNextBar(new SOrderParameters(
+        Contracts.Default, "EnterLong", EOrderAction.Buy));
+
+    sellMarketOrder = OrderCreator.MarketNextBar(new SOrderParameters(
+        Contracts.Default, "ExitLong", EOrderAction.Sell));
+
+    sellStopLimitOrder = OrderCreator.StopLimit(new SOrderParameters(
+        Contracts.Default, "StopLMT", EOrderAction.Sell));
+}
+While all three orders are initialised in a very similar way, there is a small difference: market orders are created with the OrderCreator.MarketNextBar() method (lines 19 and 22), while stop-limit orders require the OrderCreator.StopLimit() method (line 25).
+
+After creating the orders, we call Output.Clear() in the StartCalc() method (line 31) so that the PowerLanguage Editor tab is cleared every time the calculation starts.
+
+Next we arrive at the CalcBar() method, which is made up of two parts: one part opens long positions while the other part manages them.
+
+Opening a long position in MultiCharts .NET
+A long position is opened when the strategy is flat and the current bar is the first of the day:
+
+// When flat, enter long on first bar of day
+if ((StrategyInfo.MarketPosition == 0) && (Bars.Time[0].Date != Bars.Time[1].Date))
+{
+    buyMarketOrder.Send();
+
+    sellStopPrice  = Bars.Low[0] - Bars.Range();
+    sellLimitPrice = Bars.Low[0] - (Bars.Range() * 1.5);
+
+    Output.WriteLine("{0} - Buy order submitted. Sell stop calculated @ {1} with limit {2}",
+        Bars.Time[0].ToString("d-M HH:mm:ss"),
+        sellStopPrice,
+        sellLimitPrice);
+}
+After sending the buy market order (line 39), the stop price and the limit price are calculated: the sell stop price is one bar range below the current bar low, while the limit price is 1.5 bar ranges below the current bar low.
+
+To keep track of the strategy, some information is outputted to the PowerLanguage Editor output tab (lines 44-47).
+
+Managing open positions in MultiCharts .NET
+In the second section of the CalcBar() method the long position is managed:
+
+// Long order management
+if (StrategyInfo.MarketPosition > 0)
+{
+    // Submit the stop-limit order as long as there is an open position
+    sellStopLimitOrder.Send(sellStopPrice, sellLimitPrice);
+
+    Output.WriteLine("{0} - Submitting sell stop @ {1} with limit {2}",
+        Bars.Time[0].ToString("d-M HH:mm:ss"),
+        sellStopPrice,
+        sellLimitPrice);
+
+    // Time stop; exit the position after 15 bars
+    double barsInPosition = Bars.CurrentBar - CurrentPosition.OpenTrades[0].EntryOrder.BarNumber;
+    if (barsInPosition >= 15)
+    {
+        sellMarketOrder.Send();
+
+        Output.WriteLine("{0} - Position open for {1} bars, submitting exit long market order",
+            Bars.Time[0].ToString("d-M HH:mm:ss"),
+            barsInPosition);
+    }
+}
+Here the stop-limit order is submitted (line 54). Since this only happens when there is an open long position (due to the conditional expression in if statement in line 51), the stop-limit order will not be submitted when there is no long position (anymore). Because MultiCharts .NET cancels open orders that are not resubmitted (cf. e.g., MultiCharts Wiki, 2012), this ensures that the stop-limit order is cancelled after the long position has been closed.
+
+To generate a decent amount of trades in this example, a time stop based on the number of bars in the current open position is added (lines 61 through 70). To determine the amount of bars, we subtract the current bar number (Bars.CurrentBar) from the bar number of the first entry order of the open position (CurrentPosition.OpenTrades[0].EntryOrder.BarNumber). When this difference is greater than 15, the open long position is closed by the sell market order.

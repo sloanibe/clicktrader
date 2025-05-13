@@ -1,0 +1,112 @@
+See if MultiCharts .NET’s intra-bar order generation is enabled with Environment.IOGEnabled
+ IN THIS LESSON
+
+Introduction
+Example: using different orders based on intra-bar order generation
+Notes for Environment.IOGEnabled
+Tips for Environment.IOGEnabled
+The Environment.IOGEnabled Boolean property returns true if the signal’s intra-bar order generation (IOG) feature is enabled and false when it’s off (MultiCharts, 2014; PowerLanguage .NET Help, n.d.). This property returns its value in signal and portfolio scripts (and functions used by these scripts).
+
+And so when Enviroment.IOGEnabled returns false, that indicates the signal only calculates (and can therefore only submit orders) at the close of each price bar. A value of true, on the other hand, tells that the signal processes intra-bar price updates also.
+
+We enable a signal’s IOG with the IOGMode attribute or with its ‘Enable Intra-Bar Order Generation’ option in the ‘Format Signal’ window .
+
+Enabling intra-bar order generation in MultiCharts .NET
+Example: using different orders based on intra-bar order generation
+The example signal below creates two enter long orders: one made with OrderCreator.MarketThisBar() which is an order type that fills immediately, and another order with OrderCreator.MarketNextBar() that fills on the next script calculation as soonest (MultiCharts, 2014). For optimistic backtesting we’d use OrderCreator.MarketThisBar() orders that fill at the close of price bars (even though an order cannot fill on a price bar that’s already closed), while for more realism we’d use OrderCreator.MarketNextBar().
+
+Another important difference between those two types of market orders is that a ’this bar’ order cannot be used with intra-bar order generation (MultiCharts Wiki, 2017). More specific, a ’this bar’ and ’next bar’ order can both be send on the close of a price bar; but during intra-bar calculations MultiCharts .NET can only generate ’next bar’ orders (Henry MultiCharts, 2013).
+
+Since intra-bar order generation (IOG) makes the signal process intra-bar price updates, IOG prevents using ’this bar’ orders during those calculations. And so in the example signal below we use Environment.IOGEnabled to see if IOG is on or off. Based on that we submit the appropriate order: a ’next bar’ order when IOG is on, and a ’this bar’ order when IOG is off. Because we close positions with a ’next bar’ order (which always generates regardless of the IOG setting), we don’t check Environment.IOGEnabled before sending that order.
+
+using System;
+using System.Drawing;
+using System.Linq;
+using PowerLanguage.Function;
+using ATCenterProxy.interop;
+
+namespace PowerLanguage.Strategy
+{
+    [IOGMode(IOGMode.Enabled)]
+    public class TradingCode_Reference_Strategy : SignalObject
+    {
+        public TradingCode_Reference_Strategy(object _ctx) : base(_ctx) { }
+
+        private IOrderMarket enterLongThisBar, enterLongNextBar;
+        private IOrderMarket exitLong;
+
+        protected override void Create()
+        {
+            // Create the three orders
+            enterLongThisBar = OrderCreator.MarketThisBar(new
+                SOrderParameters(Contracts.Default, EOrderAction.Buy));
+
+            enterLongNextBar = OrderCreator.MarketNextBar(new
+                SOrderParameters(Contracts.Default, EOrderAction.Buy));
+
+            exitLong = OrderCreator.MarketNextBar(new
+                SOrderParameters(Contracts.Default, EOrderAction.Sell));
+        }
+
+        protected override void CalcBar()
+        {
+            // Open the position on the 1,500th bar, using the appropriate order
+            // based on whether intra-bar order generation is enabled or not
+            if ((StrategyInfo.MarketPosition == 0) &&
+                (Bars.FullSymbolData.Current == 1500))
+            {
+                if (Environment.IOGEnabled)
+                {
+                    enterLongNextBar.Send();
+                }
+                else
+                {
+                    enterLongThisBar.Send();
+                }
+            }
+
+            // Exit long on the last bar
+            if (Bars.LastBarOnChart &&
+                (StrategyInfo.MarketPosition > 0))
+            {
+                exitLong.Send();
+            }
+        }
+    }
+}
+When we add this example signal to the chart, it behaves like:
+
+Example of the MultiCharts .NET strategy added to a chart
+Notes for Environment.IOGEnabled
+While Environment.IOGEnabled tells us whether intra-bar order generation is on or off, we currently cannot retrieve other intra-bar order generation settings programmatically. So to know if there are any limits with entries or exits, we’ll have to check the settings by hand (see first image above for these options).
+
+To programmatically enable a signal’s intra-bar order generation, we add the IOGMode attribute between square brackets ([ and ]) just above our signal script’s class like so:
+
+using System;
+using System.Drawing;
+using System.Linq;
+using PowerLanguage.Function;
+using ATCenterProxy.interop;
+
+namespace PowerLanguage.Strategy
+{
+    [IOGMode(IOGMode.Enabled)]
+    public class TradingCode_Reference_Strategy : SignalObject
+    {
+        public TradingCode_Reference_Strategy(object _ctx) : base(_ctx) { }
+
+        protected override void Create() { }
+
+        protected override void CalcBar() { }
+    }
+}
+At the moment, strategies can use intra-bar order generation only on price charts; this feature hasn’t been implemented yet in the Portfolio Trader (Henry MultiCharts, 2016). The Portfolio Trader supports intra-bar order generation for money management signals only, though (Henry MultiCharts, 2015).
+
+Besides Environment.IOGEnabled, other properties that return information about how a strategy currently operates are Environment.IsAutoTradingMode (for whether auto-trading is enabled), Environment.Optimizing (to see if the strategy is optimised on), and Environment.OrderConfirmationRequired. That latter property indicates whether automated trading with order confirmation is on or off.
+
+While most strategy settings and information are identical for each signal that runs on the same chart or portfolio, the intra-bar order generation setting is specific for each individual signal. And so while, for instance, each signal returns the same Environment.IsAutoTradingMode and NetProfit value, Environment.IOGEnabled can return a different value for each of those signals.
+
+In terms of script calculation stage, we can use Environment.IOGEnabled in the StartCalc(), CalcBar(), StopCalc(), and Destroy() override methods (MultiCharts, 2014).
+
+Tips for Environment.IOGEnabled
+Even though indicators can access Environment.IOGEnabled, the property doesn’t return accurate values in that context. As an alternative, we can use the StrategyInfo.SetPlotValue() and StrategyInfo.GetPlotValue() methods to communicate a value based on Environment.IOGEnabled between a signal and indicator that runs on the same chart.
