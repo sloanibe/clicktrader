@@ -1,0 +1,199 @@
+How to create multiple horizontal trend lines in MultiCharts .NET?
+In MultiCharts .NET we can draw a trend line programmatically between any two chart coordinates, and can then extend that line indefinitely. But how do we create a group of extended, horizontal trend lines based on recent highs and lows?
+
+Drawing horizontal trend lines in MultiCharts .NET programmatically
+The DrwTrendLine.Create() method draws a trend line and requires two ChartPoint struct values that define the line’s begin and end point (PowerLanguage .NET Help, n.d.). The trend line reference returned by this method can be stored in an ITrendLineObject variable, after which this variable provides access to the line’s properties and methods to do things like relocating, removing, or changing the trend line.
+
+Creating a horizontal trend line works just like drawing a regular trend line. The only difference is that, instead of using two ChartPoint values with different prices, we draw the trend line between two points that have the same price but different DateTime values.
+
+A horizontal trend line that covers the whole chart can be made in two ways. First, we can create the trend line so that it draws into the future. That does require, however, that we update the trend line location each time a new price bar appears. A more convenient approach is to extend the trend line in both directions, which is done by setting the line’s ExtLeft and ExtRight properties to true (MultiCharts, 2014). That extends the line automatically to any new price bar, which saves us from having to update the line’s location ourselves. The programming example below shows how to do this.
+
+Example: creating extended horizontal lines in MultiCharts .NET
+The example indicator draws horizontal trend lines like the following when added to an EuroStoxx50 future chart:
+
+MultiCharts .NET horizontal trend lines - 1
+(Not all 5 green lines are visible here since they overlap due to the high at 3.589 being the high of several periods.)
+
+When new price bars appear on the chart, the horizontal lines remain in place:
+
+MultiCharts .NET horizontal trend lines - 2
+The indicator draws its horizontal lines when it’s added to the chart, but also when the script is disabled and re-enabled, which draws new lines:
+
+MultiCharts .NET horizontal trend lines - 3
+Programmatically drawing horizontal trend lines in MultiCharts .NET
+The indicator’s programming code is the following:
+
+[SameAsSymbol(true), UpdateOnEveryTick(false)]
+public class Example_HorizontalTrendLines : IndicatorObject
+{
+    public Example_HorizontalTrendLines(object _ctx) : base(_ctx) { }
+
+    private bool linesAlreadyCreated;
+
+    protected override void StartCalc()
+    {
+        linesAlreadyCreated = false;
+    }
+
+    protected override void CalcBar()
+    {
+        if (Bars.LastBarOnChart && !linesAlreadyCreated)
+        {
+            for (int i = 10; i &lt;= 50; i += 10)
+            {
+                double highestHigh = Bars.High.Highest(i);
+                double lowestLow   = Bars.Low.Lowest(i);
+
+                // Create the chart coordinates for both lines
+                ChartPoint highestBegin = new ChartPoint(
+                    Bars.Time[0], highestHigh);
+
+                ChartPoint highestEnd = new ChartPoint(
+                    Bars.Time[1], highestHigh);
+
+                ChartPoint lowestBegin = new ChartPoint(
+                    Bars.Time[0], lowestLow);
+
+                ChartPoint lowestEnd = new ChartPoint(
+                    Bars.Time[1], lowestLow);
+
+                // Draw the trend lines
+                ITrendLineObject highLine =
+                    DrwTrendLine.Create(highestBegin, highestEnd);
+
+                ITrendLineObject lowLine =
+                    DrwTrendLine.Create(lowestBegin, lowestEnd);
+
+                // Extend the lines
+                highLine.ExtLeft  = true;
+                highLine.ExtRight = true;
+
+                lowLine.ExtLeft   = true;
+                lowLine.ExtRight  = true;
+
+                // Adjust the visual appearance of the lines
+                highLine.Color = Color.LimeGreen;
+                highLine.Size  = 2;
+
+                lowLine.Color = Color.Red;
+                lowLine.Size  = 2;
+
+                // Set the two lines furthers away to dashed
+                if (i >= 40)
+                {
+                    highLine.Style = ETLStyle.ToolDashed;
+                    lowLine.Style  = ETLStyle.ToolDashed;
+                }
+            }
+
+            linesAlreadyCreated = true;
+        }
+    }
+}
+We first set two class attributes. SameAsSymbol, when set to true, displays the indicator on the data series and not in a subchart. And UpdateOnEveryTick set to false makes the indicator calculate on bar close only. Since the script only draws the trend lines once, it doesn’t have to calculate on every tick.
+
+Then we declare the linesAlreadyCreated Boolean variable, which we use to prevent the lines from being drawn repeatedly. This variable is initialised to false in StartCalc(), a method that’s executed at the start of each full script calculation on all price bars (MultiCharts, 2014). Setting that variable to false there ensures it’s reset each time the script calculates. That way the horizontal lines will be redrawn when the indicator’s settings or status is changed.
+
+Determining the chart coordinates for a horizontal MultiCharts .NET trend line
+Next is the CalcBar() method that contains an if statement which evaluates two conditions. The first is whether the Bars.LastBarOnChart property is true, which it is when the script is evaluated on the last bar of the data series (see PowerLanguage .NET Help, n.d.). The second condition uses the logical not operator (!) to see if the linesAlreadyCreated variable is false. This operator returns true when the variable is false, or false when it’s true (Troelsen, 2012).
+
+When both conditions evaluate to true, the for loop inside the if statement’s code block is executed. That loop starts with a value of 10, continues as long as the i loop variable is less than or equal to (<=) 50, and increases the value of i with 10 after each loop cycle with the additive compound assignment operator (+=). This operator combines addition with assignment (Dorman, 2010), and so i += 10 is the abbreviated way of writing i = i + 10.
+
+Inside the loop we create two double variables. The highestHigh variable is set to the highest high of the last i bars, a value that’s returned by the Bars.High.Highest() method with the i loop variable passed in. The lowestLow variable is set to the lowest value of the last i bars with Bars.Low.Lowest(). With the i loop variable running from 10 to 50, both methods return the extreme high and low for up to 50 bars.
+
+Next we create several ChartPoint struct variables to hold the chart coordinates for our trend lines. The highestBegin and highestEnd variables are set to the time of the current and previous bar (Bars.Time[0] and Bars.Time[1]) and both use the highestHigh variable for their price value. Likewise, the lowestBegin and lowestEnd variables have their time set to Bars.Time[0] and Bars.Time[1], but their price value is set to lowestLow.
+
+Since we’re going to make extended horizontal trend lines, it doesn’t really matter which DateTime values we use as long as they aren’t equal to each other. After all, when the trend line extends into both directions it will ’touch’ the DateTime values of all price bars.
+
+Drawing horizontal trend lines in MultiCharts .NET
+With the ChartPoint variables defined it’s time to draw the trend lines. For the horizontal trend line based on the highest high value we call DrwTrendLine.Create() and pass in the highestBegin and highestEnd variables to set the line’s begin and end points. The value returned by this method is assigned to the highLine variable so we can use that variable to access the line at a later point.
+
+The ChartPoint values with the lowest low have a line drawn between them by passing lowestBegin and lowestEnd into the DrwTrendLine.Create() method. To alter this line later we assign this method’s returned value to the lowLine variable. Both horizontal trend lines (for the highest high and lowest low) are made each time the for loop runs. Since the loop runs 5 times (when i is 10, 20, 30, 40, and 50), the script draws a total of 10 horizontal trend lines.
+
+After creating the lines we set each line’s ExtLeft and ExtRight property to true to extend the line in both directions. We then change the lines’ visual appearance by setting the colour of highLine to green (Color.LimeGreen) while the lowLine trend line is coloured Color.Red. Each line’s Size is set to 2.
+
+An if statement then evaluates whether the i variable is greater than or equal to (>=) 40, which it is during the last two loop cycles (when i is 40 and 50). For those loop cycles the lines’ Style property is set to ETLStyle.ToolDashed. This means the 4 trend lines that are farthest away from the current bar (the 2 highest high and 2 lowest low trend lines) are set to a dashed style (see images above).
+
+When the for loop ends we set the linesAlreadyCreated variable to true. That invalidates the if statement inside the CalcBar() method, which in effect causes our loop to only run once. That prevents the script from drawing trend lines with each tick.
+
+For more on extending trend lines, see extending a line to its past and future values and drawing vertical trend lines. Other uses of trend lines to highlight price action are drawing triangles or creating boxes around prices.
+
+Summary
+The DrwTrendLine.Create() method draws trend lines. With its returned value assigned to an ITrendLineObject variable we can alter the line, such as extending it in both directions by setting the ExtLeft and ExtRight properties to true. Drawing a horizontal line with DrwTrendLine.Create() is done by passing in two ChartPoint struct values with the same price but a different DateTime value.
+
+Complete MultiCharts .NET indicator example
+using System;
+using System.Drawing;
+using System.Linq;
+using PowerLanguage.Function;
+
+namespace PowerLanguage.Indicator
+{
+    [SameAsSymbol(true), UpdateOnEveryTick(false)]
+    public class Example_HorizontalTrendLines : IndicatorObject
+    {
+        public Example_HorizontalTrendLines(object _ctx) : base(_ctx) { }
+
+        private bool linesAlreadyCreated;
+
+        protected override void StartCalc()
+        {
+            linesAlreadyCreated = false;
+        }
+
+        protected override void CalcBar()
+        {
+            if (Bars.LastBarOnChart && !linesAlreadyCreated)
+            {
+                for (int i = 10; i &lt;= 50; i += 10)
+                {
+                    double highestHigh = Bars.High.Highest(i);
+                    double lowestLow   = Bars.Low.Lowest(i);
+
+                    // Create the chart coordinates for both lines
+                    ChartPoint highestBegin = new ChartPoint(
+                        Bars.Time[0], highestHigh);
+
+                    ChartPoint highestEnd = new ChartPoint(
+                        Bars.Time[1], highestHigh);
+
+                    ChartPoint lowestBegin = new ChartPoint(
+                        Bars.Time[0], lowestLow);
+
+                    ChartPoint lowestEnd = new ChartPoint(
+                        Bars.Time[1], lowestLow);
+
+                    // Draw the trend lines
+                    ITrendLineObject highLine =
+                        DrwTrendLine.Create(highestBegin, highestEnd);
+
+                    ITrendLineObject lowLine =
+                        DrwTrendLine.Create(lowestBegin, lowestEnd);
+
+                    // Extend the lines
+                    highLine.ExtLeft  = true;
+                    highLine.ExtRight = true;
+
+                    lowLine.ExtLeft   = true;
+                    lowLine.ExtRight  = true;
+
+                    // Adjust the visual appearance of the lines
+                    highLine.Color = Color.LimeGreen;
+                    highLine.Size  = 2;
+
+                    lowLine.Color = Color.Red;
+                    lowLine.Size  = 2;
+
+                    // Set the two lines furthers away to dashed
+                    if (i >= 40)
+                    {
+                        highLine.Style = ETLStyle.ToolDashed;
+                        lowLine.Style  = ETLStyle.ToolDashed;
+                    }
+                }
+
+                linesAlreadyCreated = true;
+            }
+        }
+    }
+}

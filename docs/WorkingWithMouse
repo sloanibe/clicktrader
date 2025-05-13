@@ -1,0 +1,230 @@
+How to submit limit orders in MultiCharts .NET with mouse clicks?
+Situation
+You want to know how to submit limit orders in a single-instrument trading strategy based on the mouse click location.
+
+Programming example
+using System;
+using System.Drawing;
+using System.Linq;
+using PowerLanguage.Function;
+using ATCenterProxy.interop;
+using System.Windows.Forms;         // Added
+
+namespace PowerLanguage.Strategy
+{
+    [MouseEvents(true), IOGMode(IOGMode.Enabled)]
+    public class Example_LimitOrdersMouseClick : SignalObject
+    {
+        private IOrderPriced enterLong;
+        private IOrderMarket exitLong;
+
+        private double enterLongPrice;
+
+        public Example_LimitOrdersMouseClick(object _ctx) : base(_ctx) { }
+
+        protected override void Create()
+        {
+            enterLong = OrderCreator.Limit(
+                new SOrderParameters(Contracts.Default, EOrderAction.Buy));
+
+            exitLong = OrderCreator.MarketNextBar(
+                new SOrderParameters(Contracts.Default, EOrderAction.Sell));
+        }
+
+        protected override void CalcBar()
+        {
+            if (StrategyInfo.MarketPosition == 0)
+            {
+                if (enterLongPrice > 0)
+                    enterLong.Send(enterLongPrice);
+            }
+        }
+
+        protected override void OnMouseEvent(MouseClickArgs arg)
+        {
+            if ((arg.buttons != MouseButtons.Left) || (arg.keys == Keys.None))
+                this.CalcBar();
+
+            if (arg.keys == Keys.Control)
+            {
+                if (arg.point.Price > Bars.Close[0])
+                    return;
+
+                enterLongPrice = arg.point.Price;
+
+                Output.WriteLine("{0} - Submitting enter long order @ {1}",
+                    DateTime.Now.ToString("HH:mm:ss"),
+                    enterLongPrice.ToString("F5"));
+            }
+            else if (arg.keys == Keys.Shift)
+            {
+                enterLongPrice = 0;
+
+                Output.WriteLine("{0} - Submitting exit long market order.",
+                    DateTime.Now.ToString("HH:mm:ss"));
+
+                exitLong.Send();
+            }
+            else if (arg.keys == (Keys.Control | Keys.Shift))
+            {
+                enterLongPrice = 0;
+
+                Output.WriteLine("{0} - Cancel limit long order.",
+                    DateTime.Now.ToString("HH:mm:ss"));
+            }
+        }
+    }
+}
+Output of the programming example
+Applied to a chart, the example strategy looks like:
+
+Example of limit orders in MultiCharts .NET
+With the following orders in the Order and Position Tracker (click for a larger version):
+
+MultiCharts .NET limit orders in the Order and Position Tracker
+And the resulting output in the Output Window:
+
+06:51:04 - Submitting enter long order @ 1,31591
+06:51:25 - Cancel limit long order.
+06:51:33 - Submitting enter long order @ 1,31597
+06:57:09 - Cancel limit long order.
+06:57:16 - Submitting enter long order @ 1,31612
+07:06:28 - Submitting exit long market order.
+Working with mouse clicks in MultiCharts .NET
+Programmatically controlling MultiCharts .NET can be done with mouse clicks, and these can be used for reading and writing text files, turning a script on or off, or to submit market orders with mouse clicks.
+
+See working with mouse events and combining mouse clicks with keyboard keys to learn more.
+
+There are two requirements in working with mouse clicks:
+
+The MouseEvents attribute needs to be set to true;
+The OnMouseEvent() method, responsible for programmatically processing mouse clicks (see PowerLanguage .NET Help, n.d.), needs to be implemented.
+One way to use mouse clicks is to submit limit orders based on the mouse click location.
+
+Trading strategy limit orders in MultiCharts .NET
+Adding managed limited orders to a trading strategy has three requirements (MultiCharts, 2013):
+
+An IOrderPriced object needs to be declared (see line 13 in the example);
+The order object needs to be instantiated (i.e., created) in the Create() override method with the OrderCreator.Limit() method (lines 22-23);
+And the order needs to be submitted with its Send() method (line 34).
+Unfilled managed limit orders need to be resubmitted on every price update: otherwise, the order will be cancelled (e.g., see MultiCharts Wiki, February 2012).
+
+Left mouse clicks are processed as follows in the example: a click with the Control key submits a buy (enter long) market order, a click with Shift sends a sell (exit long) market order, and a click with both Control and Shift cancels the pending limit order.
+
+P.S. See submitting market orders with a mouse click to learn about market orders and mouse clicks.
+
+MultiCharts .NET programming example
+First, the System.Windows.Forms namespace is added for easy referencing the Keys and MouseButtons enumerations:
+
+using System.Windows.Forms;         // Added
+Then two MultiCharts .NET class attributes are added:
+
+[MouseEvents(true), IOGMode(IOGMode.Enabled)]
+Setting MouseEvents to true enables the processing of mouse clicks, while setting IOGMode to enabled turns the executing of orders intra-bar on.
+
+Declaring and instantiating order objects in MultiCharts .NET
+Next two order objects and a double variable are declared:
+
+private IOrderPriced enterLong;
+private IOrderMarket exitLong;
+
+private double enterLongPrice;
+Two types of orders are used here: an IOrderPriced limit order and an IOrderMarket market order. The enterLongPrice variable is used to keep track of the limit order price.
+
+In the Create() method the orders are created:
+
+protected override void Create()
+{
+    enterLong = OrderCreator.Limit(
+        new SOrderParameters(Contracts.Default, EOrderAction.Buy));
+
+    exitLong = OrderCreator.MarketNextBar(
+        new SOrderParameters(Contracts.Default, EOrderAction.Sell));
+}
+The OrderCreator.Limit() method creates the enter long limit order, while the exit market order is created with OrderCreator.MarketNextBar(). Both have the trade size from the setting in the ‘Strategy Properties’ window (Contracts.Default), and are a buy (EOrderAction.Buy) and sell (EOrderAction.Sell) order, respectively.
+
+When intra-bar order generation is turned on, MarketNextBar() orders are actually send on the next tick (see MultiCharts Wiki, August 2012).
+
+Submitting limit orders in MultiCharts .NET
+Next is the CalcBar() override method:
+
+protected override void CalcBar()
+{
+    if (StrategyInfo.MarketPosition == 0)
+    {
+        if (enterLongPrice > 0)
+            enterLong.Send(enterLongPrice);
+    }
+}
+The first if statement verifies if the strategy's current market position is flat, in which case the StrategyInfo.MarketPosition property returns 0 (MultiCharts, 2013). The nested if statement (lines 33-34) then verifies whether the enterLongPrice variable is greater than zero.
+
+When both expressions evaluate to true, the limit order is submitted by calling its Send() method (line 34). The limit price is specified by passing in the enterLongPrice variable in the Send() method.
+
+Processing mouse clicks in MultiCharts .NET
+The OnMouseEvent() method starts with the following if statement:
+
+if ((arg.buttons != MouseButtons.Left) || (arg.keys == Keys.None))
+    this.CalcBar();
+By the way, mouse click information is accessible through members of the MouseClickArgs struct variable, named here arg (see line 28). For example, arg.buttons can be used to determine which mouse button was pressed.
+
+Two conditions are evaluated here: whether the arg.buttons enumerator is unequal to a left mouse click (MouseButtons.Left) and if the mouse click was not accompanied by a keyboard key (Keys.None). When either of these are true, tested with the conditional-OR (||) operator, the OnMouseEvent() method is exited prematurely by calling the CalcBar() override method.
+
+To learn more about triggering a recalculation of the CalcBar() method, see recalculating a script with a mouse click. For more on return, see how to ‘stop’ a script from calculating.
+
+This way only left mouse clicks with a keyboard key are processed in the remainder of the method. The CalcBar() method is called with the this keyword, which refers to the current instance of the object (Liberty & MacDonald, 2009), so that any open limit order is resubmitted again and not cancelled (see line 34).
+
+Using mouse clicks for determining the limit order price
+The next part of the OnMouseEvent() method determines the limit price:
+
+if (arg.keys == Keys.Control)
+{
+    if (arg.point.Price > Bars.Close[0])
+        return;
+
+    enterLongPrice = arg.point.Price;
+
+    Output.WriteLine("{0} - Submitting enter long order @ {1}",
+        DateTime.Now.ToString("HH:mm:ss"),
+        enterLongPrice.ToString("F5"));
+}
+When the mouse click was accompanied with the Control key (line 43), the nested if statement (lines 45-46) verifies if the price of the mouse click (arg.point.Price) was above the current price (Bars.Close[0]). The return keyword, which immediately exits the current method (Stellman & Greene, 2010), is called for prices that would lead to an immediately triggered price limit order.
+
+When the mouse click location is below the current price, the mouse click price (arg.point.Price) is sorted in the enterLongPrice variable. This variable is subsequently used in the CalcBar() method (lines 33-34).
+
+A message is also printed to the Output Window (lines 50-52): with substitution parameters the current computer DateTime is formatted to a string and enterLongPrice is displayed with five decimals (ToString("F5")).
+
+Submitting a exit long market order in MultiCharts .NET
+Then an else-if statement checks if the Shift key was pressed:
+
+else if (arg.keys == Keys.Shift)
+{
+    enterLongPrice = 0;
+
+    Output.WriteLine("{0} - Submitting exit long market order.",
+        DateTime.Now.ToString("HH:mm:ss"));
+
+    exitLong.Send();
+}
+The enterLongPrice variable is set to 0 (line 56) when the conditional expression of the if statement (line 54) evaluates to true. Since a value of 0 will not resubmit the limit order (see lines 33-34), a pending limit order will be cancelled. This is because unfilled managed orders are cancelled as soon as they are not resubmitted anymore (e.g., see MultiCharts Wiki, February 2012).
+
+Next, information is printed to the Output Window (lines 58-59) and the exitLong market order is submitted to close the position (line 61).
+
+Cancel pending limit orders in MultiCharts .NET
+The last part of the OnMouseEvent() method causes limit orders to be cancelled:
+
+else if (arg.keys == (Keys.Control | Keys.Shift))
+{
+    enterLongPrice = 0;
+
+    Output.WriteLine("{0} - Cancel limit long order.",
+        DateTime.Now.ToString("HH:mm:ss"));
+}
+The else-if statement uses the bitwise-OR operator (|) to evaluate whether both the Control and Shift key were pressed. Since Keys is an enumeration with the Flags attribute (which allows for combining several enumerators; Albahari & Albahari, 2012), this OR operator is needed for this Keys combination.
+
+When both Control and Shift were pressed during the mouse click, the enterLongPrice variable is set to 0. That stops sending the limit order (see the if statement in the CalcBar() method; lines 33-34). Lastly, an informational message is printed to the Output Window (lines 67-68).
+
+Key points
+Processing mouse clicks requires adding the MouseEvents attribute and implementing the OnMouseEvent() method;
+Limit orders need to be declared as an IOrderPriced object and subsequently created in the Create() method with the OrderCreator.Limit() method. Submitting a limit order is done by calling its Send() method;
+Managed limit orders remain active when resubmitted on every CalcBar() calculation: to cancel pending limit orders, stop submitting them;
+The variable that contains the MouseClickArgs struct data in the OnMouseEvent() method has several members with mouse click information, such as mouse button (buttons), keyboard key (keys), and price location of the click (point.Price).

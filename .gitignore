@@ -1,0 +1,30 @@
+# MultiCharts.NET specific
+*.dll
+*.exe
+*.pdb
+*.cache
+*.suo
+*.user
+*.tmp
+*.log
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# IDE specific files
+.vs/
+.idea/
+*.userprefs
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/

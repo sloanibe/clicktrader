@@ -1,0 +1,201 @@
+How do I manage MultiCharts .NET arrows, text boxes, and trend lines in one collection?
+Situation: Instead of managing several arrow, text box, and trend line collections (or, even worse, use individual variables to track a lot of drawings), you want to manage all of the chart’s drawing in one, single collection.
+
+Solution: a generic list with the drawings base interface
+To work with a list of general drawings (meaning, a list that can hold references to arrows, text boxes, and trend lines), we declare an instance of the generic List class with its type set to the IDrawObject interface:
+
+private List<IDrawObject> myDrawings;
+While we can immediately instantiate the list here with C#’s new keyword, we can also do that in the StartCalc() override method. This latter has the benefit that, whenever the script performs a full recalculation again (for instance, because we turned the script off and back on again), a new list is created and the previous content of the list is removed. This is one way to ensure that the list’s content of a previous calculation cycle don’t affect the current calculations.
+
+protected override void StartCalc()
+{
+    myDrawings = new List<IDrawObject>();
+}
+Now that the list is ready to use, we can start adding our drawings to it. We do that by calling the Add() method on the list’s instance, which adds an element to the end of the list (Liberty & MacDonald, 2009).
+
+There are two approaches to populate the general drawings list. The first approach is to create a drawing and store the reference to that drawing in an interface variable, and then use that variable to add the drawing to the list. The second approach is to skip that intermediate step of using a variable.
+
+An example of the first approach is the following snippet, where we draw a trend line with DrwTrendLine.Create(). That method returns a reference to the trend line object (that implements the ITrendLineObject interface) (PowerLanguage .NET Help, n.d.), and here we store that reference in the trendLine ITrendLineObject variable. Then we use that variable to add the trend line to the myDrawings list.
+
+ITrendLineObject trendLine = DrwTrendLine.Create(
+    new ChartPoint(Bars.Time[10], Bars.Close[10]),
+    new ChartPoint(Bars.Time[0], Bars.Close[0]));
+
+myDrawings.Add(trendLine);
+The second approach is to create the drawing immediately in the line’s Add() method. This adds the drawing reference that’s returned by the DrwArrow.Create(), DrwText.Create(), and DrwTrendLine.Create() methods immediately to the list (without the need for a variable). For example:
+
+myDrawings.Add(DrwArrow.Create(new ChartPoint(Bars.Time[20], Bars.High[20]), true));
+Now that we have a couple of drawings in the list, we can operate on them in several ways. For example, we can loop over all of the drawings with a for loop, and then remove each of them from the chart:
+
+for (int i = 0; i < myDrawings.Count; i++)
+{
+    myDrawings[i].Delete();
+}
+Another way to use the general drawings list is to create a subset of drawings from it. This is possible with the OfType<T> method, which provides filtering based on a specific type (Microsoft Developer Network, n.d.). Let’s say we want to loop over all text box drawings (that is, objects that implement the ITextObject interface) from the collection with general drawings (the myDrawings list). We can implement that like this:
+
+foreach (ITextObject textBox in myDrawings.OfType<ITextObject>())
+{
+    textBox.BGColor = Color.White;
+    textBox.Color   = Color.Black;
+    textBox.Border  = true;
+    textBox.Size    = 12;
+}
+Now let’s see how a full indicator that works with a general list of drawings looks like.
+
+Example: managing MultiCharts .NET drawings in a generic list
+The script below implements several of the snippets discussed in the solution above, but this time placed in the context of a complete programming example. The example indicator creates several drawings (multiple arrows and text boxes, plus one trend line), and each drawing is stored in a general drawings list.
+
+The script also processes mouse clicks that happen on the chart. A click with the Shift key held down makes the script change the formatting of all text boxes by looping over these kind of drawings from the general drawings list. And when a click with Control happens, we go over a subgroup of drawings to adjust all arrows. This looping over a subdivision of drawings doesn’t occur when a mouse click with both Control and Shift happens; in that case, we loop over the complete general drawings list and remove all of them from the chart.
+
+The indicator’s code is the following:
+
+using System;
+using System.Drawing;
+using System.Linq;
+using PowerLanguage.Function;
+using System.Collections.Generic;   // Added for List
+using System.Windows.Forms;         // Added for Keys enumeration
+
+namespace PowerLanguage.Indicator
+{
+    [SameAsSymbol(true), MouseEvents(true)]
+    public class Recipe_DrawingsInList : IndicatorObject
+    {
+        public Recipe_DrawingsInList(object _ctx) : base(_ctx) { }
+
+        // Declare an instance of the List class
+        private List<IDrawObject> myDrawings;
+
+        protected override void StartCalc()
+        {
+            // Instantiate the list
+            myDrawings = new List<IDrawObject>();
+        }
+
+        protected override void CalcBar()
+        {
+            if (Bars.FullSymbolData.Current == Bars.FullSymbolData.Count - 1)
+            {
+                // Create three example drawings
+                ITrendLineObject trendLine = DrwTrendLine.Create(
+                    new ChartPoint(Bars.Time[10], Bars.Close[10]),
+                    new ChartPoint(Bars.Time[0], Bars.Close[0]));
+
+                IArrowObject arrow = DrwArrow.Create(
+                    new ChartPoint(Bars.Time[2], Bars.High[2]), true);
+
+                ITextObject textBox = DrwText.Create(
+                    new ChartPoint(Bars.Time[5], Bars.Close[5]), "First text box");
+
+                // Then add these first example drawings to the list
+                myDrawings.Add(trendLine);
+                myDrawings.Add(arrow);
+                myDrawings.Add(textBox);
+
+                // Drawings can also be added to the list directly
+                myDrawings.Add(DrwArrow.Create(
+                	new ChartPoint(Bars.Time[20], Bars.High[20]), true));
+
+                myDrawings.Add(DrwArrow.Create(
+                	new ChartPoint(Bars.Time[15], Bars.High[15]), true));
+
+                myDrawings.Add(DrwArrow.Create(
+                	new ChartPoint(Bars.Time[10], Bars.Low[10]), false));
+
+                myDrawings.Add(DrwArrow.Create(
+                	new ChartPoint(Bars.Time[5], Bars.Low[5]), false));
+
+
+                myDrawings.Add(DrwText.Create(
+                	new ChartPoint(Bars.Time[10], Bars.High[10]),
+                	"Second text box"));
+
+                myDrawings.Add(DrwText.Create(
+                	new ChartPoint(Bars.Time[15], Bars.Low[15]),
+                	"Third text box"));
+
+                myDrawings.Add(DrwText.Create(
+                	new ChartPoint(Bars.Time[20], Bars.High[20]),
+                	"Fourth text box"));
+
+                myDrawings.Add(DrwText.Create(
+                	new ChartPoint(Bars.Time[25], Bars.Close[25]),
+                	"Fifth text box"));
+            }
+        }
+
+        protected override void OnMouseEvent(MouseClickArgs arg)
+        {
+            // Change the formatting of the text boxes with a mouse click + Shift
+            if (arg.keys == Keys.Shift)
+            {
+                foreach (ITextObject textBox in myDrawings.OfType<ITextObject>())
+                {
+                    textBox.BGColor = Color.White;
+                    textBox.Color   = Color.Black;
+                    textBox.Border  = true;
+                    textBox.Size    = 12;
+                }
+            }
+            // Change the style of the arrows with a mouse click + Control
+            else if (arg.keys == Keys.Control)
+            {
+                foreach (IArrowObject arrow in myDrawings.OfType<IArrowObject>())
+                {
+                    arrow.Size  = 7;
+                    arrow.Style = EArrowForms.ArrowForm4;
+                }
+            }
+            // Remove all drawings when a mouse click with Control and Shift happens
+            else if (arg.keys == (Keys.Control | Keys.Shift))
+            {
+                for (int i = 0; i < myDrawings.Count; i++)
+                {
+                    myDrawings[i].Delete();
+                }
+            }
+        }
+    }
+}
+Note
+
+The generic List class resides in the System.Collections.Generic namespace. We add that namespace here to the top of the programming example with a using directive. This way we can use the list directly (List<T>) instead of having to qualify it with its namespace (System.Collections.Generic.List<T>).
+
+For a better idea of how the example indicator works, let’s look at its behaviour on the chart. After that we’ll discuss the details of the implemented solution.
+
+Visual example: managing MultiCharts .NET drawings in a list
+When we add the above example indicator to the chart, it creates several drawings that look like:
+
+Example of several MultiCharts .NET drawings
+As soon as we click on the chart while holding down Shift, all text boxes have their appearance changed:
+
+Adjusting MultiCharts .NET text boxes programmatically
+Likewise, a mouse click on the chart with Control held down changes the look of all arrows:
+
+Changing the appearance of arrows in MultiCharts .NET programmatically
+And when we click on the chart with both the Control and Shift keys held down, all drawings are removed:
+
+Removing all MultiCharts .NET drawings from the price chart
+Discussion: tracking MultiCharts .NET drawings in one collection
+A couple of things need to be considered when planning to work with MultiCharts .NET drawings programmatically. The first is that we can only programmatically make, change, and remove arrows, text boxes, and trend lines (MultiCharts, 2014; PowerLanguage .NET Help, n.d.). While other type of drawings can be made manually in MultiCharts .NET (like arcs and ellipses), those kind of drawings currently cannot be made programmatically.
+
+Two other things of the solution are managing the different kind of drawings in one collection, and which kind of collection to use. Let’s look at those now.
+
+Managing arrows, text boxes, and trend lines in a single collection
+Each MultiCharts .NET drawing uses its own interface: arrow objects implement IArrowObject, text box objects use ITextObject, and trend line objects inherit from ITrendLineObject (PowerLanguage .NET Help, n.d.). These interfaces define the properties and methods of arrows, text boxes, and trend lines.
+
+What makes this interesting is that each of those interfaces inherit from IDrawObject, which is the general interface for MultiCharts .NET drawings (PowerLanguage .NET Help, n.d.). And so any arrow drawing derives from IDrawObject, but any trend line or text box drawing also originates from IDrawObject.
+
+Since each of the three kinds of drawings in MultiCharts .NET share that base interface, we can programmatically threat the different drawings as one big group based on that shared similarity. This means that arrows, text boxes, and trend lines can be managed with one single collection of type IDrawObject.
+
+This is possible as long as the elements that we add to such a collection are polymorphic with the collection’s type (Stellman & Greene, 2010). Polymorphism refers to the ability of a single type or class to take many forms (Liberty & MacDonald, 2009). In our case, each kind of drawing is of the general IDrawObject type – and by putting all of them into a single collection, we’re treating arrows, text boxes, and trend lines all as objects of the IDrawObject form.
+
+So we’re making our code more abstract: instead of treating arrows, text boxes, and trend lines on their level of their specific type, we’re treating them on their group level as a general drawing (IDrawObject). In a sense, we don’t particularly care whether some drawing is an arrow, text box, or trend line – what’s relevant for us is that they’re all of the same group. That’s because, as long as they all derive from the same general type (IDrawObject), we can store the drawings into one collection.
+
+Choosing a C# collection to store drawing elements in
+Now that we know that different drawings can be treated as one group of IDrawObject objects, we need to choose the collection to manage them with. The .NET framework contains several standard collection types, including (Liberty & MacDonald, 2009; Sharp, 2013; Stellman & Greene, 2010):
+
+An array is a basic collection that’s great for storing a fixed number of elements. A disadvantage is that an array’s length needs to be specified before using the the array. While we can guess the capacity that’s probably needed, an overestimation wastes computer memory while we run into exceptions with an underestimation.
+Two other collection types are a queue and a stack, and these add and remove elements based on a certain order. With a queue the first object that’s stored in the collection is also the first object we work with (first in, first out) while with a stack we work with the most recent object (first in, last out). While these collections have their uses, for our example we don’t really care about the drawings order nor do we want to work with only the first or last element.
+Another collection type is a generic list. This easy-to-use collection automatically grows and shrinks to fit its contents. This removes an important limitation of arrays and frees us from the overhead of managing the list’s length ourselves. Another benefit of lists is that they can be used much like an array, including referencing an element by using square brackets and the index of the element.
+We used a generic list for our solution because of its benefits and easy of use. As the solution and example indicator show, by using a list to store general MultiCharts .NET drawings we can manage drawings on their group level (by using the list itself), on the level of the drawing type (with the OfType<T> method), and on the level of individual drawings by accessing a specific drawing from the list (like myDrawings[3]).

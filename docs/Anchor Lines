@@ -1,0 +1,107 @@
+Anchor (fix) drawings to particular bars with MultiCharts .NET’s IDrawObject.AnchorToBars
+The AnchorToBars Boolean property of an IDrawObject drawing reference anchors the drawing on the chart (true) or not (false). It also returns the current anchoring setting. The default value of AnchorToBars is false, in which case the drawing updates itself to its future coordinate when new price bars form (MultiCharts Blog, 2015). We can access this property with an arrow, text box, or trend line reference.
+
+The AnchorToBars property is the coding equivalent of the ‘Anchor to Bars’ option that we find in the ‘Properties’ tab of each drawing’s settings screen. (How the window exactly looks depends on the type of drawing; the image below shows the settings screen of an arrow):
+
+Example of the 'Anchor to Bars' setting in MultiCharts .NET
+Example: create anchored and unanchored arrows programmatically
+The example below draws two arrows. The code for that is inside an if statement that has two conditions. The first is whether the script calculates on the last bar (Bars.LastBarOnChart). This makes the code calculate with price data of the chart’s last price bar. The other requirement is that the drawingsMade Boolean variable is false. That variable is toggled to true inside the if statement. That way the code inside the if statement only runs once.
+
+That code starts with making two arrows with the DrwArrow.Create() method. Both arrows have their time coordinate set to 5 days in the future from the current bar (Bars.Time[0].AddDays(5)). We place the first arrow at the 10-bar highest high (Bars.High.Highest(10)) and put the second at the current lowest low (Bars.Low.Lowest(10)).
+
+We store the arrow references returned by DrwArrow.Create() in the firstArw and secondArw variables. With those variables we then change the size (Size), text (Text), and background colour (TextBGColor) of the arrows.
+
+Next we anchor the first arrow by setting its AnchorToBars property to true. This way the location of this arrow won’t be updated to its future time coordinate when new price bars form on the chart. And we toggle the AnchorToBars property of the second arrow to false. That makes MultiCharts .NET update the location of that arrow until it arrives at its final time coordinate when more and more bars form on the chart.
+
+using System;
+using System.Drawing;
+using System.Linq;
+using PowerLanguage.Function;
+
+namespace PowerLanguage.Indicator
+{
+    [SameAsSymbol(true), RecoverDrawings(false)]
+    public class TradingCode_Reference_Indicator : IndicatorObject
+    {
+        public TradingCode_Reference_Indicator(object _ctx) : base(_ctx) { }
+
+        private bool drawingsMade;
+
+        protected override void StartCalc()
+        {
+            drawingsMade = false;
+        }
+
+        protected override void CalcBar()
+        {
+            if (Bars.LastBarOnChart && !drawingsMade)
+            {
+                // Create two arrows, both 5 bars in the future.
+                IArrowObject firstArw  = DrwArrow.Create(new
+                    ChartPoint(Bars.Time[0].AddDays(5),
+                        Bars.High.Highest(10)), true);
+
+                IArrowObject secondArw = DrwArrow.Create(new
+                    ChartPoint(Bars.Time[0].AddDays(5),
+                        Bars.Low.Lowest(10)), false);
+
+                // Change the arrow's visual appearance
+                firstArw.Size  = 5;
+                secondArw.Size = 5;
+
+                firstArw.Text  = "Anchored arrow";
+                secondArw.Text = "Unanchored arrow";
+
+                firstArw.TextBGColor = secondArw.TextBGColor = Color.White;
+
+                // Anchor the first arrow to bars, 'unanchor' the second
+                firstArw.AnchorToBars  = true;
+                secondArw.AnchorToBars = false;
+
+                drawingsMade = true;
+            }
+        }
+    }
+}
+When we add this example to the chart, both arrows – the anchored and unanchored one – appear at the same time coordinate. That coordinate is the furthest one that’s visible on the chart.
+
+Example of anchored and unachored MultiCharts .NET drawings
+The difference between both arrows becomes clear when the chart forms new price bars. The anchored arrow remains fixed on its initial position. But that position is nowhere near 5 days beyond the last bar on our 15-minute chart. The unanchored arrow, on the other hand, does update its location when new bars form. Since it’s not anchored to a bar, it ‘moves along’ when new bars form until it reaches its final destination (the time coordinate 5 days in the future).
+
+Example of how an unanchored MultiCharts .NET drawing updates its own location
+Notes for AnchorToBars
+We can make three types of drawings programmatically in MultiCharts .NET: arrows, text boxes, and trend lines. Each has its own interface that describes the drawing’s properties and methods. Those interfaces are IArrowObject, ITextObject, and ITrendLineObject (PowerLanguage .NET Help, n.d.).
+
+Even though each arrow, text box, and trend line has its own specific properties and methods, they share certain code elements. For example, we can remove each drawing with its Delete() method. Those shared code elements are described by the IDrawObject interface.
+
+Now the IArrowObject, ITextObject, and ITrendLineObject interfaces all implement (that is, inherit from) that IDrawObject interface. This enables each arrow, text box, and trend line to access those general drawing code elements. While this sounds abstract, it simply means that each arrow, text box, and trend line has access to the same, shared code elements.
+
+A visual representation of those four interfaces looks like:
+
+Relationship between the `IArrowObject`, `ITextObject`, `ITrendLineObject`, and `IDrawObject` interfaces in MultiCharts .NET
+What this image shows is that the interfaces for arrows (IArrowObject), text boxes (ITextObject), and trend lines (ITrendLineObject) all inherit properties and a method from IDrawObject. That means the AnchorToBars, Exist, ID, and Locked properties as well as the Delete() method can be used by each arrow, text box, and trend line.
+
+When we enable the ‘Anchor to Bars’ setting of an arrow, text box, or trend line, the drawing anchors to the price bar on the chart and will not change position when new bars appear. It will simply remain fixed on that position, and not update its location when new time coordinates appear on the chart’s time axis.
+
+With ‘Anchor to Bars’ disabled, the drawing does not anchor to the visible bar index on the chart. Instead it will respect its own time coordinate, and update its location when new price bars form. It does this until it arrives at its final time coordinate (MultiCharts Blog, 2015).
+
+The ‘Anchor to Bars’ setting and the AnchorToBars property are only relevant for those drawings that have a coordinate that’s beyond the date and time values that currently display on the chart’s time axis.
+
+Drawings placed on price bars already visible on the chart will remain there and not update when new price bars form (because they’re already at their final destination). And so AnchorToBars is only something we need to take into consideration when we draw into the future (relative to the last bar).
+
+The AnchorToBars property of arrows, text boxes, and trend lines that we make programmatically is false by default (MultiCharts Blog, 2016). This means the default behaviour of drawings is to update their location until they arrive at their future time and date coordinate.
+
+To expand on the explanation above of the ‘Anchor to Bars’ setting, let’s look at an example of two trend lines. One line has the ‘Anchor to Bars’ option enabled while the other has that setting turned off. Both lines extend 8 days in the future on a 15-minute chart.
+
+The anchored and unanchored line initially look like this:
+
+Example of the difference between an anchored and unanchored line
+Now when new price bars form and new date and time values become available, the anchored line doesn’t update its end coordinate:
+
+Example of how the 'Anchor to Bars' setting affects MultiCharts .NET drawings
+This happens because the line is anchored to the price bar on which it was initially drawn. Even though it still has a future date and time coordinate that’s beyond that bar’s coordinates.
+
+The unanchored trend line, on the other hand, keeps updating until its coordinate reaches the future date and time:
+
+Example of the difference in 'Anchor to Bars' settings
+There are several properties for changing or getting the coordinates of an arrow, text box, or trend line. For arrows, we use their Location property. Trend lines have two properties with that information: Begin and End for the line’s begin and end coordinates. And text boxes have a Location property just like arrows do.

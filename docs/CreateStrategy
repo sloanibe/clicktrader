@@ -1,0 +1,456 @@
+Besides importing MultiCharts .NET scripts we can also make our own scripts. How do we create a trading strategy in the PowerLanguage .NET Editor?
+
+The PowerLanguage .NET Editor and creating strategies
+The primary tool for creating and editing MultiCharts .NET indicators, functions, and strategies is the PowerLanguage .NET Editor (MultiCharts, 2014). Other things we can do with this program are exporting, removing, and editing scripts. All of that, however, does require a script to work with.
+
+We can make three kinds of scripts in the PowerLanguage .NET Editor: indicators, functions, and trading strategies. These latter, which are called signals in MultiCharts .NET, systematically specify market entry and exit points according to a set of trading rules implemented in the strategy’s algorithm (MultiCharts Wiki, 2013a). Let’s see how we can make such a script in MultiCharts .NET.
+
+Creating a trading strategy in the PowerLanguage .NET Editor
+To create a trading strategy, we first start the PowerLanguage .NET Editor and then click on the small arrow besides the ‘New Study’ toolbar button ( icon ). We then select ‘New Signal…’:
+
+Creating a new trading strategy in the PowerLanguage .NET Editor
+This brings up the ‘New Signal Name’ window. Let’s name the strategy ‘Price_Breakouts’ and set the language to C#. Then we press ‘Ok’:
+
+Naming the new MultiCharts .NET trading strategy
+Our new strategy now opens in the PowerLanguage .NET Editor, ready to be coded:
+
+New trading strategy created in the PowerLanguage .NET Editor
+The default layout of a MultiCharts .NET trading strategy
+All new trading strategies created in the PowerLanguage .NET Editor, including our ‘Price_Breakouts’ strategy, start with the following default template:
+
+using System;
+using System.Drawing;
+using System.Linq;
+using PowerLanguage.Function;
+using ATCenterProxy.interop;
+
+namespace PowerLanguage.Strategy {
+	public class Price_Breakouts : SignalObject {
+		public Price_Breakouts(object _ctx):base(_ctx){}
+		private IOrderMarket buy_order;
+		protected override void Create() {
+			// create variable objects, function objects, order objects etc.
+			buy_order = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, EOrderAction.Buy));
+		}
+		protected override void StartCalc() {
+			// assign inputs
+		}
+		protected override void CalcBar(){
+			// strategy logic
+			buy_order.Send();
+		}
+	}
+}
+In my opinion, this default formatting is unpleasant to read. So lets press Enter a couple of times to end up with a layout like the following:
+
+<~~~multichartsnet pre class=“mcn”>using System; using System.Drawing; using System.Linq; using PowerLanguage.Function; using ATCenterProxy.interop;
+
+namespace PowerLanguage.Strategy { public class Price_Breakouts : SignalObject { public Price_Breakouts(object _ctx) : base(_ctx) { }
+
+    private IOrderMarket buy_order;
+
+    protected override void Create()
+    {
+        // create variable objects, function objects, order objects etc.
+        buy_order = OrderCreator.MarketNextBar(new
+            SOrderParameters(Contracts.Default, EOrderAction.Buy));
+    }
+
+    protected override void StartCalc()
+    {
+        // assign inputs
+    }
+
+    protected override void CalcBar()
+    {
+        // strategy logic
+        buy_order.Send();
+    }
+}
+}
+
+
+
+With this clearer blueprint, the next step is adding the different parts of our strategy idea.
+
+
+
+## Coding an example strategy in the PowerLanguage .NET Editor
+The strategy we're going to code in this article has the following features:
+
+- We open long positions when the current bar closes above the highest close of the preceding 10 bars. Short positions are initiated when the bar closes below the 10-bar lowest close.
+- Long positions are closed when the bar crosses below the 50-period Exponential Moving Average (EMA). We exit short positions when the bar closes above this EMA.
+- We use two inputs to set the EMA length and the number of bars that the highest and lowest close is calculated on.
+
+Let's see how we can implement these things in our example strategy.
+
+
+
+## Creating strategy inputs and setting them to a default value
+We begin with adding inputs to the strategy. They allow us to easily change a strategy's settings without having to edit and [compile the script's source code](/multicharts-net/net-editor/compile-scripts/ "Compiling scripts in the PowerLanguage .NET Editor") again. We add inputs to a MultiCharts .NET indicator or strategy by placing the `[Input]` attribute just above a public property (MultiCharts, 2014). They're typically placed in the top of the class file like this:
+
+~~~multichartsnet
+// Create the inputs
+[Input]
+public int EMALength { get; set; }
+
+[Input]
+public int LookbackPeriod { get; set; }
+After that we need to give them a default value so that, when the strategy is added to the chart, it has input values to calculate with. Setting inputs to default values is done in the constructor (MultiCharts, 2014), which is a method that has the same name as the class (Liberty & MacDonald, 2009). In our case, the constructor is Price_Breakouts() and so we set the EMALength and LookbackPeriod inputs to their default values of 50 and 10 there:
+
+public Price_Breakouts(object _ctx) : base(_ctx)
+{
+    // Give the inputs a default value
+    EMALength      = 50;
+    LookbackPeriod = 10;
+}
+Creating orders, variables series, and an EMA in MultiCharts .NET
+We’re now going to make the other parts of the strategy: its orders, EMA, and variable series. For the strategy’s orders we declare four IOrderMarket market orders: enterLong, enterShort, exitLong, and exitShort. With an instance of the XAverage function we’re able to calculate EMA values.
+
+We also declare three variable series, which all hold double values: lowestClose, highestClose, and emaValues. A variable series is a series with the variable’s values that has the same length as the data series it’s applied to, which allows us to access the variable’s values from previous bars (Henry MultiCharts, 2013). We use these in the strategy to, for example, retrieve the previous bar’s highest close value.
+
+private IOrderMarket enterLong, enterShort, exitLong, exitShort;
+private XAverage EMA;
+private VariableSeries<double> lowestClose, highestClose, emaValues;
+After declaring these we need to create the orders, variable series, and EMA before they can be used in the strategy. We do that in Create(), a method that’s executed immediately once the strategy is added to the chart or Portfolio Trader (MultiCharts, 2014):
+
+protected override void Create()
+{
+    // Create the orders
+    enterLong = OrderCreator.MarketNextBar(new
+        SOrderParameters(Contracts.Default, EOrderAction.Buy));
+
+    enterShort = OrderCreator.MarketNextBar(new
+        SOrderParameters(Contracts.Default, EOrderAction.SellShort));
+
+    exitLong = OrderCreator.MarketNextBar(new
+        SOrderParameters(Contracts.Default, EOrderAction.Sell));
+
+    exitShort = OrderCreator.MarketNextBar(new
+        SOrderParameters(Contracts.Default, EOrderAction.BuyToCover));
+
+    // Create the variable series
+    lowestClose  = new VariableSeries<double>(this);
+    highestClose = new VariableSeries<double>(this);
+    emaValues    = new VariableSeries<double>(this);
+
+    // Create the EMA function
+    EMA = new XAverage(this);
+}
+We make the four orders with OrderCreator.MarketNextBar(). That method creates market orders that are sent at the open of the bar following the bar they were generated on (MultiCharts, 2014). That means that, if we programmatically send one of these orders on bar number 102, they will be submitted by MultiCharts .NET at the open of bar number 103.
+
+Inside OrderCreator.MarketNextBar() we use SOrderParameters() to specify the order settings. The first argument (Contracts.Default) sets the order’s position size to the default value of the ‘Strategy Properties’ window (MultiCharts, 2014). The second argument sets the type of order: EOrderAction.Buy for an enter long order, EOrderAction.SellShort for enter short, EOrderAction.Sell for exit long, and exit short orders are set with EOrderAction.BuyToCover.
+
+After that we use the new keyword to create the three variable series (lowestClose, highestClose, and emaValues) and the EMA function. But before we can use the EMA we need to specify its settings.
+
+Specifying function settings in MultiCharts .NET
+We specify those EMA settings in the StartCalc() method, which is executed once before the strategy begins processing the first price bar (MultiCharts, 2014). Here we set both the EMA length as well as the data that the EMA is based on:
+
+protected override void StartCalc()
+{
+    // Specify the EMA settings
+    EMA.Length = EMALength;
+    EMA.Price = Bars.Close;
+}
+The length of the EMA function is set to the EMALength input that we’ve created earlier and the values it calculates on is set to Bars.Close. That way it calculates itself on the closing price of the primary data series (see MultiCharts, 2014).
+
+After creating and setting the orders, variable series, and EMA, it’s time to implement the strategy’s actual logic.
+
+Implementing the strategy’s code for opening positions
+CalcBar() is the last method in our example. This method is executed at least once on every bar, starting from the first to the last bar (MultiCharts, 2014). In this method we first calculate the values that we’re going to need later on:
+
+lowestClose.Value  = Bars.Close.Lowest(LookbackPeriod, 1);
+highestClose.Value = Bars.Close.Highest(LookbackPeriod, 1);
+emaValues.Value    = EMA[0];
+Here we update the value of each variable series with its Value property (Henry MultiCharts, 2013). Since we do this on every bar, over time each variable series will hold a sequence of values.
+
+In the lowestClose variable series we store the value that Bars.Close.Lowest() returns. That method takes two arguments: the length in bars (that we set to the LookbackPeriod input) and the ‘offset’, which is how many bars back that length should end. So for example with the value of 1 we’ll calculate the lowest close till (but not including) the current bar.
+
+The highestClose variable series is updated similarly, although here we use the Bars.Close.Highest() method to return the highest closing price of the preceding 10 bars (when LookbackPeriod is set to 10). To store a new value in emaValues, we assign this variable series’ Value property the current value of the EMA function. We do that by simply typing EMA[0], which returns the EMA function value for the current bar ([0]).
+
+The next step in the trading strategy is using those variable series to generate the strategy’s orders.
+
+Programmatically opening long and short positions in MultiCharts .NET
+In the second part of CalcBar() we submit the entry orders:
+
+// Look for entries
+if (StrategyInfo.MarketPosition == 0)
+{
+    if ((Bars.Close[0] > highestClose[0]) && (Bars.Close[1] < highestClose[1]))
+    {
+        enterLong.Send();
+    }
+    else if ((Bars.Close[0] < lowestClose[0]) && (Bars.Close[1] > lowestClose[1]))
+    {
+        enterShort.Send();
+    }
+}
+This first if statement checks whether StrategyInfo.MarketPosition equals (==) 0, which it does when the strategy is currently flat (see MultiCharts, 2014). If that’s the case an if/else statement is executed.
+
+The if/else statement’s if evaluates two conditions. First, if the current close (Bars.Close[0]) is greater than (>) the current highest close (highestClose[0]). Second, if the previous bar’s close (Bars.Close[1]) is less than (<) the highest close from the previous bar (highestClose[1]). When both conditions are true, the current bar has crossed above the highest close value. We then submit the enterLong order by calling its Send() method (see MultiCharts, 2014).
+
+The else if portion of the if/else statement works similarly. Here we submit the enterShort order with its Send() method when the current bar’s close is below the lowest close (lowestClose[0]) and when the previous close was above the previous lowest close (lowestClose[1]).
+
+Besides the code for opening positions, our example also needs to manage positions once they’re open.
+
+Looking for exit opportunities in a MultiCharts .NET strategy
+The next part of CalcBar() manages long and short positions:
+
+// Manage open long positions
+else if (StrategyInfo.MarketPosition > 0)
+{
+    if ((Bars.Close[0] < emaValues[0]) && (Bars.Close[1] >= emaValues[1]))
+    {
+        exitLong.Send();
+    }
+}
+
+// Manage open short positions
+else if (StrategyInfo.MarketPosition < 0)
+{
+    if ((Bars.Close[0] > emaValues[0]) && (Bars.Close[1] <= emaValues[1]))
+    {
+        exitShort.Send();
+    }
+}
+The two else if statements both use StrategyInfo.MarketPosition here. That property returns positive values when the strategy is long and negative values with short positions (MultiCharts, 2014).
+
+When the strategy is long, a nested if statement evaluates whether the current bar is less than the EMA (emaValues[0]) while the previous bar (Bars.Close[1]) was greater than or equal to (>=) the previous bar’s EMA value (emaValues[1]). This checks if the current bar crossed below the EMA. When it did, we close the long position by calling the exitLong order’s Send() method.
+
+When our strategy is short, an if statement evaluates whether the current close is above the EMA (emaValues[0]) while the previous bar (Bars.Close[1]) was below (or equal to) the previous bar’s EMA (emaValues[1]). When the current bar indeed crossed above the EMA, we send the exitShort order by calling its Send() method to close the position.
+
+The very last part of our example is passing the strategy’s values to an indicator.
+
+Communicating the strategy’s values with an indicator
+MultiCharts .NET strategies cannot plot values on the chart, a limitation that’s inherited from the regular MultiCharts PowerLanguage edition (see Masalov, 2010). This means our example strategy cannot display its values (highest close, lowest close, and EMA) in order to visually check its trades.
+
+We can work around this disadvantage by having a strategy communicate its values to an indicator on the same chart (Henry MultiCharts, 2014; MultiCharts Wiki, 2013b). That still requires that we create an additional indicator, but at least we don’t need to recode the strategy’s logic in the indicator.
+
+And so in the last part of our example we do the following:
+
+// Set the values for communicating with the indicator
+StrategyInfo.SetPlotValue(1, lowestClose[0]);
+StrategyInfo.SetPlotValue(2, highestClose[0]);
+StrategyInfo.SetPlotValue(3, emaValues[0]);
+We use the StrategyInfo.SetPlotValue() method here to pass the strategy’s values to an indicator. This method needs two arguments: an integer that acts as an unique key and the value belonging to that key (PowerLanguage .NET Help, n.d.). The indicator, which we discuss below, will then need to provide the same key to get that value.
+
+The values that our strategy communicates are the current bar’s lowest close (lowestClose[0] with 1 as the key), highest close (highestClose[0] that has the 2 key), and EMA (emaValues[0] with the 3 key).
+
+Before we create an indicator that plots these values on the chart, let’s recap the strategy’s code and then add our strategy to the chart.
+
+Full code of the MultiCharts .NET example strategy
+After implementing all of the parts listed above, the complete strategy’s code is:
+
+using System;
+using System.Drawing;
+using System.Linq;
+using PowerLanguage.Function;
+using ATCenterProxy.interop;
+
+namespace PowerLanguage.Strategy
+{
+    public class Price_Breakouts : SignalObject
+    {
+        // Create the inputs
+        [Input]
+        public int EMALength { get; set; }
+
+        [Input]
+        public int LookbackPeriod { get; set; }
+
+        public Price_Breakouts(object _ctx) : base(_ctx)
+        {
+            // Give the inputs a default value
+            EMALength      = 50;
+            LookbackPeriod = 10;
+        }
+
+        private IOrderMarket enterLong, enterShort, exitLong, exitShort;
+        private XAverage EMA;
+        private VariableSeries<double> lowestClose, highestClose, emaValues;
+
+        protected override void Create()
+        {
+            // Create the orders
+            enterLong = OrderCreator.MarketNextBar(new
+                SOrderParameters(Contracts.Default, EOrderAction.Buy));
+
+            enterShort = OrderCreator.MarketNextBar(new
+                SOrderParameters(Contracts.Default, EOrderAction.SellShort));
+
+            exitLong = OrderCreator.MarketNextBar(new
+                SOrderParameters(Contracts.Default, EOrderAction.Sell));
+
+            exitShort = OrderCreator.MarketNextBar(new
+                SOrderParameters(Contracts.Default, EOrderAction.BuyToCover));
+
+            // Create the variable series
+            lowestClose  = new VariableSeries<double>(this);
+            highestClose = new VariableSeries<double>(this);
+            emaValues    = new VariableSeries<double>(this);
+
+            // Create the EMA function
+            EMA = new XAverage(this);
+        }
+
+        protected override void StartCalc()
+        {
+            // Specify the EMA settings
+            EMA.Length = EMALength;
+            EMA.Price = Bars.Close;
+        }
+
+        protected override void CalcBar()
+        {
+            lowestClose.Value  = Bars.Close.Lowest(LookbackPeriod, 1);
+            highestClose.Value = Bars.Close.Highest(LookbackPeriod, 1);
+            emaValues.Value    = EMA[0];
+
+            // Look for entries
+            if (StrategyInfo.MarketPosition == 0)
+            {
+                if ((Bars.Close[0] > highestClose[0]) && (Bars.Close[1] < highestClose[1]))
+                {
+                    enterLong.Send();
+                }
+                else if ((Bars.Close[0] < lowestClose[0]) && (Bars.Close[1] > lowestClose[1]))
+                {
+                    enterShort.Send();
+                }
+            }
+
+            // Manage open long positions
+            else if (StrategyInfo.MarketPosition > 0)
+            {
+                if ((Bars.Close[0] < emaValues[0]) && (Bars.Close[1] >= emaValues[1]))
+                {
+                    exitLong.Send();
+                }
+            }
+
+            // Manage open short positions
+            else if (StrategyInfo.MarketPosition < 0)
+            {
+                if ((Bars.Close[0] > emaValues[0]) && (Bars.Close[1] <= emaValues[1]))
+                {
+                    exitShort.Send();
+                }
+            }
+
+            // Set the values for communicating with the indicator
+            StrategyInfo.SetPlotValue(1, lowestClose[0]);
+            StrategyInfo.SetPlotValue(2, highestClose[0]);
+            StrategyInfo.SetPlotValue(3, emaValues[0]);
+        }
+    }
+}
+After coding our strategy we need to click on the ‘Compile changed studies’ button on the toolbar ( icon ) or press the F7 keyboard shortcut. This compiles the script and changes the icon that’s before the strategy’s name in the ‘Studies’ window from red ( icon ) to green ( icon ). That shows that our strategy compiled successfully and is ready to be used on the chart.
+
+Adding the MultiCharts .NET example strategy to a chart
+To add the trading strategy to a chart and generate trades with it, we right-click on the chart and select ‘Insert Study…’ (or press F7):
+
+Adding a trading strategy to a MultiCharts .NET chart
+Then we select the ‘Price_Breakouts’ strategy from the ‘Signals’ tab, check the ‘Format’ checkbox, and then press ‘OK’:
+
+Insert Study window in MultiCharts .NET
+That brings up the ‘Format Objects’ window. Here we need to click on the ‘Format…’ button to specify the strategy’s settings.
+
+Format Objects window in MultiCharts .NET
+Now we can manually change the inputs of our strategy in the ‘Format Signal’ window:
+
+Formatting the trading strategy's settings
+After reviewing or changing the inputs, press ‘OK’ to close the ‘Format Signal’ window. Then click ‘Close’ in the ‘Format Objects’ window. The strategy will now be added to the chart, which looks like this when added to CME’s 6E (EUR/USD) future:
+
+MultiCharts .NET trading strategy added to the chartMultiCharts .NET trading strategy added to the chartMultiCharts .NET trading strategy added to the chart
+Plotting the strategy’s values with a MultiCharts .NET indicator
+These images show that it’s not possible to visually verify the strategy’s trades. Since a strategy cannot plot values (see PowerLanguage .NET Help, n.d.), we need to create an indicator that plots the values that we used for generating the trades.
+
+So we click on the small arrow besides the ‘New Study’ toolbar button ( icon ) and select ‘New Indicator…’:
+
+Creating a MultiCharts .NET indicator
+Let’s name the indicator ‘Price_Breakouts’ and set its language to C#:
+
+Naming a MultiCharts .NET indicator
+Plotting the strategy’s values with an indicator
+This indicator now needs to display the strategy’s values. The code for that is the following:
+
+using System;
+using System.Drawing;
+using System.Linq;
+using PowerLanguage.Function;
+
+namespace PowerLanguage.Indicator
+{
+    [SameAsSymbol(true)]
+    public class Price_Breakouts : IndicatorObject
+    {
+        public Price_Breakouts(object _ctx) : base(_ctx) { }
+
+        private IPlotObject lowestClose, highestClose, EMA;
+
+        protected override void Create()
+        {
+            // Creating the plots
+            lowestClose = AddPlot(new
+                PlotAttributes("Lowest close", EPlotShapes.Line, Color.Firebrick,
+                    Color.Transparent, 1, EPlotStyle.Solid, false));
+
+            highestClose = AddPlot(new
+                PlotAttributes("Highest close", EPlotShapes.Line, Color.ForestGreen,
+                    Color.Transparent, 1, EPlotStyle.Solid, false));
+
+            EMA = AddPlot(new
+                PlotAttributes("EMA", EPlotShapes.Line, Color.RoyalBlue,
+                    Color.Transparent, 2, EPlotStyle.Solid, false));
+        }
+
+        protected override void CalcBar()
+        {
+            // Set the plots to values passed by the strategy
+            lowestClose.Set(StrategyInfo.GetPlotValue(1));
+            highestClose.Set(StrategyInfo.GetPlotValue(2));
+            EMA.Set(StrategyInfo.GetPlotValue(3));
+        }
+    }
+}
+We first set the SameAsSymbol attribute to true so that the indicator is displayed on the data series and not in a subchart (MultiCharts, 2014). We then declare three IPlotObject variables: lowestClose, highestClose, and EMA.
+
+In the Create() method we create these plots with the AddPlot() method and specify their settings with PlotAttributes() (PowerLanguage .NET Help, n.d.).
+
+We name the first plot “Lowest close” and set it to a line (EPlotShapes.Line) with the firebrick colour (Color.Firebrick). Its background colour, which is only used in the Scanner/Watchlist (MultiCharts Wiki, 2012), is set to transparent (Color.Transparent). The plot’s width is set to 1 (the default size) and its style set to solid (EPlotStyle.Solid). The last argument (false) turns off this plot’s last price marker (PowerLanguage .NET Help, n.d.).
+
+The two other plots are made similarly, although highestClose is given the name “Highest close” and a forest green colour. The EMA plot is drawn in royal blue and has a line width of 2, which makes it slightly thicker than the two other lines.
+
+The indicator’s second method is CalcBar(). In it we call each plot’s Set() method to plot a value on the chart (PowerLanguage .NET Help, n.d.).
+
+The values that the indicator plots on the chart are retrieved with the StrategyInfo.GetPlotValue(). That method requires an integer value acting as a key, and then returns the value that’s associated with that key (PowerLanguage .NET Help, n.d.). Since the integers that we use here (1, 2, and 3) are identical to the keys that we used in the strategy earlier, the indicator ‘pulls’ the values from the strategy. This way we plot values from a strategy without having to replicate that strategy’s code.
+
+Adding the strategy’s indicator to the MultiCharts .NET chart
+After we compile the indicator (with the icon toolbar button or the F7 keyboard shortcut) in the PowerLanguage .NET Editor, we add the indicator to the same chart as the strategy. For that we right-click on the chart and select ‘Insert Study…’ (F7):
+
+Adding a MultiCharts .NET study to the chart
+We then navigate to the ‘Indicator’ tab, select ‘Price_Breakouts’, and press ‘OK’:
+
+Adding the Price_Breakouts indicator
+When the ‘Format’ checkbox was enabled, this brings up the ‘Format Study’ window. Just click ‘Ok’ here:
+
+Formatting the MultiCharts .NET indicator
+Once the indicator is added to the chart, it plots the highest close, lowest close, and EMA values from the strategy. We can now see if the strategy’s orders are triggered correctly:
+
+Trading strategy and indicator added to the chartTrading strategy and indicator added to the chartTrading strategy and indicator added to the chart
+Reviewing the performance of the MultiCharts .NET strategy
+After creating a trading strategy and indicator for visual verification, the question remains: how well does the strategy perform? Let’s find out.
+
+When the strategy’s chart is active, click on the ‘View’ menu item and select ‘Strategy Performance Report’. This item is near the bottom of the long ‘View’ menu – the image below is edited for brevity:
+
+Opening Strategy Performance Report in MultiCharts .NET
+In the performance report we can examine the strategy from different angles. Like the ‘Total Trade Analysis’:
+
+Trading strategy performance report - trade analysis
+Or the ‘Strategy Performance Summary’ window:
+
+Trading strategy performance report - summary
+Since this strategy didn’t perform well, we might want to change its settings, or export and then remove it from the PowerLanguage .NET Editor. To learn more about creating scripts, see creating an indicator and making a function in the PowerLanguage .NET Editor.
+
+Summary
+A trading strategy is created in the PowerLanguage .NET Editor with the ‘New Study’ button or with the ‘File’ → ‘New’ menu. The default template provides, when formatted clearly, a structure for implementing the different parts of a strategy. The default values for inputs are set in the constructor, which is the method with the same name as the strategy. Orders, variable series, and functions are created in the Create() method while we use the StartCalc() method to specify the settings of any used function. The strategy’s logic, including order submitting, is placed in the CalcBar() method. We need an indicator to plot the strategy’s values on the chart. A strategy and indicator can communicate with the StrategyInfo.SetPlotValue() and StrategyInfo.GetPlotValue() methods.

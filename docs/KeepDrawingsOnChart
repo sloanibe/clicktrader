@@ -1,0 +1,213 @@
+Award-winning, experienced, certified.
+
+Keep intra-bar drawings on the chart with an attribute
+A PowerLanguage attribute is a keyword that enables or disables a certain script feature. They’re applied when the script compiles and cannot be modified during run-time (e.g., MultiCharts Wiki, 2014a). This means we cannot change the setting that’s affected by an attribute unless we change the attribute’s value and then recompile the script.
+
+In addition, most attributes (including RecoverDrawings) have no manual equivalent setting. In that case adding the attribute to the script’s code is the only way to change whichever behaviour is affected by the attribute. While PowerLanguage attributes can be placed anywhere in the script, their typical location is at the beginning of the code. For example, here we’ve added the IntrabarOrderGeneration and RecoverDrawings attributes to a script:
+
+Example location of MultiCharts attributes in a script
+Now what does RecoverDrawings do? This attribute defines whether or not intra-bar drawings made by an indicator, strategy, or function are removed after the next script calculation (MultiCharts Wiki, 2014a). These ‘drawings’ are programmatically-made arrows, trend lines, and text boxes.
+
+For an unknown reason, drawings that are not created when the price bar closes are automatically deleted by MultiCharts. This gives the odd behaviour where a script makes a drawing and one second or so later this drawing vanishes. Luckily, we can turn off this behaviour by setting the RecoverDrawings attribute to false (MultiCharts Wiki, 2014a).
+
+Note
+
+Always set RecoverDrawings to false when using drawings. That way any arrow, trend line, or text box remains on the chart whenever your script creates it. This also helps to write efficient scripts because it makes it more clear when drawings are made unconditionally (like with every tick).
+
+Note
+
+The RecoverDrawings attribute only affects drawings that are made programmatically; drawings that we make by hand are always kept on the chart by MultiCharts.
+
+Enabling or disabling the automatic removal of intra-bar drawings
+To make intra-bar generated drawings persistent, we set the RecoverDrawings attribute to false (false as in: ‘do not recover drawings’):
+
+[RecoverDrawings = false];
+Whenever this attribute isn’t added to the code or when it’s set true, then the script will remove any intra-bar generated drawings (MultiCharts Wiki, 2014a).
+
+[RecoverDrawings = true];
+The RecoverDrawings attribute has no manual equivalent option in the MultiCharts program. This means RecoverDrawings is the only way to affect how MultiCharts deals with drawings that are made when the price bar still develops.
+
+Example: drawing trend lines and the effect of RecoverDrawings
+In the example indicator below we draw two horizontal trend lines: one that’s placed at the highest high price level while the other is located at the lowest low price. One of these lines is made intra bar while the other is drawn on bar close. After discussing the code, we’ll look at how the indicator behaves when RecoverDrawings is enabled and when this attribute is disabled.
+
+[RecoverDrawings = true];
+
+Inputs:
+    Lookback_Period(20),
+    Colour_High_Line(green),
+    Colour_Low_Line(red);
+
+Variables:
+    IntrabarPersist highLineMade(false),
+    lowLineMade(false),
+    highLine(0),
+    lowLine(0),
+    highestHigh(0),
+    lowestLow(0);
+
+highestHigh = Highest(high, Lookback_Period);
+lowestLow   = Lowest(low, Lookback_Period);
+
+if (LastBarOnChart_s) then begin
+
+    // Draw the highest high line during an
+    // intra-bar calculation
+    if (BarStatus(1) <> 2 and highLineMade = false) then begin
+
+        highLine = TL_New_DT(DateTime[1], highesthigh,
+            DateTime, highestHigh);
+
+        TL_SetExtLeft(highLine, true);
+        TL_SetExtRight(highLine, true);
+
+        TL_SetColor(highLine, Colour_High_Line);
+
+        highLineMade = true;
+
+    end;
+
+    // Draw the lowest low trend line on bar close
+    if (BarStatus(1) = 2 and lowLineMade = false) then begin
+
+        lowLine = TL_New_DT(DateTime[1], lowestLow, DateTime, lowestLow);
+
+        TL_SetExtLeft(lowLine, true);
+        TL_SetExtRight(lowLine, true);
+
+        TL_SetColor(lowLine, Colour_Low_Line);
+
+        lowLineMade = true;
+
+    end;
+
+end;
+We begin by setting the RecoverDrawings attribute to true. This makes the default behaviour of removing intra-bar drawings explicit (MultiCharts Wiki, 2014a). Later we’ll look at how setting this attribute to false affects the trend lines.
+
+Then we add several input options:
+
+Inputs:
+    Lookback_Period(20),
+    Colour_High_Line(green),
+    Colour_Low_Line(red);
+The Lookback_Period input with its default value of 20 is used later for the period of the highest high and lowest low. We use the two other inputs (Colour_High_Line and Colour_Low_Line) when setting the colour of the trend lines.
+
+Next we create several variables:
+
+Variables:
+    IntrabarPersist highLineMade(false),
+    lowLineMade(false),
+    highLine(0),
+    lowLine(0),
+    highestHigh(0),
+    lowestLow(0);
+We’ll use the highLineMade and lowLineMade true/false variables to ensure that our trend lines are only drawn once and not repeatedly. We store the trend line IDs in the highLine and lowLine variables so we can change the trend line after making it. The last two variables (highestHigh and lowestLow) will hold the highest high and lowest low prices.
+
+What’s special about the highLineMade variable is that we mark it as IntrabarPersist. This keyword indicates that the variable is updated intra-bar and should retain its value with each tick-to-tick calculation (MultiCharts Wiki, 2012a). Normally, when a variable isn’t marked as IntrabarPersist, it will not keep the value we store in it during an intra-bar script calculation. Since we use the highLineMade variable during those intra-bar calculations, we set it to IntrabarPersist to have it remember its value with each tick calculation.
+
+With the inputs and variables made, we retrieve the extreme prices:
+
+highestHigh = Highest(high, Lookback_Period);
+lowestLow   = Lowest(low, Lookback_Period);
+We set the highestHigh variable here to the value that’s returned by Highest(), a standard function that returns the highest value based on a series of values and a certain number of bars back. Here we have that function compute on high prices for a number of bars that’s set by Lookback_Period, our input that has a default value of 20.
+
+The value for the lowestLow variable is set likewise with the Lowest() standard function, which calculates on low prices for the Lookback_Period number of bars. Both functions, by the way, compute on 20 bars including the current bar.
+
+The remainder of our script’s code is in an if statement and executed whenever the LastBarOnChart_s function returns true, which it does when the script calculates on the data series’ last bar. In that case, another if statement can be executed:
+
+if (BarStatus(1) <> 2 and highLineMade = false) then begin
+
+    highLine = TL_New_DT(DateTime[1], highesthigh,
+        DateTime, highestHigh);
+
+    TL_SetExtLeft(highLine, true);
+    TL_SetExtRight(highLine, true);
+
+    TL_SetColor(highLine, Colour_High_Line);
+
+    highLineMade = true;
+
+end;
+This if statement evaluates two expressions: whether the value returned by BarStatus(1) is unequal to (<>) 2 and whether the highLineMade variable is false. Both need to be true before the code inside the if statement executes. That highLineMade variable, which we switch to true inside the if statement, prevents that the if statement’s code executes repeatedly. Since we make a trend line inside that if statement, this way that line is only drawn once.
+
+The BarStatus() keyword returns a number that indicates the status of a data series’ most recent tick (MultiCharts Wiki, 2014b). This keyword can return one of three values: 0 when the current tick is the bar’s opening tick, 1 when the tick falls inside the bar, and 2 when the price update is the bar’s last tick (MultiCharts Wiki, 2014b). Here we use BarStatus() with the value of 1 between its parentheses, which makes it return the bar status of the first data series. Since we check whether that value is different than 2, we’re in effect checking if the script that’s currently processed by the script is not the bar’s closing tick. We do this so that the trend line that’s made inside the if statement, is made intra bar. And that allows us to see the effect of RecoverDrawings.
+
+That trend line is drawn with TL_New_DT(). This keyword draws a trend line based on four values: the DateTime and price value of the begin point and the DateTime and price value of the line’s end point (MultiCharts Wiki, 2013a). The parameters that we use this keyword with are the previous bar’s date and time (DateTime[1]), the 20-bar highest high (highestHigh), the current bar’s DateTime value (DateTime), and the highestHigh variable again. This creates a small horizontal price line between the current and previous bar that’s placed at the 20-bar highest high.
+
+After making a trend line, TL_New_DT() returns a trend line specific ID number needed to further modify the line (MultiCharts Wiki, 2013a). We store that value in the highLine variable, and then use that variable when changing the line’s appearance.
+
+First we extend the trend line indefinitely to the left and right, which we do with TL_SetExtLeft() and TL_SetExtRight(). In both of these keywords we pass the trend line ID (stored in the highLine variable) and the true value, which enables the trend line extending (MultiCharts Wiki, 2012b). After that we change the line’s colour with TL_SetColor() (MultiCharts Wiki, 2013b), which we use with the highLine variable (to identify the trend line) and the Colour_High_Line input that’s set to green by default.
+
+When the trend line is made, we set the highLineMade variable to true. Since this invalidates the if statement’s condition, the code in that if statement only executes once and our highest high line is also drawn just once on the chart.
+
+The second part of the code in the LastBarOnChart_s if statement draws a horizontal line at the lowest low:
+
+if (BarStatus(1) = 2 and lowLineMade = false) then begin
+
+    lowLine = TL_New_DT(DateTime[1], lowestLow, DateTime, lowestLow);
+
+    TL_SetExtLeft(lowLine, true);
+    TL_SetExtRight(lowLine, true);
+
+    TL_SetColor(lowLine, Colour_Low_Line);
+
+    lowLineMade = true;
+
+end;
+Before this if statement’s code is executed, two expressions need to be true. First, the value returned by BarStatus(1) should equal 2, which it does whenever the price that’s currently processed by the script closes the price bar (MultiCharts Wiki, 2014b). Second, the lowLineMade variable needs to be false. Because we set that variable to true inside the if statement, the code inside the if statement only executes once.
+
+When both expressions are true, we first draw a trend line with TL_New_DT(). The values passed into this keyword are DateTime[1] and the lowest price of the recent 20 bars (lowestLow) for the line’s begin point and DateTime and lowestLow for the line’s end point. We store the line-specific ID that’s returned by TL_New_DT() in the lowLine variable so we can change the line next.
+
+Since we’ve just created a small horizontal line between the current and previous bar, we first extend the trend line in either direction with TL_SetExtLeft() and TL_SetExtRight(). Then we use the TL_SetColor() keyword to set the line to the colour held by the Colour_Low_Line input variable, which we gave a default value of red earlier.
+
+Now with the line made and its appearance changed, we set the highLineMade variable to true. That invalidates the if statement’s condition and thus ensures our lowest low line is made only once.
+
+Making a MultiCharts indicator perform intra-bar calculations
+Before we can see how the above example works with the RecoverDrawings attribute enabled and disabled, we first need to turn the script’s intra-bar generations on. That way the indicator can make a trend line during an intra-bar calculation.
+
+So after adding the script to the chart, we right-click on the indicator’s name in the chart’s Status Line and select ‘Format script name…’:
+
+Right-click a MultiCharts scripts in the chart's Status Line
+This opens the ‘Format Study’ window. Here we select the ‘Properties’ tab and enable the ‘Update on every tick’ option:
+
+Setting a MultiCharts indicator to update on every tick
+This makes our example script not only calculate on bar close, but with each real-time incoming tick.
+
+Using the RecoverDrawings attribute in MultiCharts PowerLanguage
+Now let’s see how the example indicator behaves with the RecoverDrawings attribute initially set to true. When the script is added to the chart, it immediately draws a green line at the recent highest high:
+
+Example of drawing a trend line in MultiCharts
+However, that intra-bar generated line is removed as soon as the script calculates again:
+
+Intra-bar drawing automatically removed from the MultiCharts chart
+The lowest low line is made by the script when the price bar closes:
+
+Lowest low trend line made when the MultiCharts bar closes
+This drawing remains on the chart during subsequent script calculations since it was made on bar close:
+
+Lowest low line stays on the MultiCharts chart
+Now let’s change the first line of the example so that RecoverDrawings is set to false instead of true:
+
+[RecoverDrawings = false];
+We don’t make any other changes to the script but instead save and compile the code. The script behaves now as follows. It first creates the highest high line:
+
+Drawing a trend line between the highest highs in MultiCharts
+But now that line persists whenever the script calculates again:
+
+Intra-bar drawn trend line now stays on the MultiCharts chart
+This happens because, with RecoverDrawings set to false, MultiCharts doesn’t automatically remove drawings that are made during an intra-bar script calculation (MultiCharts Wiki, 2014a).
+
+When the price bar closes, the example script adds the lowest low line to the chart:
+
+Both trend lines now remain on the MultiCharts chart
+This shows that every drawing remains on the chart whenever RecoverDrawings is set to false. This is the case regardless of when the drawing (arrow, text box, or trend line) was made.
+
+Our example indicator makes the following inputs:
+
+Input options of our MultiCharts script
+When we change the ‘Lookback_Period’ value to 80 and set the line colours to blue and magenta, the chart changes to:
+
+Example of our MultiCharts script with changed input options
+To learn more about other MultiCharts attributes, see ProcessMouseEvents to have an indicator or strategy process mouse clicks and IntrabarOrderGeneration to have a strategy generate intra-bar orders.
+
+Summary
+MultiCharts’ default behaviour is to remove all intra-bar programmatically generated drawings (arrows, text boxes, and trend lines) and to only keep the ones that were made when the price bar closed. To have intra-bar generated drawings stay on the chart, we need to set the RecoverDrawings attribute to false (as in: ‘do not recover drawings’). It’s a good idea to always set this attribute to false whenever you use drawings. That way any drawing will stay on the chart whenever it’s made, and won’t be automatically removed after a second or so.
