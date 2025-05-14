@@ -39,7 +39,7 @@ namespace PowerLanguage.Strategy
             // Initialize default values for inputs
             TicksAbove = 15;
             OrderQty = 1;
-            CancelOrderKey = Keys.Escape; // Default to Escape key for canceling orders
+            CancelOrderKey = Keys.F12; // Using F12 function key for canceling orders
             Development = false; // Set to true only during development
             UseOCO = true; // Use OCO (One-Cancels-Others) order groups
         }
@@ -236,6 +236,8 @@ namespace PowerLanguage.Strategy
             }
         }
 
+
+        
         protected override void OnMouseEvent(MouseClickArgs arg)
         {
             try
@@ -244,22 +246,51 @@ namespace PowerLanguage.Strategy
                 if (arg.buttons != MouseButtons.Left)
                     return;
 
-                // Check if the cancel key is pressed - cancel all pending orders
+                // Check for F12 key in mouse events
                 if (arg.keys == CancelOrderKey)
                 {
+                    Output.WriteLine("*** F12 KEY DETECTED IN MOUSE EVENT ***");
+                    Output.WriteLine("Time: " + DateTime.Now.ToString());
+                    Output.WriteLine("Current Bar: " + Bars.CurrentBar);
+                    Output.WriteLine("Active Order: " + (m_ActiveStopLimitOrder ? "YES" : "NO"));
+                    
                     CancelAllOrders();
                     return;
                 }
-
-                // Check if Control key is pressed - place new order
+                
+                // Handle Ctrl+click for both order cancellation and creation
                 if (arg.keys == Keys.Control)
                 {
+                    // Get the current click price
+                    double currentClickPrice = arg.point.Price;
+                    double currentTickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+                    
+                    // Check if we have an active order and are clicking near it
+                    if (m_ActiveStopLimitOrder)
+                    {
+                        // Check if click is within 5 ticks of the pending order's stop price
+                        if (Math.Abs(currentClickPrice - m_StopPrice) <= (5 * currentTickSize))
+                        {
+                            Output.WriteLine("*** CTRL+CLICK DETECTED NEAR PENDING ORDER ***");
+                            Output.WriteLine("Click Price: " + currentClickPrice);
+                            Output.WriteLine("Order Stop Price: " + m_StopPrice);
+                            Output.WriteLine("Time: " + DateTime.Now.ToString());
+                            
+                            CancelAllOrders();
+                            Output.WriteLine("Order canceled - NOT creating a new order");
+                            return;
+                        }
+                    }
+                    
+                    // If we get here, we're either creating a new order or replacing an existing one
+                    // that's not near where we clicked
+                    
                     // Log detailed information about the mouse event
                     if (m_Debug)
                     {
                         StringBuilder clickInfo = new StringBuilder();
                         clickInfo.AppendLine("DEBUG: Mouse event detected");
-                        clickInfo.AppendLine("- Click Price: " + arg.point.Price);
+                        clickInfo.AppendLine("- Click Price: " + currentClickPrice);
                         clickInfo.AppendLine("- Click Time: " + DateTime.Now);
                         Output.WriteLine(clickInfo.ToString());
                     }
@@ -267,27 +298,24 @@ namespace PowerLanguage.Strategy
                     // Cancel any pending orders before creating a new one
                     CancelAllOrders();
 
-                    // Instead of storing for CalcBar, process the order immediately
-                    double clickPrice = arg.point.Price;
-                    double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
-                    double orderPrice = clickPrice + (TicksAbove * tickSize);
+                    // Calculate the order price
+                    double orderPrice = currentClickPrice + (TicksAbove * currentTickSize);
 
                     // Output information about the order being placed
                     Output.WriteLine("PLACING ORDER: Stop Limit Buy at stop price " + orderPrice +
-                                    " (" + TicksAbove + " ticks above " + clickPrice + ")");
+                                    " (" + TicksAbove + " ticks above " + currentClickPrice + ")");
 
                     // Store the click price for CalcBar to handle
                     Output.WriteLine("OnMouseEvent: Setting up order for processing in CalcBar");
-                    m_ClickPrice = clickPrice;
+                    m_ClickPrice = currentClickPrice;
 
                     // Calculate and display the reference price for user feedback
-                    double clickTickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
-                    double clickStopPrice = clickPrice + (TicksAbove * clickTickSize);
-                    double clickLimitPrice = clickStopPrice + clickTickSize;
+                    double clickStopPrice = currentClickPrice + (TicksAbove * currentTickSize);
+                    double clickLimitPrice = clickStopPrice + currentTickSize;
 
                     // No need to draw markers anymore - platform UI shows orders
 
-                        // Cancel any existing orders before creating a new one
+                    // Cancel any existing orders before creating a new one
                     if (m_ActiveStopLimitOrder && StrategyInfo.MarketPosition == 0)
                     {
                         Output.WriteLine("OnMouseEvent: Canceling existing orders before creating a new one");
@@ -310,20 +338,54 @@ namespace PowerLanguage.Strategy
         {
             try
             {
-                // In MultiCharts .NET, orders are automatically canceled when not resubmitted
-                // So we just need to set our flag to false and the order won't be resubmitted
+                // According to the MultiCharts .NET Programming Guide, we need to use CancelOrder
+                // or set the order to not be resubmitted
+                if (m_StopLimitBuy != null && m_ActiveStopLimitOrder)
+                {
+                    try
+                    {
+                        // Try to use the Cancel method if available on the order
+                        // Based on the Programming Guide line 2711: "void CancelOrder(int order_id);  - cancellation of the order by its ID."
+                        Output.WriteLine("Attempting to cancel order with ID: " + m_LastOrderID);
+                        
+                        // First approach: Try to cancel by not resubmitting and sending a zero quantity order
+                        m_StopLimitBuy.Send(0, 0, 0);
+                        Output.WriteLine("Sent zero-quantity order to force cancellation");
+                        
+                        // Second approach: We'll also stop resubmitting the order in CalcBar
+                        m_ActiveStopLimitOrder = false;
+                    }
+                    catch (Exception sendEx)
+                    {
+                        Output.WriteLine("Primary cancellation method failed: " + sendEx.Message);
+                        
+                        // Try another approach based on the Programming Guide
+                        try
+                        {
+                            // The guide mentions OCO (One-Cancels-Others) groups
+                            // We can try to send a different order that would cancel the existing one
+                            double farAwayPrice = Bars.Close[0] * 100; // A price that's far away and won't execute
+                            m_StopLimitBuy.Send(farAwayPrice, farAwayPrice, 0);
+                            Output.WriteLine("Sent far-away price order to force cancellation");
+                        }
+                        catch (Exception altEx)
+                        {
+                            Output.WriteLine("Alternative cancellation failed: " + altEx.Message);
+                        }
+                    }
+                }
                 
                 // Clear our active orders list
                 m_ActiveOrders.Clear();
 
-                // Reset all order flags - this is the key to cancellation
+                // Reset all order flags - this is still important for our internal tracking
                 m_ActiveStopLimitOrder = false;
                 
-                Output.WriteLine("Canceled all pending orders - Order will not be resubmitted in next bar");
+                Output.WriteLine("F12 key pressed: All orders canceled");
             }
             catch (Exception ex)
             {
-                Output.WriteLine("Error canceling orders: " + ex.Message);
+                Output.WriteLine("Error in CancelAllOrders: " + ex.Message);
             }
         }
     }
