@@ -1,52 +1,84 @@
 using System;
 using System.Drawing;
 using System.Collections.Generic;
+using System.Windows.Forms;
 using PowerLanguage.Function;
 
 namespace PowerLanguage.Indicator
 {
-    [SameAsSymbol(true), RecoverDrawings(false)]
+    [SameAsSymbol(true), RecoverDrawings(false), MouseEvents(true)]
     public class clicktrader_lines_indicator : IndicatorObject
     {
         // Input variables
-        [Input] public double LinePrice { get; set; }
         [Input] public int LineThickness { get; set; }
         [Input] public bool UseDashedLine { get; set; }
         [Input] public Color LineColor { get; set; }
+        [Input] public Keys CancelKey { get; set; }
+        [Input] public Keys SendKey { get; set; }
 
         // List to store all drawings
         private List<ITrendLineObject> m_Lines = new List<ITrendLineObject>();
-        private bool m_LineAdded = false;
 
         public clicktrader_lines_indicator(object ctx) : base(ctx)
         {
             // Initialize default values for inputs
-            LinePrice = 0;
             LineThickness = 1;
             UseDashedLine = true;
             LineColor = Color.Black;
+            CancelKey = Keys.Alt;      // Alt+Click to cancel orders
+            SendKey = Keys.Control;    // Ctrl+Click to send orders (same as strategy)
         }
 
         protected override void Create()
         {
             // Output version identifier to confirm we're using the latest code
-            Output.WriteLine("*** CLICKTRADER LINES INDICATOR - VERSION 3.0 (SIMPLIFIED VERSION) ***");
+            Output.WriteLine("*** CLICKTRADER LINES INDICATOR - VERSION 6.0 (INTERACTIVE VERSION) ***");
+            Output.WriteLine("Use Ctrl+Click to place orders (same as strategy)");
+            Output.WriteLine("Use Alt+Click to cancel all orders");
         }
 
         protected override void StartCalc()
         {
-            m_LineAdded = false;
+            // Reset any necessary state variables here if needed
+        }
+        
+        protected override void OnMouseEvent(MouseClickArgs arg)
+        {
+            try
+            {
+                // Only process left mouse clicks
+                if (arg.buttons != MouseButtons.Left)
+                    return;
+                    
+                // Check for Alt+Click (cancel orders)
+                if (arg.keys == CancelKey)
+                {
+                    Output.WriteLine("Indicator: Sending cancel signal to strategy");
+                    
+                    // Signal to strategy to cancel orders (using plot value 2)
+                    StrategyInfo.SetPlotValue(2, 1);
+                    
+                    // Clear our own lines as well
+                    ClearAllLines();
+                }
+                // Check for Ctrl+Click (send order)
+                else if (arg.keys == SendKey)
+                {
+                    double clickPrice = arg.point.Price;
+                    Output.WriteLine("Indicator: Sending click price " + clickPrice + " to strategy");
+                    
+                    // Signal to strategy to place an order at this price (using plot value 3)
+                    StrategyInfo.SetPlotValue(3, clickPrice);
+                }
+            }
+            catch (Exception ex)
+            {
+                Output.WriteLine("Error in indicator mouse event: " + ex.Message);
+            }
         }
 
         protected override void CalcBar()
         {
-            // Check if we have a line price and haven't added it yet
-            if (LinePrice > 0 && !m_LineAdded)
-            {
-                DrawHorizontalLine(LinePrice);
-                m_LineAdded = true;
-            }
-
             // Check if we need to clear lines (signal from strategy)
             double clearSignal = StrategyInfo.GetPlotValue(2);
             if (clearSignal > 0)
@@ -70,7 +102,7 @@ namespace PowerLanguage.Indicator
         {
             try
             {
-                Output.WriteLine("VERSION 4.0: Using safer drawing method");
+                Output.WriteLine("VERSION 5.0: Simplified indicator - strategy-controlled lines only");
 
                 // Get the current time for the first point
                 DateTime currentTime = Bars.Time[0];

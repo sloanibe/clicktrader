@@ -1,0 +1,142 @@
+Features
+
+
+
+Pricing
+
+Support
+
+Community
+
+Company
+Home.NET Programming GuideUnderstanding PowerLanguage .NETPages with syntax highlighting errors
+Advanced. AutoTrading
+Jump to:navigation, search
+Using Backtesting, you can test your trading ideas and manually send orders for execution to a broker, but it is neither convenient nor practical to do this. In MultiCharts .NET you can automatically send the orders for execution to the broker according to the trading strategy. After completing the writing of the strategy, debugging it and optimizing it the strategy can be activated by clicking on the SA/AA button in the top left corner of the chart. The strategy will now start sending trade orders to the broker according to the applied algorithm. By default the synchronous auto-trading mode, SA, will be enabled and will display a dialog window showing the list of orders waiting for confirmation to be sent to the broker.
+
+To set the automated trading mode and also to choose the broker profile for automated trading, go to the Strategy Properties dialog window and select the Auto Trading tab.
+
+Here you can disable the order sending confirmation mode by making sure the check box next to Require order confirmation is empty.
+
+
+
+
+Strategy calculation in auto-trading mode can be significantly different from the similar calculation in BackTesting and live trading. The key difference between BackTesting and live trading is that the orders in live trading cannot be physically executed immediately. In live trading the order can be executed or not executed at all until the end of its time in force, even if the price on the chart has reached its set execution price.
+
+In Backtesting all possible market orders are executed strictly at the price at which they were sent, in Auto Trading, only one order is sent and executed, the market order with the highest priority. If market orders are followed by price orders then the command to cancel is sent to the market order immediately or according to the Cancel market orders settings.
+
+In live trading, the price during the time of submitting a market or stop order, can change from the original order price at the Open(Close) of the bar. In reality, a market order is not generally executed at one price but at several prices. This is why its execution price may not match the minimum price step on the chart.
+
+In auto-trading all of the price orders, which potentially can be executed, are chosen (priority > 0) and sent to the broker in OCO-Cancel group. This means that if any order starts to execute or cancel, then all other orders of the group will immediately be cancelled. This guarantees the execution of only one order in the group if a broker supporting native OCO is used. Otherwise, the group is emulated on the MultiCharts .NET side and the execution of several orders in the group becomes possible if the prices are close which may result in all orders of the group not being cancelled immediately. If the group contains only the exits they are sent in the OCO Reduce Size group upon the execution of one of the orders, other orders will have the number of contracts reduced automatically, that will allow to hold simultaneously at the broker, for example, ProfitTarget and to insure the loss with StopLoss order. Until the position completely closes, it will be always secured.
+
+
+
+Also, the Auto Trading Engine and BackTesting Engine calculate the current strategy condition independently (MarketPosition, AvgPositionPrice, OpenPositionProfit, TradeProfit. Thus, OpenPositionProfit is calculated in relation to the Bid/Ask prices of the broker. Because the prices on the chart can differ from the broker bid/ask prices, MultiCharts .NET transfers the prices from the chart to Auto Trading by default.
+
+Optimization of orders sent to a broker works during automated trading. If after subsequent strategy calculation the same collection of the orders were generated or the set of the orders was left the same but only some parameters were changed (price, number of contracts), then the group will not be replaced and the parameters of changed orders are only modified. Also, price orders can remain on the broker side if on a subsequent calculation no more market orders are generated. But if the number of orders changes after generation, the whole group will be canceled and replaced due to the fact that it is impossible to add or remove the orders from the group. If one or more orders are partially filled within a single group, these orders will be considered by the auto trading system as filled and another order generation will be performed.
+
+Partially filled orders may not fill completely within cancellation. To guarantee that an order is filled completely in automated trading, MultiCharts .NET has feature called, “Replace to Market Partially Filled Orders”, that converts partially filled orders into market orders. This feature can be enabled in the Auto Trading tab of the Strategy Properties dialogue box. The Strategy calculation scheme within automated trading is the same as the calculation in Backtesting Real-time.
+Within automated trading there are additional events per calculation:
+
+Market Position Change - the average position price and/or number of open contracts at the broker has changed.
+Order Filled - a broker returns an event indicating that an order sent by a strategy has been filled. This event will not be returned for orders not sent by a strategy.
+
+To make a strategy react on these events it is necessary to enable the corresponding checkboxes on the Auto Trading tab of the Strategy Properties dialogue box. By default these two calculation events are enabled. The reason for calling this method can be checked using Environment.CalcReason.
+
+When the signal is calculated on the broker order execution event: Environment.CalcReason = CalculationReason.OrderFilled. When the signal is calculated on the broker market position change: Environment.CalcReason = CalculationReason.MarketPositionChange.
+
+The parameters of the order execution at the broker shown under OrderFilled event can be checked using the reloaded method protected override void OnBrokerStategyOrderFilled(bool is_buy, int quantity, double avg_fill_price). It is possible to use the override method for market position processing and changing at the broker in the same way:
+
+void OnBrokerPositionChange();
+protected override void OnBrokerPositionChange(){
+	Output.WriteLine("MP={0}, Avg={1}", this.StrategyInfo.MarketPositionAtBroker, this.StrategyInfo.AvgEntryPriceAtBroker);
+}
+Automated trading in MultiCharts .NET is possible in one of the following modes: Synchronous, enabled by default, and Asynchronous.
+
+In Synchronous automated trading mode both the BackTesting Engine and the Auto Trading Engine start trading with a zero (flat) market position and live transmission of the orders to the broker starts (only in real-time) after the historical calculation has ended. The BackTesting Engine does not execute any orders and only takes the orders filled at the broker which is why no orders can be executed on the historical calculation and the market position in both BackTesting and Auto Trading will be zero (flat) at the start of live trading. If at the start of auto trading is it desired to have the market position not set at than zero, select the “Show the Assign the Initial Market Position” on the Broker dialogue box and check the “Show Always” checkbox in Auto Trading settings of Strategy Properties. Now, when auto trading starts it will assign the initial market position and current max profit (for special orders) on the current position. The BackTesting and Auto Trading Engine will start real time trading from the assigned market position.
+
+In Synchronous auto trading mode there are no orders on the historical part of the traded instrument. If the strategy depends on previous fills (for example, exits from particular entries and at the previous auto trading session the exits were not closed) the Asynchronous auto trading mode must be used. To select Asynchronous auto trading mode click on “Entries/Exits are independent of the execution status at the broker (Async)” found under Mode Selection on the Auto Trading Tab of the Strategy Properties dialog window.
+
+
+
+To make Auto Trading automatically check the current state of the strategy, open entries, OpenPL, etc., by the end of the historical calculation without any additional dialogue windows, select “Do not show the Assign the Initial Market Position at the Broker dialogue” and set “Assume the initial market position at the broker the SAME AS on the CHART” mode found on the Auto Trading Tab of the Strategy Properties dialog window. After the historical calculation, the automated trading system will receive the information about the open position and the orders that formed it.
+
+In Asynchronous auto trading mode, if the price level is reached the order may not be filled. That’s why the position on the chart in the BackTesting Engine may change but will not in Auto Trading.
+
+There is another case when BackTesting may fill the order completely but a broker may not. It can lead to the strategy position and the broker position mismatch. To handle this situation, it is necessary to enable the “Convert unexecuted limit/stop orders to market orders” feature (to guarantee that the order will be executed for sure):
+
+
+
+This conversion mode works in Synchronous mode in the same way. Order execution in this case is tracked by the broker’s prices or chart depending on the auto trading setting “Get Real-Time Data from”. If the price reaches the level of the order and the order is not executed within a set period of time, the order will be cancelled and a similar market order will be sent in place of the cancelled order. The Auto Trading system waits for its execution before continuing calculations.
+
+It is possible to check whether a strategy is calculated in real time via the Environment.IsAutoTradingMode property.
+
+If the strategy is automated: Environment.IsAutoTradingMode=true.
+
+In automated trading mode a signal can access three market positions via StrategyInfo:
+
+Current position on the chart in the BackTesting Engine:
+StrategyInfo.MarketPosition
+StrategyInfo.AvgEntryPrice
+Current position in AutoTrading system, for the current strategy:
+StrategyInfo.MarketPositionAtBrokerForTheStrategy
+StrategyInfo.AvgEntryPriceAtBrokerForTheStrategy
+Current position for the traded instrument at the broker:
+StrategyInfo.MarketPositionAtBroker
+StrategyInfo.AvgEntryPriceAtBroker
+
+By noticing the differences between position on the chart and in the Auto Trading System it is possible to notice the mistiming in Asynchronous mode. Each order execution affects both position in the Auto Trading System and the position on the chart in the BackTesting Engine. To synchronize the broker position to the position on the chart there is a command used for sending a market order into the Auto Trading System only, not to the chart:
+
+GenerateATMarketOrder(bool buy, bool entry, int lots)
+This command is executed right at the script execution that allows the script to react to the mistiming between the chart and broker position in a timely manner. An example of such synchronization can be found in a pre-built signal From_Strategy_To_Broker_MP_Synchronizer.
+
+Also in MultiCharts .NET it is possible to change the position on the chart while not changing the AutoTrading System position and without placing odd orders at the broker:
+
+void ChangeMarketPosition(int mp_delta, double fill_price, string _name)
+This command, like GenerateATMarketOrder, is executed within the current calculation of the script. An example of synchronization with the ChangeMarketPosition keyword can be found in a pre-built signal From_Broker_To_Strategy_MP_Synchronizer.
+
+This page was last edited on 25 April 2025, at 08:06.
+Powered by MediaWiki
+
+For any questions please call
++1 888 340 6572
+Features
+Charting and visualizations
+Discretionary trading
+Algorithmic trading
+Trading simulator
+Brokers, exchanges, and data feeds
+Market Scanner
+Order flow trading
+Additional tools
+MultiCharts x .NET
+MultiCharts x Python
+Support
+Contact support
+Download
+Help center
+Tech specs
+Video tutorials
+Customize IT
+SDK
+Community
+Discussion forum
+Project management
+Partners
+Add-ons
+Company
+About
+Contact us
+What's new
+Logos & assets
+Blog
+English (US)
+© MCT LIMITED 1999–2025
+All trademarks and copyrights are the property of their respective owners.
+Privacy statement
+Legal statement
+Risk warning
+Cookies Policy
+Sitemap
+RISK WARNING
+Trading financial instruments, including foreign exchange on margin, carries a high level of risk and is not suitable for all investors. The high degree of leverage can work against you as well as for you. Before deciding to invest in financial instruments or foreign exchange you should carefully consider your investment objectives, level of experience, and risk appetite. The possibility exists that you could sustain a loss of some or all of your initial investment and therefore you should not invest money that you cannot afford to lose. You should be aware of all the risks associated with trading and seek advice from an independent financial advisor if you have any doubts.

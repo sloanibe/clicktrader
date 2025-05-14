@@ -8,17 +8,21 @@ using System.Text;                // Added for StringBuilder
 namespace PowerLanguage.Strategy
 {
     [MouseEvents(true), IOGMode(IOGMode.Enabled), RecoverDrawings(false)]
+    [SameAsSymbol(true)]
     public class clicktrader : SignalObject
     {
         // Input variables
         [Input] public int TicksAbove { get; set; }
         [Input] public int OrderQty { get; set; }
-        [Input] public bool ClearPreviousLines { get; set; }
         [Input] public Keys CancelOrderKey { get; set; }
+        [Input] public bool Development { get; set; }
+        [Input] public bool UseOCO { get; set; }
 
         // State variables
         private double m_ClickPrice = 0;
         private bool m_OrderPending = false;
+        private bool m_ActiveStopLimitOrder = false;
+        private int m_LastOrderID = 0;
 
         // Order tracking
         private class OrderMarker
@@ -26,7 +30,6 @@ namespace PowerLanguage.Strategy
             public string OrderName { get; set; }
             public double Price { get; set; }
             public DateTime Time { get; set; }
-            public ITrendLineObject Line { get; set; }
         }
 
         private List<OrderMarker> m_ActiveOrders = new List<OrderMarker>();
@@ -36,18 +39,20 @@ namespace PowerLanguage.Strategy
             // Initialize default values for inputs
             TicksAbove = 15;
             OrderQty = 1;
-            ClearPreviousLines = true;
             CancelOrderKey = Keys.Escape; // Default to Escape key for canceling orders
+            Development = false; // Set to true only during development
+            UseOCO = true; // Use OCO (One-Cancels-Others) order groups
         }
 
         // Order objects
-        private IOrderMarket m_MarketBuy;
-        private double m_OrderPrice;
+        private IOrderStopLimit m_StopLimitBuy;
+        private double m_StopPrice;
+        private double m_LimitPrice;
         private bool m_OrderCreatedInMouseEvent = false;
-        
-        // Debug flag
-        private bool m_Debug = true;
-        
+
+        // Debug flag - only output debug info when in development mode
+        private bool m_Debug = false;
+
         // Order tracking flags
         private bool m_OrderSent = false;
         private DateTime m_LastOrderTime = DateTime.MinValue;
@@ -56,22 +61,31 @@ namespace PowerLanguage.Strategy
         {
             base.Create();
 
-            // Create a market buy order with basic parameters
-            m_MarketBuy = OrderCreator.MarketNextBar(
-                new SOrderParameters(Contracts.Default, "MarketBuy", EOrderAction.Buy));
-                
+            // Create a stop limit buy order with basic parameters
+            m_StopLimitBuy = OrderCreator.StopLimit(
+                new SOrderParameters(Contracts.Default, "StopLimitBuy", EOrderAction.Buy));
+
             // Note: Your version of MultiCharts .NET doesn't support additional order parameters
             // like Account, AllowMultipleEntriesInSameDirection, etc.
-                
+
+            // Set debug flag based on development mode
+            m_Debug = Development;
+
             // Log initialization information
             StringBuilder envInfo = new StringBuilder();
-            envInfo.AppendLine("*** CLICKTRADER STRATEGY INITIALIZED - VERSION 1.5 ***");
-            envInfo.AppendLine("Use Ctrl+Click to place a market buy order");
+            envInfo.AppendLine("*** CLICKTRADER STRATEGY INITIALIZED - VERSION 4.0 (ROBUST) ***");
+            envInfo.AppendLine("Use Ctrl+Click to place a stop limit buy order");
             envInfo.AppendLine("Use " + CancelOrderKey.ToString() + " key to cancel pending orders");
+            envInfo.AppendLine("Development Mode: " + (Development ? "ON" : "OFF"));
+            envInfo.AppendLine("OCO Orders: " + (UseOCO ? "ON" : "OFF"));
             
+            try {
+                envInfo.AppendLine("Auto Trading Mode: " + (Environment.IsAutoTradingMode ? "ON" : "OFF"));
+            } catch {}
+
             Output.WriteLine(envInfo.ToString());
-            
-            if (m_Debug) Output.WriteLine("DEBUG: Market buy order object created");
+
+            if (m_Debug) Output.WriteLine("DEBUG: Stop limit buy order object created");
         }
 
         protected override void CalcBar()
@@ -86,64 +100,134 @@ namespace PowerLanguage.Strategy
                     stateInfo.AppendLine("- Current Bar: " + Bars.CurrentBar);
                     stateInfo.AppendLine("- Time: " + Bars.Time[0]);
                     stateInfo.AppendLine("- Market Position: " + StrategyInfo.MarketPosition);
-                    // Environment properties can be safely accessed in CalcBar
-                    stateInfo.AppendLine("- IOG Enabled: " + Environment.IOGEnabled);
-                    stateInfo.AppendLine("- Order Pending Flag: " + m_OrderPending);
+                    stateInfo.AppendLine("- Active Order: " + m_ActiveStopLimitOrder);
                     stateInfo.AppendLine("- Click Price: " + m_ClickPrice);
-                    stateInfo.AppendLine("- Order Sent Flag: " + m_OrderSent);
-                    
-                    if (m_OrderSent)
-                    {
-                        stateInfo.AppendLine("- Last Order Time: " + m_LastOrderTime);
-                        stateInfo.AppendLine("- Time Since Order: " + (DateTime.Now - m_LastOrderTime).TotalSeconds + " seconds");
-                    }
-                    
+
                     Output.WriteLine(stateInfo.ToString());
                 }
-                
-                // Check for any orders that were sent but not confirmed
-                if (m_OrderSent && (DateTime.Now - m_LastOrderTime).TotalSeconds > 5)
-                {
-                    Output.WriteLine("WARNING: Order sent but not confirmed after 5 seconds. This may indicate an issue with order processing.");
-                    m_OrderSent = false; // Reset flag to prevent repeated warnings
-                }
-                
-                // Process orders that were created in OnMouseEvent but need to be sent in CalcBar
+
+                // Process new orders that were created in OnMouseEvent - PRIORITY PROCESSING
                 if (m_OrderCreatedInMouseEvent && m_ClickPrice > 0 && StrategyInfo.MarketPosition == 0)
                 {
-                    // Calculate reference price (X ticks above click)
-                    double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
-                    m_OrderPrice = m_ClickPrice + (TicksAbove * tickSize);
-
-                    // Submit the market order with detailed logging
-                    Output.WriteLine("CalcBar: Sending market buy order: Reference Price = " + m_OrderPrice +
-                                    ", Quantity = " + OrderQty);
-                    
-                    // Explicitly set the quantity
-                    m_MarketBuy.Send(OrderQty);
-                    
-                    // Verify order was sent
-                    Output.WriteLine("CalcBar: Order sent successfully");
-                    m_OrderSent = true;
-                    m_LastOrderTime = DateTime.Now;
-
-                    // Create a marker for this order
-                    OrderMarker marker = new OrderMarker
+                    try
                     {
-                        OrderName = "MarketBuy",
-                        Price = m_OrderPrice,
-                        Time = Bars.Time[0]
-                    };
-
-                    // Draw a marker on the chart and store the line reference
-                    marker.Line = DrawMarker(m_OrderPrice);
-
-                    // Add to active orders list
-                    m_ActiveOrders.Add(marker);
-
-                    // Reset flags after order is placed
-                    m_ClickPrice = 0;
-                    m_OrderCreatedInMouseEvent = false;
+                        // Calculate stop price (X ticks above click)
+                        double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+                        m_StopPrice = m_ClickPrice + (TicksAbove * tickSize);
+    
+                        // Set limit price 1 tick above stop price for a reasonable fill
+                        m_LimitPrice = m_StopPrice + tickSize;
+    
+                        // Cancel any existing orders first
+                        if (m_ActiveStopLimitOrder)
+                        {
+                            // Clear our active orders list
+                            m_ActiveOrders.Clear();
+                            
+                            // Reset the active order flag temporarily
+                            m_ActiveStopLimitOrder = false;
+                            
+                            // Check if we're in auto-trading mode
+                            bool isAutoTrading = false;
+                            try { isAutoTrading = Environment.IsAutoTradingMode; } catch {}
+                            
+                            if (isAutoTrading && UseOCO)
+                            {
+                                // In auto-trading mode with OCO, orders are automatically canceled
+                                // when a new order is sent in the same group
+                                Output.WriteLine("Auto-trading with OCO: Previous order will be canceled automatically");
+                            }
+                            else
+                            {
+                                // Give a small delay to allow cancellation to process
+                                Output.WriteLine("Canceling previous order before placing new one");
+                            }
+                        }
+    
+                        // Send the stop limit order with stop and limit prices
+                        m_StopLimitBuy.Send(m_StopPrice, m_LimitPrice, OrderQty);
+                        Output.WriteLine("Order sent: Stop @ " + m_StopPrice + ", Limit @ " + m_LimitPrice);
+    
+                        // Set flags
+                        m_ActiveStopLimitOrder = true;
+                        m_LastOrderTime = DateTime.Now;
+    
+                        // Create a marker for this order for tracking purposes
+                        OrderMarker marker = new OrderMarker
+                        {
+                            OrderName = "StopLimitBuy",
+                            Price = m_StopPrice,
+                            Time = Bars.Time[0]
+                        };
+                        
+                        // Add to active orders list
+                        m_ActiveOrders.Add(marker);
+    
+                        // Reset flags after order is placed
+                        m_ClickPrice = 0;
+                        m_OrderCreatedInMouseEvent = false;
+                        
+                        // Check if broker position differs from strategy position
+                        try
+                        {
+                            if (StrategyInfo.MarketPositionAtBroker != StrategyInfo.MarketPosition)
+                            {
+                                Output.WriteLine("Warning: Broker position (" + StrategyInfo.MarketPositionAtBroker + 
+                                              ") differs from strategy position (" + StrategyInfo.MarketPosition + ")");
+                            }
+                        }
+                        catch {}
+                    }
+                    catch (Exception ex)
+                    {
+                        Output.WriteLine("Error processing new order: " + ex.Message);
+                    }
+                }
+                
+                // If we have an active order and we're still flat, keep it alive
+                // This is the key part that follows the example document's approach
+                else if (m_ActiveStopLimitOrder && StrategyInfo.MarketPosition == 0)
+                {
+                    try
+                    {
+                        // Following the example document's approach - resubmit the order each bar
+                        // to keep it active until it's filled or manually canceled
+                        m_StopLimitBuy.Send(m_StopPrice, m_LimitPrice, OrderQty);
+                        
+                        if (m_Debug && Bars.LastBarOnChart)
+                        {
+                            Output.WriteLine("CalcBar: Resubmitting stop limit order to keep it active");
+                        }
+                        
+                        // Check for broker vs strategy position mismatch
+                        try
+                        {
+                            if (Environment.IsAutoTradingMode && 
+                                StrategyInfo.MarketPositionAtBroker != StrategyInfo.MarketPosition)
+                            {
+                                if (m_Debug)
+                                {
+                                    Output.WriteLine("Position mismatch: Broker=" + StrategyInfo.MarketPositionAtBroker + 
+                                                  ", Strategy=" + StrategyInfo.MarketPosition);
+                                }
+                            }
+                        }
+                        catch {}
+                    }
+                    catch (Exception ex)
+                    {
+                        if (m_Debug)
+                        {
+                            Output.WriteLine("Error resubmitting order: " + ex.Message);
+                        }
+                    }
+                }
+                
+                // If we have a position, stop resubmitting the order
+                else if (StrategyInfo.MarketPosition > 0 && m_ActiveStopLimitOrder)
+                {
+                    Output.WriteLine("Position opened, stop limit order no longer needed");
+                    m_ActiveStopLimitOrder = false;
                 }
             }
             catch (Exception ex)
@@ -179,54 +263,41 @@ namespace PowerLanguage.Strategy
                         clickInfo.AppendLine("- Click Time: " + DateTime.Now);
                         Output.WriteLine(clickInfo.ToString());
                     }
-                    
-                    // If configured to clear previous lines, do so
-                    if (ClearPreviousLines)
-                    {
-                        ClearAllDrawings();
 
-                        // Also tell the indicator to clear its lines
-                        StrategyInfo.SetPlotValue(2, 1); // Signal to clear lines
-
-                        // Cancel any pending orders
-                        CancelAllOrders();
-                    }
+                    // Cancel any pending orders before creating a new one
+                    CancelAllOrders();
 
                     // Instead of storing for CalcBar, process the order immediately
                     double clickPrice = arg.point.Price;
                     double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
                     double orderPrice = clickPrice + (TicksAbove * tickSize);
-                    
+
                     // Output information about the order being placed
-                    Output.WriteLine("PLACING ORDER: Market Buy at reference price " + orderPrice +
+                    Output.WriteLine("PLACING ORDER: Stop Limit Buy at stop price " + orderPrice +
                                     " (" + TicksAbove + " ticks above " + clickPrice + ")");
+
+                    // Store the click price for CalcBar to handle
+                    Output.WriteLine("OnMouseEvent: Setting up order for processing in CalcBar");
+                    m_ClickPrice = clickPrice;
+
+                    // Calculate and display the reference price for user feedback
+                    double clickTickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+                    double clickStopPrice = clickPrice + (TicksAbove * clickTickSize);
+                    double clickLimitPrice = clickStopPrice + clickTickSize;
+
+                    // No need to draw markers anymore - platform UI shows orders
+
+                        // Cancel any existing orders before creating a new one
+                    if (m_ActiveStopLimitOrder && StrategyInfo.MarketPosition == 0)
+                    {
+                        Output.WriteLine("OnMouseEvent: Canceling existing orders before creating a new one");
+                        CancelAllOrders();
+                    }
                     
-                    try
-                    {
-                        // Instead of trying to create and send the order here, which might be causing issues,
-                        // we'll set flags for CalcBar to handle it
-                        Output.WriteLine("OnMouseEvent: Setting up order for processing in CalcBar");
-                        m_ClickPrice = clickPrice;
-                        m_OrderCreatedInMouseEvent = true;
-                        
-                        // Calculate and display the reference price for user feedback
-                        double clickTickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
-                        double clickOrderPrice = clickPrice + (TicksAbove * clickTickSize);
-                        
-                        // Draw a temporary marker for visual feedback
-                        DrawMarker(clickOrderPrice);
-                        
-                        Output.WriteLine("OnMouseEvent: Order will be processed in next CalcBar. Price: " + clickOrderPrice + ", Quantity: " + OrderQty);
-                    }
-                    catch (Exception orderEx)
-                    {
-                        Output.WriteLine("ERROR creating/sending order: " + orderEx.Message + "\nStack Trace: " + orderEx.StackTrace);
-                        
-                        // Fall back to the old method
-                        Output.WriteLine("Falling back to CalcBar order processing");
-                        m_ClickPrice = clickPrice;
-                        m_OrderPrice = orderPrice;
-                    }
+                    // Flag for new order creation
+                    m_OrderCreatedInMouseEvent = true;
+                    Output.WriteLine("OnMouseEvent: New order will be created in next CalcBar. Stop Price: " + clickStopPrice +
+                                  ", Limit Price: " + clickLimitPrice + ", Quantity: " + OrderQty);
                 }
             }
             catch (Exception ex)
@@ -239,86 +310,20 @@ namespace PowerLanguage.Strategy
         {
             try
             {
-                // In MultiCharts.NET, orders are automatically canceled when not resubmitted
-                // We'll clear our tracking list and remove the lines
-
-                // Clear all drawings
-                ClearAllDrawings();
-
-                // Also tell the indicator to clear its lines
-                StrategyInfo.SetPlotValue(2, 1);
-
+                // In MultiCharts .NET, orders are automatically canceled when not resubmitted
+                // So we just need to set our flag to false and the order won't be resubmitted
+                
                 // Clear our active orders list
                 m_ActiveOrders.Clear();
 
-                Output.WriteLine("Canceled all pending orders");
+                // Reset all order flags - this is the key to cancellation
+                m_ActiveStopLimitOrder = false;
+                
+                Output.WriteLine("Canceled all pending orders - Order will not be resubmitted in next bar");
             }
             catch (Exception ex)
             {
                 Output.WriteLine("Error canceling orders: " + ex.Message);
-            }
-        }
-
-        // List to store all drawings
-        private List<IDrawObject> m_Drawings = new List<IDrawObject>();
-
-        private ITrendLineObject DrawMarker(double price)
-        {
-            try
-            {
-                // Create two ChartPoints with the same price but different times
-                // This creates a horizontal line
-                ChartPoint begin = new ChartPoint(Bars.Time[0], price);
-                ChartPoint end = new ChartPoint(Bars.Time[1], price);
-
-                // Instead of drawing directly, communicate with the indicator
-                // Set the plot value for the indicator to use
-                StrategyInfo.SetPlotValue(1, price);
-
-                // Also draw a temporary line for immediate feedback
-                ITrendLineObject trendLine = DrwTrendLine.Create(begin, end);
-                trendLine.ExtLeft = true;
-                trendLine.ExtRight = true;
-                trendLine.Color = Color.Black;
-                trendLine.Size = 2;
-                trendLine.AnchorToBars = true;
-
-                // Add the line to our drawings list
-                m_Drawings.Add(trendLine);
-
-                // Output confirmation
-                Output.WriteLine("Drew horizontal line at price " + price + " (" + TicksAbove + " ticks above click)");
-
-                // Return the line object so it can be tracked with the order
-                return trendLine;
-            }
-            catch (Exception ex)
-            {
-                Output.WriteLine("Error drawing line: " + ex.Message);
-                return null;
-            }
-        }
-
-        // Add a method to clear all drawings if needed
-        private void ClearAllDrawings()
-        {
-            try
-            {
-                // Remove each drawing from the chart
-                foreach (IDrawObject drawing in m_Drawings)
-                {
-                    if (drawing != null && drawing.Exist)
-                    {
-                        drawing.Delete();
-                    }
-                }
-
-                // Clear the list
-                m_Drawings.Clear();
-            }
-            catch (Exception ex)
-            {
-                Output.WriteLine("Error clearing drawings: " + ex.Message);
             }
         }
     }
