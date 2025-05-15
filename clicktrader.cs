@@ -102,23 +102,20 @@ namespace PowerLanguage.Strategy
                     {
                         // Exit long position immediately
                         m_ExitLongOrder.Send(OrderQty);
-                        if (m_Debug) Output.WriteLine("EMERGENCY EXIT: Exiting LONG position");
+                        // Emergency exit logging removed for performance
                     }
                     else if (StrategyInfo.MarketPosition < 0)
                     {
                         // Exit short position immediately
                         m_ExitShortOrder.Send(OrderQty);
-                        if (m_Debug) Output.WriteLine("EMERGENCY EXIT: Exiting SHORT position");
+                        // Emergency exit logging removed for performance
                     }
                     
                     m_EmergencyExit = false; // Reset flag after processing
                 }
                 
                 // Only output cancellation message if we actually had active orders
-                if (m_CancelOrder && (wasActiveOrder || hadProtectiveStop) && m_Debug)
-                {
-                    Output.WriteLine("Orders canceled");
-                }
+                // Cancel logging removed for performance
                 
                 m_CancelOrder = false;
                 
@@ -141,22 +138,19 @@ namespace PowerLanguage.Strategy
                         {
                             // Exit long position with a market sell order
                             m_ExitLongOrder.Send(OrderQty);
-                            if (m_Debug) Output.WriteLine("Exiting LONG position with market order");
+                            // Exit logging removed for performance
                         }
                         else if (StrategyInfo.MarketPosition < 0)
                         {
                             // Exit short position with a market buy to cover order
                             m_ExitShortOrder.Send(OrderQty);
-                            if (m_Debug) Output.WriteLine("Exiting SHORT position with market order");
+                            // Exit logging removed for performance
                         }
 
                         // Reset protective stop when exiting position
                         m_HasProtectiveStop = false;
                     }
-                    else if (m_Debug)
-                    {
-                        Output.WriteLine("No position to exit");
-                    }
+                    // No position logging removed for performance
 
                     // Reset flags
                     m_OrderCreatedInMouseEvent = false;
@@ -177,9 +171,7 @@ namespace PowerLanguage.Strategy
                         // Set active order flag to true so we continue to submit the order
                         m_ActiveStopLimitOrder = true;
 
-                        if (m_Debug) Output.WriteLine("BUY order created at " + m_ClickPrice +
-                                      " with stop price " + m_StopPrice +
-                                      " and limit price " + m_LimitPrice);
+                        // Buy order creation logging removed for performance
                     }
                     else
                     {
@@ -192,9 +184,7 @@ namespace PowerLanguage.Strategy
                         // Set active order flag to true so we continue to submit the order
                         m_ActiveStopLimitOrder = true;
 
-                        if (m_Debug) Output.WriteLine("SELL SHORT order created at " + m_ClickPrice +
-                                      " with stop price " + m_StopPrice +
-                                      " and limit price " + m_LimitPrice);
+                        // Sell order creation logging removed for performance
                     }
 
                     // Reset flag since we've processed the order
@@ -210,18 +200,12 @@ namespace PowerLanguage.Strategy
                 if (m_IsBuyOrder)
                 {
                     m_StopLimitBuy.Send(m_StopPrice, m_LimitPrice, OrderQty);
-                    if (m_Debug && Bars.LastBarOnChart)
-                    {
-                        Output.WriteLine("Resubmitting BUY order at " + m_StopPrice);
-                    }
+                    // Resubmit logging removed for performance
                 }
                 else
                 {
                     m_StopLimitSell.Send(m_StopPrice, m_LimitPrice, OrderQty);
-                    if (m_Debug && Bars.LastBarOnChart)
-                    {
-                        Output.WriteLine("Resubmitting SELL SHORT order at " + m_StopPrice);
-                    }
+                    // Resubmit logging removed for performance
                 }
             }
 
@@ -247,7 +231,7 @@ namespace PowerLanguage.Strategy
                 {
                     if (m_HasProtectiveStop)
                     {
-                        if (m_Debug) Output.WriteLine("Position closed - protective stops will not be resubmitted");
+                        // Position closed logging removed for performance
                         m_HasProtectiveStop = false;
                         m_ProtectiveStopPrice = 0;
                     }
@@ -267,8 +251,7 @@ namespace PowerLanguage.Strategy
                         // Set limit price 1 tick below stop price for a reasonable fill
                         double limitPrice = m_ProtectiveStopPrice - pointSize;
                         m_ProtectiveStopLong.Send(m_ProtectiveStopPrice, limitPrice, OrderQty);
-                        Output.WriteLine("Protective stop placed for LONG position at " + m_ProtectiveStopPrice +
-                                      " (" + ProtectiveStopPoints + " points below current price)");
+                        // Protective stop logging removed for performance
 
                         // Visual indicator for protective stop removed - not supported in this version
                     }
@@ -280,8 +263,7 @@ namespace PowerLanguage.Strategy
                         // Set limit price 1 tick above stop price for a reasonable fill
                         double limitPrice = m_ProtectiveStopPrice + pointSize;
                         m_ProtectiveStopShort.Send(m_ProtectiveStopPrice, limitPrice, OrderQty);
-                        Output.WriteLine("Protective stop placed for SHORT position at " + m_ProtectiveStopPrice +
-                                      " (" + ProtectiveStopPoints + " points above current price)");
+                        // Protective stop logging removed for performance
 
                         // Visual indicator for protective stop removed - not supported in this version
                     }
@@ -305,7 +287,7 @@ namespace PowerLanguage.Strategy
                         m_ProtectiveStopLong.Send(m_ProtectiveStopPrice, limitPrice, OrderQty);
                         if (m_Debug && Bars.LastBarOnChart)
                         {
-                            Output.WriteLine("Resubmitting protective stop for LONG position at " + m_ProtectiveStopPrice);
+                            // Resubmit protective stop logging removed for performance
                         }
                     }
                     else if (StrategyInfo.MarketPosition < 0) // Short position
@@ -315,14 +297,14 @@ namespace PowerLanguage.Strategy
                         m_ProtectiveStopShort.Send(m_ProtectiveStopPrice, limitPrice, OrderQty);
                         if (m_Debug && Bars.LastBarOnChart)
                         {
-                            Output.WriteLine("Resubmitting protective stop for SHORT position at " + m_ProtectiveStopPrice);
+                            // Resubmit protective stop logging removed for performance
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                Output.WriteLine("Error managing protective stops: " + ex.Message);
+                // Error logging removed for performance
             }
         }
 
@@ -376,23 +358,35 @@ namespace PowerLanguage.Strategy
                 // Handle Shift+Click for Buy orders
                 if ((arg.keys & Keys.Shift) == Keys.Shift)
                 {
+                    // Smart order handling - check if we already have an active buy order
+                    bool isAdjustingExistingOrder = m_ActiveStopLimitOrder && m_IsBuyOrder;
+                    
+                    // Set flags for buy order
                     m_IsBuyOrder = true;
                     m_IsExitOrder = false;
                     m_OrderCreatedInMouseEvent = true;
-                    Output.WriteLine("Shift+Click detected at price " + m_ClickPrice + " - Creating BUY order");
+                    
+                    // If we're adjusting an existing order, we could add special handling here if needed
+                    // Currently, the same code path works for both new orders and adjustments
                 }
                 // Handle Ctrl+Click for Sell Short orders
                 else if ((arg.keys & Keys.Control) == Keys.Control)
                 {
+                    // Smart order handling - check if we already have an active sell order
+                    bool isAdjustingExistingOrder = m_ActiveStopLimitOrder && !m_IsBuyOrder;
+                    
+                    // Set flags for sell order
                     m_IsBuyOrder = false;
                     m_IsExitOrder = false;
                     m_OrderCreatedInMouseEvent = true;
-                    Output.WriteLine("Ctrl+Click detected at price " + m_ClickPrice + " - Creating SELL SHORT order");
+                    
+                    // If we're adjusting an existing order, we could add special handling here if needed
+                    // Currently, the same code path works for both new orders and adjustments
                 }
             }
             catch (Exception ex)
             {
-                Output.WriteLine("Error in OnMouseEvent: " + ex.Message);
+                // Error logging removed for performance
             }
         }
     }
