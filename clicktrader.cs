@@ -9,6 +9,7 @@ namespace PowerLanguage.Strategy
 {
     [MouseEvents(true), IOGMode(IOGMode.Enabled), RecoverDrawings(false)]
     [SameAsSymbol(true)]
+    [AllowSendOrdersAlways]
     public class clicktrader : SignalObject
     {
         // Input variables
@@ -82,6 +83,26 @@ namespace PowerLanguage.Strategy
         
         protected override void CalcBar()
         {
+            // High-priority emergency exit handling - process before anything else
+            if (m_EmergencyExit)
+            {
+                // Process emergency exit with highest priority
+                if (StrategyInfo.MarketPosition > 0)
+                {
+                    // Exit long position immediately
+                    m_ExitLongOrder.Send(OrderQty);
+                    if (m_Debug) Output.WriteLine("EMERGENCY EXIT: Exiting LONG position");
+                }
+                else if (StrategyInfo.MarketPosition < 0)
+                {
+                    // Exit short position immediately
+                    m_ExitShortOrder.Send(OrderQty);
+                    if (m_Debug) Output.WriteLine("EMERGENCY EXIT: Exiting SHORT position");
+                }
+                
+                m_EmergencyExit = false; // Reset flag after processing
+            }
+            
             // Process new orders created from mouse events
             if (m_OrderCreatedInMouseEvent && m_ClickPrice > 0)
             {
@@ -284,51 +305,34 @@ namespace PowerLanguage.Strategy
             }
         }
 
+        // Emergency exit flag for high-priority position exit
+        private bool m_EmergencyExit = false;
+        
         protected override void OnMouseEvent(MouseClickArgs arg)
         {
             try
             {
-                // Debug output only if in development mode
-                if (m_Debug)
-                {
-                    Output.WriteLine("DEBUG: Mouse event detected - Keys: " + arg.keys + ", Buttons: " + arg.buttons);
-                }
-
-                // Handle F12 key press to cancel orders
+                // CRITICAL: Keep this method as lightweight as possible for responsiveness
+                // No debug output in the main path
+                
+                // Handle F12 key press to cancel orders - minimal processing
                 if (arg.keys == Keys.F12)
                 {
                     m_CancelOrder = true;
-                    Output.WriteLine("F12 pressed - Canceling orders");
                     return;
                 }
 
-                // Handle right click to cancel orders and exit positions
+                // Handle right click - ultra-optimized for maximum responsiveness
                 if (arg.buttons == MouseButtons.Right)
                 {
-                    // If Ctrl key is pressed, just cancel orders
-                    if ((arg.keys & Keys.Control) == Keys.Control)
-                    {
-                        m_CancelOrder = true;
-                        Output.WriteLine("Ctrl+Right Click - Canceling orders");
-                    }
-                    else
-                    {
-                        // Regular right click acts as a "panic button" - cancel orders and exit positions
-                        m_CancelOrder = true;
-
-                        // Exit any open position
-                        if (StrategyInfo.MarketPosition != 0)
-                        {
-                            m_IsExitOrder = true;
-                            m_OrderCreatedInMouseEvent = true;
-                            m_ClickPrice = Bars.Close[0]; // Use current price for exit
-                            Output.WriteLine("Right Click - Canceling orders and exiting position");
-                        }
-                        else
-                        {
-                            Output.WriteLine("Right Click - Canceling orders (no position to exit)");
-                        }
-                    }
+                    // Immediately set all flags for instant effect
+                    m_CancelOrder = true;
+                    m_ActiveStopLimitOrder = false;
+                    m_HasProtectiveStop = false;
+                    m_EmergencyExit = true;  // New high-priority flag
+                    
+                    // No output, no position checks, no order sending here
+                    // All actual order processing moved to CalcBar for better performance
                     return;
                 }
 
