@@ -47,6 +47,10 @@ namespace PowerLanguage.Strategy
             Development = false; // Disable debug mode by default
         }
 
+        // Market order objects for exits
+        private IOrderMarket m_ExitLongOrder;
+        private IOrderMarket m_ExitShortOrder;
+        
         protected override void Create()
         {
             base.Create();
@@ -64,11 +68,18 @@ namespace PowerLanguage.Strategy
 
             m_ProtectiveStopShort = OrderCreator.StopLimit(
                 new SOrderParameters(Contracts.Default, "ProtectiveStopShort", EOrderAction.BuyToCover));
+            
+            // Create market orders for exits
+            m_ExitLongOrder = OrderCreator.MarketNextBar(
+                new SOrderParameters(Contracts.Default, "ExitLong", EOrderAction.Sell));
+                
+            m_ExitShortOrder = OrderCreator.MarketNextBar(
+                new SOrderParameters(Contracts.Default, "ExitShort", EOrderAction.BuyToCover));
 
             // Set debug flag based on development mode
             m_Debug = Development;
         }
-
+        
         protected override void CalcBar()
         {
             // Process new orders created from mouse events
@@ -85,17 +96,13 @@ namespace PowerLanguage.Strategy
                         if (StrategyInfo.MarketPosition > 0)
                         {
                             // Exit long position with a market sell order
-                            IOrderMarket exitOrder = OrderCreator.MarketNextBar(
-                                new SOrderParameters(Contracts.Default, "ExitLong", EOrderAction.Sell));
-                            exitOrder.Send(OrderQty);
+                            m_ExitLongOrder.Send(OrderQty);
                             Output.WriteLine("Exiting LONG position with market order");
                         }
                         else if (StrategyInfo.MarketPosition < 0)
                         {
                             // Exit short position with a market buy to cover order
-                            IOrderMarket exitOrder = OrderCreator.MarketNextBar(
-                                new SOrderParameters(Contracts.Default, "ExitShort", EOrderAction.BuyToCover));
-                            exitOrder.Send(OrderQty);
+                            m_ExitShortOrder.Send(OrderQty);
                             Output.WriteLine("Exiting SHORT position with market order");
                         }
 
@@ -193,12 +200,12 @@ namespace PowerLanguage.Strategy
         {
             try
             {
-                // If we have no position, clear the protective stop flag and don't resubmit any stops
+                // If we have no position, clear the protective stop flag to prevent resubmission
                 if (StrategyInfo.MarketPosition == 0)
                 {
                     if (m_HasProtectiveStop)
                     {
-                        Output.WriteLine("Position closed - removing protective stop");
+                        Output.WriteLine("Position closed - protective stops will not be resubmitted");
                         m_HasProtectiveStop = false;
                         m_ProtectiveStopPrice = 0;
                     }
@@ -239,10 +246,17 @@ namespace PowerLanguage.Strategy
 
                     m_HasProtectiveStop = true;
                 }
-                // If we already have a protective stop, keep resubmitting it
+                // If we already have a protective stop, check if we still have a position before resubmitting
                 else
                 {
-                    if (StrategyInfo.MarketPosition > 0) // Long position
+                    // Double-check that we still have a position before resubmitting the stop
+                    if (StrategyInfo.MarketPosition == 0)
+                    {
+                        Output.WriteLine("Position closed - protective stops will not be resubmitted");
+                        m_HasProtectiveStop = false;
+                        m_ProtectiveStopPrice = 0;
+                    }
+                    else if (StrategyInfo.MarketPosition > 0) // Long position
                     {
                         // For stop limit orders, we need both stop and limit prices
                         double limitPrice = m_ProtectiveStopPrice - (Bars.Info.MinMove / Bars.Info.PriceScale);
@@ -274,8 +288,11 @@ namespace PowerLanguage.Strategy
         {
             try
             {
-                // Debug output to see what keys are being pressed
-                Output.WriteLine("DEBUG: Mouse event detected - Keys: " + arg.keys + ", Buttons: " + arg.buttons);
+                // Debug output only if in development mode
+                if (m_Debug)
+                {
+                    Output.WriteLine("DEBUG: Mouse event detected - Keys: " + arg.keys + ", Buttons: " + arg.buttons);
+                }
 
                 // Handle F12 key press to cancel orders
                 if (arg.keys == Keys.F12)
