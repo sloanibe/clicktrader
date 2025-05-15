@@ -83,24 +83,47 @@ namespace PowerLanguage.Strategy
         
         protected override void CalcBar()
         {
-            // High-priority emergency exit handling - process before anything else
-            if (m_EmergencyExit)
+            // OPTIMIZATION: Check for cancellation or emergency exit at the very beginning
+            // This ensures we process these high-priority actions before anything else
+            if (m_CancelOrder || m_EmergencyExit)
             {
-                // Process emergency exit with highest priority
-                if (StrategyInfo.MarketPosition > 0)
+                // Immediately stop all order activity first
+                bool wasActiveOrder = m_ActiveStopLimitOrder;
+                bool hadProtectiveStop = m_HasProtectiveStop;
+                
+                // Immediately disable all order flags to prevent any resubmission
+                m_ActiveStopLimitOrder = false;
+                m_HasProtectiveStop = false;
+                
+                // Process emergency exit with highest priority if needed
+                if (m_EmergencyExit)
                 {
-                    // Exit long position immediately
-                    m_ExitLongOrder.Send(OrderQty);
-                    if (m_Debug) Output.WriteLine("EMERGENCY EXIT: Exiting LONG position");
-                }
-                else if (StrategyInfo.MarketPosition < 0)
-                {
-                    // Exit short position immediately
-                    m_ExitShortOrder.Send(OrderQty);
-                    if (m_Debug) Output.WriteLine("EMERGENCY EXIT: Exiting SHORT position");
+                    if (StrategyInfo.MarketPosition > 0)
+                    {
+                        // Exit long position immediately
+                        m_ExitLongOrder.Send(OrderQty);
+                        if (m_Debug) Output.WriteLine("EMERGENCY EXIT: Exiting LONG position");
+                    }
+                    else if (StrategyInfo.MarketPosition < 0)
+                    {
+                        // Exit short position immediately
+                        m_ExitShortOrder.Send(OrderQty);
+                        if (m_Debug) Output.WriteLine("EMERGENCY EXIT: Exiting SHORT position");
+                    }
+                    
+                    m_EmergencyExit = false; // Reset flag after processing
                 }
                 
-                m_EmergencyExit = false; // Reset flag after processing
+                // Only output cancellation message if we actually had active orders
+                if (m_CancelOrder && (wasActiveOrder || hadProtectiveStop) && m_Debug)
+                {
+                    Output.WriteLine("Orders canceled");
+                }
+                
+                m_CancelOrder = false;
+                
+                // Skip all other order processing this bar
+                return;
             }
             
             // Process new orders created from mouse events
@@ -118,19 +141,19 @@ namespace PowerLanguage.Strategy
                         {
                             // Exit long position with a market sell order
                             m_ExitLongOrder.Send(OrderQty);
-                            Output.WriteLine("Exiting LONG position with market order");
+                            if (m_Debug) Output.WriteLine("Exiting LONG position with market order");
                         }
                         else if (StrategyInfo.MarketPosition < 0)
                         {
                             // Exit short position with a market buy to cover order
                             m_ExitShortOrder.Send(OrderQty);
-                            Output.WriteLine("Exiting SHORT position with market order");
+                            if (m_Debug) Output.WriteLine("Exiting SHORT position with market order");
                         }
 
                         // Reset protective stop when exiting position
                         m_HasProtectiveStop = false;
                     }
-                    else
+                    else if (m_Debug)
                     {
                         Output.WriteLine("No position to exit");
                     }
@@ -154,7 +177,7 @@ namespace PowerLanguage.Strategy
                         // Set active order flag to true so we continue to submit the order
                         m_ActiveStopLimitOrder = true;
 
-                        Output.WriteLine("BUY order created at " + m_ClickPrice +
+                        if (m_Debug) Output.WriteLine("BUY order created at " + m_ClickPrice +
                                       " with stop price " + m_StopPrice +
                                       " and limit price " + m_LimitPrice);
                     }
@@ -169,7 +192,7 @@ namespace PowerLanguage.Strategy
                         // Set active order flag to true so we continue to submit the order
                         m_ActiveStopLimitOrder = true;
 
-                        Output.WriteLine("SELL SHORT order created at " + m_ClickPrice +
+                        if (m_Debug) Output.WriteLine("SELL SHORT order created at " + m_ClickPrice +
                                       " with stop price " + m_StopPrice +
                                       " and limit price " + m_LimitPrice);
                     }
@@ -179,54 +202,52 @@ namespace PowerLanguage.Strategy
                 }
             }
 
-            // Check if we need to cancel orders
-            if (m_CancelOrder)
-            {
-                m_ActiveStopLimitOrder = false;
-                m_CancelOrder = false;
-                Output.WriteLine("Orders canceled");
-            }
-
+            // OPTIMIZATION: Check if we have pending orders before resubmitting
             // If we have an active stop limit order, keep submitting it until filled or canceled
             if (m_ActiveStopLimitOrder)
             {
-                // We can't check PendingOrders directly, so we'll just continue resubmitting
-                // until the user explicitly cancels via our interface
+                // Submit the appropriate order based on the buy/sell flag
+                if (m_IsBuyOrder)
                 {
-                    // Submit the appropriate order based on the buy/sell flag
-                    if (m_IsBuyOrder)
+                    m_StopLimitBuy.Send(m_StopPrice, m_LimitPrice, OrderQty);
+                    if (m_Debug && Bars.LastBarOnChart)
                     {
-                        m_StopLimitBuy.Send(m_StopPrice, m_LimitPrice, OrderQty);
-                        if (m_Debug && Bars.LastBarOnChart)
-                        {
-                            Output.WriteLine("Resubmitting BUY order at " + m_StopPrice);
-                        }
+                        Output.WriteLine("Resubmitting BUY order at " + m_StopPrice);
                     }
-                    else
+                }
+                else
+                {
+                    m_StopLimitSell.Send(m_StopPrice, m_LimitPrice, OrderQty);
+                    if (m_Debug && Bars.LastBarOnChart)
                     {
-                        m_StopLimitSell.Send(m_StopPrice, m_LimitPrice, OrderQty);
-                        if (m_Debug && Bars.LastBarOnChart)
-                        {
-                            Output.WriteLine("Resubmitting SELL SHORT order at " + m_StopPrice);
-                        }
+                        Output.WriteLine("Resubmitting SELL SHORT order at " + m_StopPrice);
                     }
                 }
             }
 
-            // Manage protective stops
-            ManageProtectiveStops();
+            // Only manage protective stops if we haven't canceled orders
+            if (!m_CancelOrder && !m_EmergencyExit)
+            {
+                ManageProtectiveStops();
+            }
         }
 
         private void ManageProtectiveStops()
         {
             try
             {
+                // OPTIMIZATION: Quick early return if cancellation is in progress
+                if (m_CancelOrder || m_EmergencyExit)
+                {
+                    return;
+                }
+                
                 // If we have no position, clear the protective stop flag to prevent resubmission
                 if (StrategyInfo.MarketPosition == 0)
                 {
                     if (m_HasProtectiveStop)
                     {
-                        Output.WriteLine("Position closed - protective stops will not be resubmitted");
+                        if (m_Debug) Output.WriteLine("Position closed - protective stops will not be resubmitted");
                         m_HasProtectiveStop = false;
                         m_ProtectiveStopPrice = 0;
                     }
@@ -318,6 +339,11 @@ namespace PowerLanguage.Strategy
                 // Handle F12 key press to cancel orders - minimal processing
                 if (arg.keys == Keys.F12)
                 {
+                    // OPTIMIZATION: Set flags in the correct order for maximum responsiveness
+                    // First disable all order flags to immediately stop resubmission
+                    m_ActiveStopLimitOrder = false;
+                    m_HasProtectiveStop = false;
+                    // Then set action flags
                     m_CancelOrder = true;
                     return;
                 }
@@ -325,11 +351,13 @@ namespace PowerLanguage.Strategy
                 // Handle right click - ultra-optimized for maximum responsiveness
                 if (arg.buttons == MouseButtons.Right)
                 {
-                    // Immediately set all flags for instant effect
-                    m_CancelOrder = true;
+                    // OPTIMIZATION: Set flags in the correct order for maximum responsiveness
+                    // First disable all order flags to immediately stop resubmission
                     m_ActiveStopLimitOrder = false;
                     m_HasProtectiveStop = false;
-                    m_EmergencyExit = true;  // New high-priority flag
+                    // Then set action flags
+                    m_CancelOrder = true;
+                    m_EmergencyExit = true;  // High-priority flag
                     
                     // No output, no position checks, no order sending here
                     // All actual order processing moved to CalcBar for better performance
