@@ -14,6 +14,7 @@ namespace PowerLanguage.Strategy
         // Input variables
         [Input] public int TicksBelow { get; set; }
         [Input] public int OrderQty { get; set; }
+        [Input] public int ProtectiveStopPoints { get; set; }
         [Input] public bool Development { get; set; }
 
         // State variables
@@ -22,22 +23,27 @@ namespace PowerLanguage.Strategy
         private double m_StopPrice = 0;
         private double m_LimitPrice = 0;
         private bool m_OrderCreatedInMouseEvent = false;
-        private bool m_IsExitOrder = false; // Flag to track if we're placing an exit order
-        private bool m_IsBuyOrder = false; // Flag to track if we're placing a buy order
+        private bool m_IsBuyOrder = true; // Flag to track if the order is buy or sell
+        private bool m_IsExitOrder = false; // Flag to track if the order is an exit order
+        private bool m_CancelOrder = false; // Flag to track if we need to cancel orders
         private bool m_Debug = false;
-        private bool m_CancelOrder = false; // Flag to indicate order cancellation
+
+        // Protective stop variables
+        private bool m_HasProtectiveStop = false;
+        private double m_ProtectiveStopPrice = 0;
 
         // Order objects
-        private IOrderStopLimit m_StopLimitSell;
         private IOrderStopLimit m_StopLimitBuy;
-        private IOrderMarket m_BuyToCover;
-        private IOrderMarket m_Sell;
+        private IOrderStopLimit m_StopLimitSell;
+        private IOrderStopLimit m_ProtectiveStopLong;
+        private IOrderStopLimit m_ProtectiveStopShort;
 
         public clicktrader(object ctx) : base(ctx)
         {
             // Initialize default values for inputs
             TicksBelow = 15;
             OrderQty = 1;
+            ProtectiveStopPoints = 10; // Default to 10 points for protective stop
             Development = false; // Disable debug mode by default
         }
 
@@ -45,217 +51,222 @@ namespace PowerLanguage.Strategy
         {
             base.Create();
 
-            // Create stop limit sell short order with basic parameters
-            m_StopLimitSell = OrderCreator.StopLimit(
-                new SOrderParameters(Contracts.Default, "StopLimitSellShort", EOrderAction.SellShort));
-
-            // Create stop limit buy order with basic parameters
+            // Create both buy and sell stop limit order objects
             m_StopLimitBuy = OrderCreator.StopLimit(
                 new SOrderParameters(Contracts.Default, "StopLimitBuy", EOrderAction.Buy));
 
-            // Create market buy to cover order for exiting short positions
-            m_BuyToCover = OrderCreator.MarketNextBar(
-                new SOrderParameters(Contracts.Default, "BuyToCover", EOrderAction.BuyToCover));
+            m_StopLimitSell = OrderCreator.StopLimit(
+                new SOrderParameters(Contracts.Default, "StopLimitSell", EOrderAction.SellShort));
 
-            // Create market sell order for exiting long positions
-            m_Sell = OrderCreator.MarketNextBar(
-                new SOrderParameters(Contracts.Default, "Sell", EOrderAction.Sell));
+            // Create protective stop order objects
+            m_ProtectiveStopLong = OrderCreator.StopLimit(
+                new SOrderParameters(Contracts.Default, "ProtectiveStopLong", EOrderAction.Sell));
+
+            m_ProtectiveStopShort = OrderCreator.StopLimit(
+                new SOrderParameters(Contracts.Default, "ProtectiveStopShort", EOrderAction.BuyToCover));
 
             // Set debug flag based on development mode
             m_Debug = Development;
-
-            // Log initialization information
-            StringBuilder envInfo = new StringBuilder();
-            envInfo.AppendLine("*** CLICKTRADER INITIALIZED ***");
-            envInfo.AppendLine("Use Ctrl+Click to place a stop limit SELL SHORT order");
-            envInfo.AppendLine("Use Shift+Click to place a stop limit BUY order");
-            envInfo.AppendLine("Use Alt+Click to exit positions (BUY TO COVER or SELL)");
-            envInfo.AppendLine("Use Ctrl+Right Click to cancel pending orders");
-            envInfo.AppendLine("Use F12 to cancel all pending orders");
-            envInfo.AppendLine("Ticks Below/Above Click: " + TicksBelow);
-            envInfo.AppendLine("Development Mode: " + (Development ? "ON" : "OFF"));
-
-            try {
-                envInfo.AppendLine("Auto Trading Mode: " + (Environment.IsAutoTradingMode ? "ON" : "OFF"));
-            } catch {}
-
-            Output.WriteLine(envInfo.ToString());
         }
 
         protected override void CalcBar()
         {
-            try
+            // Process new orders created from mouse events
+            if (m_OrderCreatedInMouseEvent && m_ClickPrice > 0)
             {
-                // No need to check for manually canceled orders here
-                // We'll reset the state when placing a new order
+                // Calculate the number of ticks in price
+                double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
 
-                // Minimal logging for performance
-                if (m_Debug && Bars.LastBarOnChart)
+                if (m_IsExitOrder)
                 {
-                    Output.WriteLine("DEBUG: CalcBar - Market Position: " + StrategyInfo.MarketPosition + ", Active Order: " + m_ActiveStopLimitOrder);
-                }
-
-                // Process new orders that were created in OnMouseEvent
-                if (m_OrderCreatedInMouseEvent && m_ClickPrice > 0)
-                {
-                    try
+                    // Handle exit orders
+                    if (StrategyInfo.MarketPosition != 0)
                     {
-                        // Cancel any existing orders first
-                        if (m_ActiveStopLimitOrder)
+                        if (StrategyInfo.MarketPosition > 0)
                         {
-                            // Clear any active orders tracking
-                            Output.WriteLine("Canceling existing order before placing new one");
-
-                            // Reset the active order flag temporarily
-                            m_ActiveStopLimitOrder = false;
-
-                            // Check if we're in auto-trading mode
-                            bool isAutoTrading = false;
-                            try { isAutoTrading = Environment.IsAutoTradingMode; } catch {}
-
-                            if (isAutoTrading)
-                            {
-                                Output.WriteLine("Auto-trading mode: Previous order will be canceled automatically");
-                            }
+                            // Exit long position with a market sell order
+                            IOrderMarket exitOrder = OrderCreator.MarketNextBar(
+                                new SOrderParameters(Contracts.Default, "ExitLong", EOrderAction.Sell));
+                            exitOrder.Send(OrderQty);
+                            Output.WriteLine("Exiting LONG position with market order");
+                        }
+                        else if (StrategyInfo.MarketPosition < 0)
+                        {
+                            // Exit short position with a market buy to cover order
+                            IOrderMarket exitOrder = OrderCreator.MarketNextBar(
+                                new SOrderParameters(Contracts.Default, "ExitShort", EOrderAction.BuyToCover));
+                            exitOrder.Send(OrderQty);
+                            Output.WriteLine("Exiting SHORT position with market order");
                         }
 
-                        // Check if this is an exit order or entry order
-                        if (m_IsExitOrder)
-                        {
-                            // Check if we need to exit a short or long position
-                            if (StrategyInfo.MarketPosition < 0) // Short position
-                            {
-                                // Send the buy to cover market order to exit short position
-                                m_BuyToCover.Send(OrderQty);
-                                Output.WriteLine("BUY TO COVER Market Order sent to exit short position");
-                            }
-                            else if (StrategyInfo.MarketPosition > 0) // Long position
-                            {
-                                // Send the sell market order to exit long position
-                                m_Sell.Send(OrderQty);
-                                Output.WriteLine("SELL Market Order sent to exit long position");
-                            }
-                            else
-                            {
-                                Output.WriteLine("No position to exit");
-                            }
-                        }
-                        else
-                        {
-                            // Check if this is a buy or sell order
-                            if (m_IsBuyOrder)
-                            {
-                                // Send the buy stop limit order with stop and limit prices
-                                m_StopLimitBuy.Send(m_StopPrice, m_LimitPrice, OrderQty);
-                                Output.WriteLine("BUY Stop Limit Order sent: Stop @ " + m_StopPrice + ", Limit @ " + m_LimitPrice);
-                            }
-                            else
-                            {
-                                // Send the sell short stop limit order with stop and limit prices
-                                m_StopLimitSell.Send(m_StopPrice, m_LimitPrice, OrderQty);
-                                Output.WriteLine("SELL SHORT Stop Limit Order sent: Stop @ " + m_StopPrice + ", Limit @ " + m_LimitPrice);
-                            }
-                        }
+                        // Reset protective stop when exiting position
+                        m_HasProtectiveStop = false;
+                    }
+                    else
+                    {
+                        Output.WriteLine("No position to exit");
+                    }
 
-                        // Set flags
+                    // Reset flags
+                    m_OrderCreatedInMouseEvent = false;
+                    m_ClickPrice = 0;
+                    m_IsExitOrder = false;
+                }
+                else
+                {
+                    // Handle entry orders
+                    if (m_IsBuyOrder)
+                    {
+                        // For buy orders, stop price is above the click price
+                        m_StopPrice = m_ClickPrice + (TicksBelow * tickSize);
+                        // For stop limit orders, we need both stop and limit prices
+                        // Set limit price 1 tick above stop price for a reasonable fill
+                        m_LimitPrice = m_StopPrice + tickSize;
+
+                        // Set active order flag to true so we continue to submit the order
                         m_ActiveStopLimitOrder = true;
 
-                        // Reset flags after order is placed
-                        m_ClickPrice = 0;
-                        m_OrderCreatedInMouseEvent = false;
-
-                        // Check if broker position differs from strategy position
-                        try
-                        {
-                            if (StrategyInfo.MarketPositionAtBroker != StrategyInfo.MarketPosition)
-                            {
-                                Output.WriteLine("Warning: Broker position (" + StrategyInfo.MarketPositionAtBroker +
-                                              ") differs from strategy position (" + StrategyInfo.MarketPosition + ")");
-                            }
-                        }
-                        catch {}
+                        Output.WriteLine("BUY order created at " + m_ClickPrice +
+                                      " with stop price " + m_StopPrice +
+                                      " and limit price " + m_LimitPrice);
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        Output.WriteLine("Error processing new order: " + ex.Message + "\nStack Trace: " + ex.StackTrace);
+                        // For sell orders, stop price is below the click price
+                        m_StopPrice = m_ClickPrice - (TicksBelow * tickSize);
+                        // For stop limit orders, we need both stop and limit prices
+                        // Set limit price 1 tick below stop price for a reasonable fill
+                        m_LimitPrice = m_StopPrice - tickSize;
+
+                        // Set active order flag to true so we continue to submit the order
+                        m_ActiveStopLimitOrder = true;
+
+                        Output.WriteLine("SELL SHORT order created at " + m_ClickPrice +
+                                      " with stop price " + m_StopPrice +
+                                      " and limit price " + m_LimitPrice);
                     }
+
+                    // Reset flag since we've processed the order
+                    m_OrderCreatedInMouseEvent = false;
                 }
+            }
 
-                // If we have an active order, keep it alive
-                else if (m_ActiveStopLimitOrder)
+            // Check if we need to cancel orders
+            if (m_CancelOrder)
+            {
+                m_ActiveStopLimitOrder = false;
+                m_CancelOrder = false;
+                Output.WriteLine("Orders canceled");
+            }
+
+            // If we have an active stop limit order, keep submitting it until filled or canceled
+            if (m_ActiveStopLimitOrder)
+            {
+                // We can't check PendingOrders directly, so we'll just continue resubmitting
+                // until the user explicitly cancels via our interface
                 {
-                    try
+                    // Submit the appropriate order based on the buy/sell flag
+                    if (m_IsBuyOrder)
                     {
-                        // Following the example document's approach - resubmit the order each bar
-                        // to keep it active until it's filled or manually canceled
-                        if (!m_IsExitOrder)
+                        m_StopLimitBuy.Send(m_StopPrice, m_LimitPrice, OrderQty);
+                        if (m_Debug && Bars.LastBarOnChart)
                         {
-                            // Check if this is a buy or sell order
-                            if (m_IsBuyOrder)
-                            {
-                                m_StopLimitBuy.Send(m_StopPrice, m_LimitPrice, OrderQty);
-
-                                if (m_Debug && Bars.LastBarOnChart)
-                                {
-                                    Output.WriteLine("CalcBar: Resubmitting BUY stop limit order to keep it active");
-                                }
-                            }
-                            else
-                            {
-                                m_StopLimitSell.Send(m_StopPrice, m_LimitPrice, OrderQty);
-
-                                if (m_Debug && Bars.LastBarOnChart)
-                                {
-                                    Output.WriteLine("CalcBar: Resubmitting SELL SHORT stop limit order to keep it active");
-                                }
-                            }
+                            Output.WriteLine("Resubmitting BUY order at " + m_StopPrice);
                         }
-                        // We don't need to resubmit market orders as they're executed immediately
-
-                        // Check for broker vs strategy position mismatch
-                        try
-                        {
-                            if (Environment.IsAutoTradingMode &&
-                                StrategyInfo.MarketPositionAtBroker != StrategyInfo.MarketPosition)
-                            {
-                                if (m_Debug)
-                                {
-                                    Output.WriteLine("Position mismatch: Broker=" + StrategyInfo.MarketPositionAtBroker +
-                                                  ", Strategy=" + StrategyInfo.MarketPosition);
-                                }
-                            }
-                        }
-                        catch {}
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        if (m_Debug)
+                        m_StopLimitSell.Send(m_StopPrice, m_LimitPrice, OrderQty);
+                        if (m_Debug && Bars.LastBarOnChart)
                         {
-                            Output.WriteLine("Error resubmitting order: " + ex.Message + "\nStack Trace: " + ex.StackTrace);
+                            Output.WriteLine("Resubmitting SELL SHORT order at " + m_StopPrice);
                         }
                     }
                 }
+            }
 
-                // If we need to cancel the order for any reason, do it here
-                if (m_CancelOrder && m_ActiveStopLimitOrder)
+            // Manage protective stops
+            ManageProtectiveStops();
+        }
+
+        private void ManageProtectiveStops()
+        {
+            try
+            {
+                // If we have no position, clear the protective stop flag and don't resubmit any stops
+                if (StrategyInfo.MarketPosition == 0)
                 {
-                    // Set the active order flag to false to stop resubmitting
-                    m_ActiveStopLimitOrder = false;
-                    m_CancelOrder = false;
-                    Output.WriteLine("Order canceled successfully");
-
-                    // Draw a visual indicator that order was canceled
-                    if (m_StopPrice > 0)
+                    if (m_HasProtectiveStop)
                     {
-                        // Draw a red X at the stop price to indicate cancellation
-                        ChartPoint cancelPoint = new ChartPoint(Bars.Time[0], m_StopPrice);
-                        DrwText.Create(cancelPoint, "X").Color = Color.Red;
+                        Output.WriteLine("Position closed - removing protective stop");
+                        m_HasProtectiveStop = false;
+                        m_ProtectiveStopPrice = 0;
+                    }
+                    return;
+                }
+
+                // If we have a position but no protective stop, create one
+                if (!m_HasProtectiveStop)
+                {
+                    double pointSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+
+                    if (StrategyInfo.MarketPosition > 0) // Long position
+                    {
+                        // For long positions, stop is below the current price
+                        m_ProtectiveStopPrice = Bars.Close[0] - (ProtectiveStopPoints * pointSize);
+                        // For stop limit orders, we need both stop and limit prices
+                        // Set limit price 1 tick below stop price for a reasonable fill
+                        double limitPrice = m_ProtectiveStopPrice - pointSize;
+                        m_ProtectiveStopLong.Send(m_ProtectiveStopPrice, limitPrice, OrderQty);
+                        Output.WriteLine("Protective stop placed for LONG position at " + m_ProtectiveStopPrice +
+                                      " (" + ProtectiveStopPoints + " points below current price)");
+
+                        // Visual indicator for protective stop removed - not supported in this version
+                    }
+                    else if (StrategyInfo.MarketPosition < 0) // Short position
+                    {
+                        // For short positions, stop is above the current price
+                        m_ProtectiveStopPrice = Bars.Close[0] + (ProtectiveStopPoints * pointSize);
+                        // For stop limit orders, we need both stop and limit prices
+                        // Set limit price 1 tick above stop price for a reasonable fill
+                        double limitPrice = m_ProtectiveStopPrice + pointSize;
+                        m_ProtectiveStopShort.Send(m_ProtectiveStopPrice, limitPrice, OrderQty);
+                        Output.WriteLine("Protective stop placed for SHORT position at " + m_ProtectiveStopPrice +
+                                      " (" + ProtectiveStopPoints + " points above current price)");
+
+                        // Visual indicator for protective stop removed - not supported in this version
+                    }
+
+                    m_HasProtectiveStop = true;
+                }
+                // If we already have a protective stop, keep resubmitting it
+                else
+                {
+                    if (StrategyInfo.MarketPosition > 0) // Long position
+                    {
+                        // For stop limit orders, we need both stop and limit prices
+                        double limitPrice = m_ProtectiveStopPrice - (Bars.Info.MinMove / Bars.Info.PriceScale);
+                        m_ProtectiveStopLong.Send(m_ProtectiveStopPrice, limitPrice, OrderQty);
+                        if (m_Debug && Bars.LastBarOnChart)
+                        {
+                            Output.WriteLine("Resubmitting protective stop for LONG position at " + m_ProtectiveStopPrice);
+                        }
+                    }
+                    else if (StrategyInfo.MarketPosition < 0) // Short position
+                    {
+                        // For stop limit orders, we need both stop and limit prices
+                        double limitPrice = m_ProtectiveStopPrice + (Bars.Info.MinMove / Bars.Info.PriceScale);
+                        m_ProtectiveStopShort.Send(m_ProtectiveStopPrice, limitPrice, OrderQty);
+                        if (m_Debug && Bars.LastBarOnChart)
+                        {
+                            Output.WriteLine("Resubmitting protective stop for SHORT position at " + m_ProtectiveStopPrice);
+                        }
                     }
                 }
             }
             catch (Exception ex)
             {
-                Output.WriteLine("Error in CalcBar: " + ex.Message + "\nStack Trace: " + ex.StackTrace);
+                Output.WriteLine("Error managing protective stops: " + ex.Message);
             }
         }
 
@@ -265,184 +276,74 @@ namespace PowerLanguage.Strategy
             {
                 // Debug output to see what keys are being pressed
                 Output.WriteLine("DEBUG: Mouse event detected - Keys: " + arg.keys + ", Buttons: " + arg.buttons);
-                
+
                 // Handle F12 key press to cancel orders
                 if (arg.keys == Keys.F12)
                 {
-                    if (m_ActiveStopLimitOrder)
-                    {
-                        m_CancelOrder = true;
-                        Output.WriteLine("F12 pressed - Canceling all pending orders");
-                    }
-                    else
-                    {
-                        Output.WriteLine("No active orders to cancel");
-                    }
+                    m_CancelOrder = true;
+                    Output.WriteLine("F12 pressed - Canceling orders");
                     return;
                 }
 
-                // Handle Right Click to cancel pending orders and exit positions
+                // Handle right click to cancel orders and exit positions
                 if (arg.buttons == MouseButtons.Right)
                 {
-                    bool actionTaken = false;
-                    
-                    // Cancel any pending orders
-                    if (m_ActiveStopLimitOrder)
+                    // If Ctrl key is pressed, just cancel orders
+                    if ((arg.keys & Keys.Control) == Keys.Control)
                     {
                         m_CancelOrder = true;
-                        Output.WriteLine("Right Click - Canceling all pending orders");
-                        actionTaken = true;
-                    }
-                    
-                    // Exit any open positions
-                    if (StrategyInfo.MarketPosition != 0)
-                    {
-                        // Set up exit order parameters
-                        m_ClickPrice = arg.point.Price; // Not really used for market orders but set it anyway
-                        m_OrderCreatedInMouseEvent = true;
-                        m_IsExitOrder = true;
-                        
-                        if (StrategyInfo.MarketPosition < 0) // Short position
-                        {
-                            Output.WriteLine("Right Click - Exiting short position with BUY TO COVER");
-                        }
-                        else // Long position
-                        {
-                            Output.WriteLine("Right Click - Exiting long position with SELL");
-                        }
-                        actionTaken = true;
-                    }
-                    
-                    if (!actionTaken)
-                    {
-                        Output.WriteLine("No active orders or positions to cancel/exit");
-                    }
-                    
-                    return;
-                }
-
-                // Only process left mouse clicks with modifier keys
-                if (arg.buttons != MouseButtons.Left || (arg.keys != Keys.Control && arg.keys != Keys.Alt && arg.keys != Keys.Shift))
-                    return;
-
-                // Minimal debug logging
-                if (m_Debug)
-                {
-                    Output.WriteLine("DEBUG: Mouse event - Key: " + arg.keys + ", Price: " + arg.point.Price);
-                }
-
-                // Get the current click price and tick size
-                double currentClickPrice = arg.point.Price;
-                double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
-
-                // Handle Ctrl+Click for sell short orders
-                if (arg.keys == Keys.Control)
-                {
-                    // Calculate stop and limit prices for sell short order
-                    // For sell short orders, stop price is below the click price
-                    m_StopPrice = currentClickPrice - (TicksBelow * tickSize);
-                    // Set limit price 1 tick below stop price for a reasonable fill
-                    m_LimitPrice = m_StopPrice - tickSize;
-
-                    // Store the click price for CalcBar to handle
-                    m_ClickPrice = currentClickPrice;
-
-                    // Flag for new order creation
-                    m_OrderCreatedInMouseEvent = true;
-
-                    // Set flag to indicate this is a sell short order
-                    m_IsExitOrder = false;
-                    m_IsBuyOrder = false;
-
-                    Output.WriteLine("PLACING ORDER: Stop Limit SELL SHORT at stop price " + m_StopPrice +
-                                  " (" + TicksBelow + " ticks below " + currentClickPrice + ")");
-                    Output.WriteLine("OnMouseEvent: Setting up SELL SHORT order for processing in CalcBar");
-                    Output.WriteLine("Stop Price: " + m_StopPrice + ", Limit Price: " + m_LimitPrice);
-
-                    // If we have an active order, log that we'll be canceling it
-                    if (m_ActiveStopLimitOrder)
-                    {
-                        Output.WriteLine("OnMouseEvent: Existing order will be canceled before creating a new one");
-                    }
-
-                    Output.WriteLine("OnMouseEvent: New SELL SHORT order will be created in next CalcBar. Stop Price: " + m_StopPrice +
-                                  ", Limit Price: " + m_LimitPrice + ", Quantity: " + OrderQty);
-                }
-                // Handle Shift+Click for buy stop limit orders
-                else if (arg.keys == Keys.Shift)
-                {
-                    // Calculate stop and limit prices for buy order
-                    // For buy orders, stop price is above the click price
-                    m_StopPrice = currentClickPrice + (TicksBelow * tickSize);
-                    // Set limit price 1 tick above stop price for a reasonable fill
-                    m_LimitPrice = m_StopPrice + tickSize;
-
-                    // Store the click price for CalcBar to handle
-                    m_ClickPrice = currentClickPrice;
-
-                    // Flag for new order creation
-                    m_OrderCreatedInMouseEvent = true;
-
-                    // Set flag to indicate this is a buy order
-                    m_IsBuyOrder = true;
-                    m_IsExitOrder = false;
-
-                    Output.WriteLine("PLACING ORDER: Stop Limit BUY at stop price " + m_StopPrice +
-                                  " (" + TicksBelow + " ticks above " + currentClickPrice + ")");
-                    Output.WriteLine("OnMouseEvent: Setting up BUY order for processing in CalcBar");
-                    Output.WriteLine("Stop Price: " + m_StopPrice + ", Limit Price: " + m_LimitPrice);
-
-                    // If we have an active order, log that we'll be canceling it
-                    if (m_ActiveStopLimitOrder)
-                    {
-                        Output.WriteLine("OnMouseEvent: Existing order will be canceled before creating a new one");
-                    }
-
-                    Output.WriteLine("OnMouseEvent: New BUY order will be created in next CalcBar. Stop Price: " + m_StopPrice +
-                                  ", Limit Price: " + m_LimitPrice + ", Quantity: " + OrderQty);
-                }
-                // Handle Alt+Click for exit positions (buy to cover or sell)
-                else if (arg.keys == Keys.Alt)
-                {
-                    // Check if we can exit a position
-                    // Check if we have a short position to exit
-                    if (StrategyInfo.MarketPosition >= 0)
-                    {
-                        Output.WriteLine("Cannot place BUY TO COVER order: No short position exists");
-                        return;
-                    }
-
-                    // Store the click price for CalcBar to handle
-                    m_ClickPrice = currentClickPrice;
-
-                    // Flag for new order creation
-                    m_OrderCreatedInMouseEvent = true;
-
-                    // Set flag to indicate this is an exit order
-                    m_IsExitOrder = true;
-
-                    // Check position type to determine exit order type
-                    if (StrategyInfo.MarketPosition < 0) // Short position
-                    {
-                        Output.WriteLine("PLACING ORDER: Market BUY TO COVER to exit short position");
-                        Output.WriteLine("OnMouseEvent: Setting up BUY TO COVER order for processing in CalcBar");
-                        Output.WriteLine("OnMouseEvent: New BUY TO COVER order will be created in next CalcBar. Quantity: " + OrderQty);
-                    }
-                    else if (StrategyInfo.MarketPosition > 0) // Long position
-                    {
-                        Output.WriteLine("PLACING ORDER: Market SELL to exit long position");
-                        Output.WriteLine("OnMouseEvent: Setting up SELL order for processing in CalcBar");
-                        Output.WriteLine("OnMouseEvent: New SELL order will be created in next CalcBar. Quantity: " + OrderQty);
+                        Output.WriteLine("Ctrl+Right Click - Canceling orders");
                     }
                     else
                     {
-                        Output.WriteLine("No position to exit");
+                        // Regular right click acts as a "panic button" - cancel orders and exit positions
+                        m_CancelOrder = true;
+
+                        // Exit any open position
+                        if (StrategyInfo.MarketPosition != 0)
+                        {
+                            m_IsExitOrder = true;
+                            m_OrderCreatedInMouseEvent = true;
+                            m_ClickPrice = Bars.Close[0]; // Use current price for exit
+                            Output.WriteLine("Right Click - Canceling orders and exiting position");
+                        }
+                        else
+                        {
+                            Output.WriteLine("Right Click - Canceling orders (no position to exit)");
+                        }
                     }
+                    return;
+                }
+
+                // Only process left mouse button clicks
+                if (arg.buttons != MouseButtons.Left)
+                {
+                    return;
+                }
+
+                // Get the price at the click position
+                m_ClickPrice = arg.point.Price;
+
+                // Handle Shift+Click for Buy orders
+                if ((arg.keys & Keys.Shift) == Keys.Shift)
+                {
+                    m_IsBuyOrder = true;
+                    m_IsExitOrder = false;
+                    m_OrderCreatedInMouseEvent = true;
+                    Output.WriteLine("Shift+Click detected at price " + m_ClickPrice + " - Creating BUY order");
+                }
+                // Handle Ctrl+Click for Sell Short orders
+                else if ((arg.keys & Keys.Control) == Keys.Control)
+                {
+                    m_IsBuyOrder = false;
+                    m_IsExitOrder = false;
+                    m_OrderCreatedInMouseEvent = true;
+                    Output.WriteLine("Ctrl+Click detected at price " + m_ClickPrice + " - Creating SELL SHORT order");
                 }
             }
             catch (Exception ex)
             {
-                Output.WriteLine("Error processing mouse event: " + ex.Message + "\nStack Trace: " + ex.StackTrace);
+                Output.WriteLine("Error in OnMouseEvent: " + ex.Message);
             }
         }
     }
