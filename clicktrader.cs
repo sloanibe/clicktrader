@@ -86,9 +86,12 @@ namespace PowerLanguage.Strategy
                 if (m_IsBuyOrder)
                 {
                     // For buy orders, place stop PointsOffset points ABOVE the click price
-                    m_StopPrice = m_ClickPrice + PointsOffset;
-                    // Set limit price 15 points above stop price
-                    m_LimitPrice = m_StopPrice + 15;
+                    // Convert points to price using the instrument's point value
+                    double pointValue = Bars.Info.MinMove / Bars.Info.PriceScale;
+                    m_StopPrice = m_ClickPrice + (PointsOffset * pointValue);
+                    // Set limit price 5 points above stop price
+                    m_LimitPrice = m_StopPrice + (5 * pointValue);
+                    Output.WriteLine("DEBUG: MinMove=" + Bars.Info.MinMove + ", PriceScale=" + Bars.Info.PriceScale + ", PointValue=" + pointValue);
 
                     // Send the buy order
                     m_StopLimitBuy.Send(m_StopPrice, m_LimitPrice, OrderQty);
@@ -98,9 +101,11 @@ namespace PowerLanguage.Strategy
                 else
                 {
                     // For sell orders, place stop PointsOffset points BELOW the click price
-                    m_StopPrice = m_ClickPrice - PointsOffset;
-                    // Set limit price 15 points below stop price
-                    m_LimitPrice = m_StopPrice - 15;
+                    // Convert points to price using the instrument's point value
+                    double pointValue = Bars.Info.MinMove / Bars.Info.PriceScale;
+                    m_StopPrice = m_ClickPrice - (PointsOffset * pointValue);
+                    // Set limit price 5 points below stop price
+                    m_LimitPrice = m_StopPrice - (5 * pointValue);
 
                     // Send the sell order
                     m_StopLimitSell.Send(m_StopPrice, m_LimitPrice, OrderQty);
@@ -143,7 +148,7 @@ namespace PowerLanguage.Strategy
         protected override void OnMouseEvent(MouseClickArgs arg)
         {
             // Only log important mouse events
-            
+
             // RIGHT CLICK: Cancel all orders
             if (arg.buttons == MouseButtons.Right)
             {
@@ -157,6 +162,7 @@ namespace PowerLanguage.Strategy
             {
                 // Get the price at the click position
                 m_ClickPrice = arg.point.Price;
+                Output.WriteLine("DEBUG: Raw click price = " + arg.point.Price);
 
                 // Set up for buy order
                 m_IsBuyOrder = true;
