@@ -47,18 +47,21 @@ namespace PowerLanguage.Strategy
         {
             base.Create();
 
-            // Create order objects - MUST be done in Create() method
-            m_BuyMarketOrder = OrderCreator.MarketThisBar(
+            // Create order objects with explicit broker routing
+            // Use MarketNextBar instead of MarketThisBar to ensure orders are sent to broker
+            m_BuyMarketOrder = OrderCreator.MarketNextBar(
                 new SOrderParameters(Contracts.Default, "BuyMarket", EOrderAction.Buy));
                 
-            m_SellMarketOrder = OrderCreator.MarketThisBar(
+            m_SellMarketOrder = OrderCreator.MarketNextBar(
                 new SOrderParameters(Contracts.Default, "SellMarket", EOrderAction.Sell));
                 
-            m_ExitLongOrder = OrderCreator.MarketThisBar(
+            m_ExitLongOrder = OrderCreator.MarketNextBar(
                 new SOrderParameters(Contracts.Default, "ExitLong", EOrderAction.Sell));
                 
-            m_ExitShortOrder = OrderCreator.MarketThisBar(
+            m_ExitShortOrder = OrderCreator.MarketNextBar(
                 new SOrderParameters(Contracts.Default, "ExitShort", EOrderAction.Buy));
+                
+            Output.WriteLine("ORDER OBJECTS: Created with broker routing enabled");
 
             // Strategy is ready
             Output.WriteLine("TRADING MODE: Strategy initialized");
@@ -92,14 +95,25 @@ namespace PowerLanguage.Strategy
         {
             if (UseIndicatorForVisualization && price > 0)
             {
+                // First, clear any existing lines in the indicator by sending signal 2
+                StrategyInfo.SetPlotValue(2, 1);
+                
+                // Force reset the plot value to 0 first to ensure the indicator sees the change
+                StrategyInfo.SetPlotValue(1, 0);
+                
+                // Now set the actual target price
                 StrategyInfo.SetPlotValue(1, price); // Signal 1 = draw line at price
-                Output.WriteLine("Sent price " + price + " to indicator for visualization");
+                Output.WriteLine("STRATEGY: Sent target price " + price + " to indicator for visualization");
+                
+                // Reset the clear signal
+                StrategyInfo.SetPlotValue(2, 0);
             }
         }
 
         // Main calculation method - runs on each tick in IOG mode
         protected override void CalcBar()
         {
+            
             // Check for signals from the indicator
             if (UseIndicatorForVisualization)
             {
@@ -194,18 +208,21 @@ namespace PowerLanguage.Strategy
             // Monitor for target buy price
             if (m_MonitoringBuyPrice && !m_OrderFilled)
             {
-                // Debug output - show current price and target price with more details
-                Output.WriteLine("PRICE MONITOR: Current price = " + Bars.Close[0] + ", Target buy price = " + m_TargetBuyPrice);
-                Output.WriteLine("PRICE MONITOR: Difference = " + (Bars.Close[0] - m_TargetBuyPrice) + ", Monitoring = " + m_MonitoringBuyPrice + ", OrderFilled = " + m_OrderFilled);
+                // Calculate the value of 2 ticks in price points
+                double twoTicksInPrice = 2 * Bars.Info.MinMove / Bars.Info.PriceScale;
                 
                 // Check if current price or high of the bar has reached or exceeded target price
                 // This ensures we don't miss price movements that passed through our target
-                bool priceConditionMet = Bars.Close[0] >= m_TargetBuyPrice || // Current close price
-                                       Bars.High[0] >= m_TargetBuyPrice || // High of current bar
-                                       Math.Abs(Bars.Close[0] - m_TargetBuyPrice) < 0.0001; // Small tolerance
+                bool priceConditionMet = (Bars.Close[0] >= m_TargetBuyPrice || // Current close price
+                                        Bars.High[0] >= m_TargetBuyPrice || // High of current bar
+                                        Math.Abs(Bars.Close[0] - m_TargetBuyPrice) < 0.0001) && // Small tolerance
+                                        (Bars.Close[0] <= m_TargetBuyPrice + twoTicksInPrice); // Not more than 2 ticks above
                 
-                Output.WriteLine("PRICE MONITOR: Current close = " + Bars.Close[0] + ", High = " + Bars.High[0] + ", Target = " + m_TargetBuyPrice);
-                Output.WriteLine("PRICE MONITOR: Price condition met? " + priceConditionMet);
+                // Log the price check for debugging
+                if (Bars.Close[0] > m_TargetBuyPrice + twoTicksInPrice)
+                {
+                    Output.WriteLine("ORDER SKIPPED: Current price (" + Bars.Close[0] + ") is more than 2 ticks above target price (" + m_TargetBuyPrice + ")");
+                }
                 
                 if (priceConditionMet)
                 {
@@ -239,18 +256,21 @@ namespace PowerLanguage.Strategy
             // Monitor for target sell price
             if (m_MonitoringSellPrice && !m_OrderFilled)
             {
-                // Debug output - show current price and target price with more details
-                Output.WriteLine("PRICE MONITOR: Current price = " + Bars.Close[0] + ", Target sell price = " + m_TargetSellPrice);
-                Output.WriteLine("PRICE MONITOR: Difference = " + (m_TargetSellPrice - Bars.Close[0]) + ", Monitoring = " + m_MonitoringSellPrice + ", OrderFilled = " + m_OrderFilled);
+                // Calculate the value of 2 ticks in price points
+                double twoTicksInPrice = 2 * Bars.Info.MinMove / Bars.Info.PriceScale;
                 
                 // Check if current price or low of the bar has reached or gone below target price
                 // This ensures we don't miss price movements that passed through our target
-                bool priceConditionMet = Bars.Close[0] <= m_TargetSellPrice || // Current close price
-                                       Bars.Low[0] <= m_TargetSellPrice || // Low of current bar
-                                       Math.Abs(Bars.Close[0] - m_TargetSellPrice) < 0.0001; // Small tolerance
+                bool priceConditionMet = (Bars.Close[0] <= m_TargetSellPrice || // Current close price
+                                        Bars.Low[0] <= m_TargetSellPrice || // Low of current bar
+                                        Math.Abs(Bars.Close[0] - m_TargetSellPrice) < 0.0001) && // Small tolerance
+                                        (Bars.Close[0] >= m_TargetSellPrice - twoTicksInPrice); // Not more than 2 ticks below
                 
-                Output.WriteLine("PRICE MONITOR: Current close = " + Bars.Close[0] + ", Low = " + Bars.Low[0] + ", Target = " + m_TargetSellPrice);
-                Output.WriteLine("PRICE MONITOR: Price condition met? " + priceConditionMet);
+                // Log the price check for debugging
+                if (Bars.Close[0] < m_TargetSellPrice - twoTicksInPrice)
+                {
+                    Output.WriteLine("ORDER SKIPPED: Current price (" + Bars.Close[0] + ") is more than 2 ticks below target price (" + m_TargetSellPrice + ")");
+                }
                 
                 if (priceConditionMet)
                 {
@@ -299,7 +319,7 @@ namespace PowerLanguage.Strategy
         // Mouse event handler - only sets flags and target prices
         protected override void OnMouseEvent(MouseClickArgs arg)
         {
-            // SHIFT+LEFT CLICK: Set target buy price 15 points above click price
+            // SHIFT+LEFT CLICK: Set target buy price with offset above click price
             if (arg.buttons == MouseButtons.Left && (arg.keys & Keys.Shift) == Keys.Shift)
             {
                 // Get the price at the click position
@@ -310,22 +330,23 @@ namespace PowerLanguage.Strategy
                 double offsetInPrice = TickOffset * Bars.Info.MinMove / Bars.Info.PriceScale;
                 m_TargetBuyPrice = clickPrice + offsetInPrice;
                 
-                // Set monitoring flag
-                m_MonitoringBuyPrice = true;
-                m_MonitoringSellPrice = false;
-                m_OrderFilled = false;
-                m_FirstTickAfterOrder = false;
-                
-                // Flag that we need to update the indicator
+                // First update the indicator with the target price
+                // This ensures the line appears at the correct offset price
                 if (UseIndicatorForVisualization)
                 {
                     UpdateIndicatorLine(m_TargetBuyPrice);
                 }
                 
+                // Now set the monitoring flags after the indicator is updated
+                m_MonitoringBuyPrice = true;
+                m_MonitoringSellPrice = false;
+                m_OrderFilled = false;
+                m_FirstTickAfterOrder = false;
+                
                 Output.WriteLine("TARGET SET: Buy market order will trigger at " + m_TargetBuyPrice);
             }
             
-            // CTRL+LEFT CLICK: Set target sell price 15 points below click price
+            // CTRL+LEFT CLICK: Set target sell price with offset below click price
             if (arg.buttons == MouseButtons.Left && (arg.keys & Keys.Control) == Keys.Control)
             {
                 // Get the price at the click position
@@ -336,17 +357,18 @@ namespace PowerLanguage.Strategy
                 double offsetInPrice = TickOffset * Bars.Info.MinMove / Bars.Info.PriceScale;
                 m_TargetSellPrice = clickPrice - offsetInPrice;
                 
-                // Set monitoring flag
-                m_MonitoringSellPrice = true;
-                m_MonitoringBuyPrice = false;
-                m_OrderFilled = false;
-                m_FirstTickAfterOrder = false;
-                
-                // Flag that we need to update the indicator
+                // First update the indicator with the target price
+                // This ensures the line appears at the correct offset price
                 if (UseIndicatorForVisualization)
                 {
                     UpdateIndicatorLine(m_TargetSellPrice);
                 }
+                
+                // Now set the monitoring flags after the indicator is updated
+                m_MonitoringSellPrice = true;
+                m_MonitoringBuyPrice = false;
+                m_OrderFilled = false;
+                m_FirstTickAfterOrder = false;
                 
                 Output.WriteLine("TARGET SET: Sell market order will trigger at " + m_TargetSellPrice);
             }

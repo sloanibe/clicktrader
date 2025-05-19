@@ -6,14 +6,11 @@ using PowerLanguage.Function;
 
 namespace PowerLanguage.Indicator
 {
-    [SameAsSymbol(true), RecoverDrawings(false), MouseEvents(true)]
+    [SameAsSymbol(true), RecoverDrawings(false), MouseEvents(false)]
     public class pricemonitor : IndicatorObject
     {
         // Input variables
         [Input] public Color LineColor { get; set; }
-        [Input] public Keys CancelKey { get; set; }
-        [Input] public Keys SendKey { get; set; }
-        [Input] public Keys AdjustKey { get; set; } // Key for adjusting existing lines
 
         // List to store all drawings
         private List<ITrendLineObject> m_Lines = new List<ITrendLineObject>();
@@ -23,17 +20,14 @@ namespace PowerLanguage.Indicator
         {
             // Initialize default values for inputs
             LineColor = Color.Cyan;
-            CancelKey = Keys.Alt;      // Alt+Click to cancel orders
-            SendKey = Keys.Control;    // Ctrl+Click to send orders (same as strategy)
-            AdjustKey = Keys.Shift;    // Shift+Click to adjust existing lines
         }
 
         protected override void Create()
         {
             // Output version identifier to confirm we're using the latest code
-            Output.WriteLine("*** PRICE MONITOR INDICATOR - VERSION 1.0 ***");
-            Output.WriteLine("Use Ctrl+Click to place orders (same as strategy)");
-            Output.WriteLine("Use Alt+Click to cancel all orders");
+            Output.WriteLine("*** PRICE MONITOR INDICATOR - VERSION 2.0 ***");
+            Output.WriteLine("This is a passive visualization component");
+            Output.WriteLine("All mouse interactions are handled by the strategy");
         }
 
         protected override void StartCalc()
@@ -41,58 +35,7 @@ namespace PowerLanguage.Indicator
             // Reset any necessary state variables here if needed
         }
 
-        protected override void OnMouseEvent(MouseClickArgs arg)
-        {
-            try
-            {
-                // Only process left mouse clicks
-                if (arg.buttons != MouseButtons.Left)
-                    return;
-
-                // Check for Alt+Click (cancel orders)
-                if (arg.keys == CancelKey)
-                {
-                    Output.WriteLine("Indicator: Sending cancel signal to strategy");
-
-                    // Signal to strategy to cancel orders (using plot value 2)
-                    StrategyInfo.SetPlotValue(2, 1);
-
-                    // Clear our own lines
-                    ClearAllLines();
-                }
-                // Check for Shift+Click (adjust existing line)
-                else if (arg.keys == AdjustKey)
-                {
-                    double newPrice = arg.point.Price;
-                    Output.WriteLine("Indicator: Adjusting target price to " + newPrice);
-
-                    // Signal to strategy to update the target price (using plot value 4)
-                    // The strategy will handle the adjustment without applying offset
-                    StrategyInfo.SetPlotValue(4, newPrice);
-
-                    // Clear existing lines and draw a new one at the adjusted price
-                    ClearAllLines();
-                    DrawHorizontalLine(newPrice);
-
-                    // Update current target price
-                    m_CurrentTargetPrice = newPrice;
-                }
-                // Check for Ctrl+Click (send order)
-                else if (arg.keys == SendKey)
-                {
-                    double clickPrice = arg.point.Price;
-                    Output.WriteLine("Indicator: Sending click price " + clickPrice + " to strategy");
-
-                    // Signal to strategy to place an order at this price (using plot value 3)
-                    // The strategy will apply any configured tick offset
-                    StrategyInfo.SetPlotValue(3, clickPrice);
-                }
-            }
-            catch (Exception ex)
-            {
-                Output.WriteLine("Error in indicator mouse event: " + ex.Message);
-            }
-        }
+        // No mouse event handling in the indicator - all handled by the strategy
 
         protected override void CalcBar()
         {
@@ -109,7 +52,7 @@ namespace PowerLanguage.Indicator
 
             // Get target price from strategy if available
             double targetPrice = StrategyInfo.GetPlotValue(1);
-            if (targetPrice > 0 && targetPrice != m_CurrentTargetPrice)
+            if (targetPrice > 0 && Math.Abs(targetPrice - m_CurrentTargetPrice) > 0.0001)
             {
                 // Clear existing lines first
                 ClearAllLines();
@@ -120,7 +63,7 @@ namespace PowerLanguage.Indicator
                 // Update current target price
                 m_CurrentTargetPrice = targetPrice;
 
-                Output.WriteLine("Displaying target price: " + targetPrice);
+                Output.WriteLine("INDICATOR: Displaying target price at " + targetPrice);
                 // Reset the strategy value to prevent duplicate updates
                 StrategyInfo.SetPlotValue(1, 0);
             }
