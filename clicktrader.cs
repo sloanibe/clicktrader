@@ -87,115 +87,38 @@ namespace PowerLanguage.Strategy
             }
         }
 
-        // Main calculation method - runs on each tick in IOG mode
+        // Main calculation method - minimal implementation
         protected override void CalcBar()
         {
-            // Check for signals from the indicator
-            // Check for cancel signal from indicator (Alt+Click)
-            double cancelSignal = StrategyInfo.GetPlotValue(2);
-            if (cancelSignal > 0)
-            {
-                m_CancelOrder = true;
-                StrategyInfo.SetPlotValue(2, 0); // Reset the signal
-            }
-            
-            // Check for line adjustment from indicator (Shift+Click)
-            double adjustPrice = StrategyInfo.GetPlotValue(4);
-            if (adjustPrice > 0)
-            {
-                // Update the target price directly (no offset)
-                if (m_MonitoringBuyPrice)
-                {
-                    m_TargetBuyPrice = adjustPrice;
-                    Output.WriteLine("TARGET ADJUSTED: Buy target at " + adjustPrice);
-                    UpdateIndicatorLine(m_TargetBuyPrice);
-                }
-                else if (m_MonitoringSellPrice)
-                {
-                    m_TargetSellPrice = adjustPrice;
-                    Output.WriteLine("TARGET ADJUSTED: Sell target at " + adjustPrice);
-                    UpdateIndicatorLine(m_TargetSellPrice);
-                }
-                
-                // Reset the signal
-                StrategyInfo.SetPlotValue(4, 0);
-            }
-            
-            // Check for click price from indicator (Ctrl+Click)
-            double clickPrice = StrategyInfo.GetPlotValue(3);
-            if (clickPrice > 0)
-            {
-                // Set target buy price using the configurable tick offset
-                double offsetInPrice = TickOffset * Bars.Info.MinMove / Bars.Info.PriceScale;
-                m_TargetBuyPrice = clickPrice + offsetInPrice;
-                m_MonitoringBuyPrice = true;
-                m_MonitoringSellPrice = false;
-                
-                // Update the indicator with the new target price
-                UpdateIndicatorLine(m_TargetBuyPrice);
-                
-                Output.WriteLine("TARGET SET: Buy target at " + m_TargetBuyPrice);
-                
-                // Reset the signal
-                StrategyInfo.SetPlotValue(3, 0);
-            }
-            
-            // Process cancel request
+            // Process cancel request if set
             if (m_CancelOrder)
             {
-                // Reset the monitoring state
-                Output.WriteLine("CANCELING: Target price monitoring");
                 ResetAllState();
-                
-                // Reset cancel flag
                 m_CancelOrder = false;
             }
             
-            // In visualization-only mode, we just monitor price but don't execute orders
-            if (m_MonitoringBuyPrice)
-            {
-                // Calculate the value of 2 ticks in price points
-                double twoTicksInPrice = 2 * Bars.Info.MinMove / Bars.Info.PriceScale;
-                
-                // Check if price has reached or exceeded target price
-                bool priceConditionMet = (Bars.Close[0] >= m_TargetBuyPrice);
-                
-                // Log when price hits target (occasionally to avoid flooding output)
-                if (priceConditionMet && Bars.CurrentBar % 10 == 0)
-                {
-                    Output.WriteLine("PRICE ALERT: Current price (" + Bars.Close[0] + ") has reached buy target (" + m_TargetBuyPrice + ")");
-                }
-            }
-            
-            // Monitor for target sell price
-            if (m_MonitoringSellPrice)
-            {
-                // Calculate the value of 2 ticks in price points
-                double twoTicksInPrice = 2 * Bars.Info.MinMove / Bars.Info.PriceScale;
-                
-                // Check if price has reached or fallen below target price
-                bool priceConditionMet = (Bars.Close[0] <= m_TargetSellPrice);
-                
-                // Log when price hits target (occasionally to avoid flooding output)
-                if (priceConditionMet && Bars.CurrentBar % 10 == 0)
-                {
-                    Output.WriteLine("PRICE ALERT: Current price (" + Bars.Close[0] + ") has reached sell target (" + m_TargetSellPrice + ")");
-                }
-            }
-            
-            // If we need to update the indicator with new target prices
+            // Monitor price levels and update indicator if needed
             if (m_NeedToUpdateIndicator)
             {
                 if (m_MonitoringBuyPrice)
-                {
                     UpdateIndicatorLine(m_TargetBuyPrice);
-                }
                 else if (m_MonitoringSellPrice)
-                {
                     UpdateIndicatorLine(m_TargetSellPrice);
-                }
+                    
                 m_NeedToUpdateIndicator = false;
             }
+            
+            // Minimal price monitoring - just log alerts occasionally
+            if (m_MonitoringBuyPrice && Bars.Close[0] >= m_TargetBuyPrice && Bars.CurrentBar % 20 == 0)
+            {
+                Output.WriteLine("PRICE ALERT: " + Bars.Close[0] + " reached buy target " + m_TargetBuyPrice);
+            }
+            else if (m_MonitoringSellPrice && Bars.Close[0] <= m_TargetSellPrice && Bars.CurrentBar % 20 == 0)
+            {
+                Output.WriteLine("PRICE ALERT: " + Bars.Close[0] + " reached sell target " + m_TargetSellPrice);
+            }
+            
+            // No duplicate code needed here
         }
 
         // Mouse event handler - only sets flags and target prices
@@ -211,8 +134,8 @@ namespace PowerLanguage.Strategy
                 double offsetInPrice = TickOffset * Bars.Info.MinMove / Bars.Info.PriceScale;
                 m_TargetBuyPrice = clickPrice + offsetInPrice;
                 
-                // Update the indicator with the target price
-                UpdateIndicatorLine(m_TargetBuyPrice);
+                // Set flag to update indicator in CalcBar
+                m_NeedToUpdateIndicator = true;
                 
                 // Set the monitoring flags
                 m_MonitoringBuyPrice = true;
@@ -231,8 +154,8 @@ namespace PowerLanguage.Strategy
                 double offsetInPrice = TickOffset * Bars.Info.MinMove / Bars.Info.PriceScale;
                 m_TargetSellPrice = clickPrice - offsetInPrice;
                 
-                // Update the indicator with the target price
-                UpdateIndicatorLine(m_TargetSellPrice);
+                // Set flag to update indicator in CalcBar
+                m_NeedToUpdateIndicator = true;
                 
                 // Set the monitoring flags
                 m_MonitoringSellPrice = true;
