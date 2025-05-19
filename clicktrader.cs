@@ -14,174 +14,355 @@ namespace PowerLanguage.Strategy
     public class clicktrader : SignalObject
     {
         // Input variables
-        [Input] public int PointsOffset { get; set; } // Offset in points from click price
         [Input] public int OrderQty { get; set; } // Quantity of contracts to trade
-
-        // State variables
-        private double m_ClickPrice = 0;
-        private bool m_OrderCreatedInMouseEvent = false;
-        private bool m_IsBuyOrder = true; // Flag to track if the order is buy or sell
-        private bool m_CancelOrder = false; // Flag to track if we need to cancel orders
-        private bool m_ActiveStopLimitOrder = false; // Flag to track if we have an active order
-
-        // Order objects
-        private IOrderStopLimit m_StopLimitBuy;
-        private IOrderStopLimit m_StopLimitSell;
-
+        [Input] public bool UseIndicatorForVisualization { get; set; } // Whether to use companion indicator
+        [Input] public double TickOffset { get; set; } // Number of ticks to offset the target price
+        
+        // Order objects - created in Create() method
+        private IOrderMarket m_BuyMarketOrder;
+        private IOrderMarket m_SellMarketOrder;
+        private IOrderMarket m_ExitLongOrder;
+        private IOrderMarket m_ExitShortOrder;
+        
+        // Price monitoring variables
+        private double m_TargetBuyPrice = 0;
+        private double m_TargetSellPrice = 0;
+        private bool m_MonitoringBuyPrice = false;
+        private bool m_MonitoringSellPrice = false;
+        private bool m_CancelOrder = false;
+        private bool m_OrderFilled = false;
+        private int m_LastKnownPosition = 0;
+        private bool m_FirstTickAfterOrder = false;
+        private bool m_NeedToUpdateIndicator = false;
+        
         public clicktrader(object ctx) : base(ctx)
         {
-            // Initialize default values for inputs
-            PointsOffset = 15; // Exactly 15 points offset from click price
+            // Default quantity
             OrderQty = 1;
+            UseIndicatorForVisualization = true;
+            TickOffset = 15;  // Default to 15 ticks offset
         }
 
         protected override void Create()
         {
             base.Create();
 
-            // Create both buy and sell stop limit order objects
-            m_StopLimitBuy = OrderCreator.StopLimit(
-                new SOrderParameters(Contracts.Default, "StopLimitBuy", EOrderAction.Buy));
+            // Create order objects - MUST be done in Create() method
+            m_BuyMarketOrder = OrderCreator.MarketThisBar(
+                new SOrderParameters(Contracts.Default, "BuyMarket", EOrderAction.Buy));
+                
+            m_SellMarketOrder = OrderCreator.MarketThisBar(
+                new SOrderParameters(Contracts.Default, "SellMarket", EOrderAction.Sell));
+                
+            m_ExitLongOrder = OrderCreator.MarketThisBar(
+                new SOrderParameters(Contracts.Default, "ExitLong", EOrderAction.Sell));
+                
+            m_ExitShortOrder = OrderCreator.MarketThisBar(
+                new SOrderParameters(Contracts.Default, "ExitShort", EOrderAction.Buy));
 
-            m_StopLimitSell = OrderCreator.StopLimit(
-                new SOrderParameters(Contracts.Default, "StopLimitSell", EOrderAction.SellShort));
+            // Strategy is ready
+            Output.WriteLine("TRADING MODE: Strategy initialized");
+            
+            Output.WriteLine("Strategy created - ready for trading");
+            Output.WriteLine("Make sure to add the pricemonitor indicator to visualize target prices");
         }
 
-        // State variables for order tracking
-        private double m_StopPrice = 0;
-        private double m_LimitPrice = 0;
+        // Reset all state variables to start fresh
+        private void ResetAllState()
+        {
+            m_MonitoringBuyPrice = false;
+            m_MonitoringSellPrice = false;
+            m_TargetBuyPrice = 0;
+            m_TargetSellPrice = 0;
+            m_OrderFilled = false;
+            m_CancelOrder = false;
+            m_FirstTickAfterOrder = false;
+            
+            // Signal to the indicator to clear all lines
+            if (UseIndicatorForVisualization)
+            {
+                StrategyInfo.SetPlotValue(2, 1); // Signal 2 = clear lines
+            }
+            
+            Output.WriteLine("All state reset");
+        }
+        
+        // Tell the indicator to draw a line at the specified price
+        private void UpdateIndicatorLine(double price)
+        {
+            if (UseIndicatorForVisualization && price > 0)
+            {
+                StrategyInfo.SetPlotValue(1, price); // Signal 1 = draw line at price
+                Output.WriteLine("Sent price " + price + " to indicator for visualization");
+            }
+        }
 
-        // CalcBar - submit, resubmit, or cancel orders
+        // Main calculation method - runs on each tick in IOG mode
         protected override void CalcBar()
         {
-            // Check if we need to cancel orders
+            // Check for signals from the indicator
+            if (UseIndicatorForVisualization)
+            {
+                // Check for cancel signal from indicator (Alt+Click)
+                double cancelSignal = StrategyInfo.GetPlotValue(2);
+                if (cancelSignal > 0)
+                {
+                    m_CancelOrder = true;
+                    StrategyInfo.SetPlotValue(2, 0); // Reset the signal
+                }
+                
+                // Check for line adjustment from indicator (Shift+Click)
+                double adjustPrice = StrategyInfo.GetPlotValue(4);
+                if (adjustPrice > 0)
+                {
+                    // Update the target price directly (no offset)
+                    if (m_MonitoringBuyPrice)
+                    {
+                        m_TargetBuyPrice = adjustPrice;
+                        Output.WriteLine("TARGET ADJUSTED: Buy market order will now trigger at " + adjustPrice);
+                    }
+                    else if (m_MonitoringSellPrice)
+                    {
+                        m_TargetSellPrice = adjustPrice;
+                        Output.WriteLine("TARGET ADJUSTED: Sell market order will now trigger at " + adjustPrice);
+                    }
+                    
+                    // Reset the signal
+                    StrategyInfo.SetPlotValue(4, 0);
+                }
+                
+                // Check for click price from indicator (Ctrl+Click)
+                double clickPrice = StrategyInfo.GetPlotValue(3);
+                if (clickPrice > 0)
+                {
+                    // Set target buy price using the configurable tick offset
+                    double offsetInPrice = TickOffset * Bars.Info.MinMove / Bars.Info.PriceScale;
+                    m_TargetBuyPrice = clickPrice + offsetInPrice;
+                    m_MonitoringBuyPrice = true;
+                    m_MonitoringSellPrice = false;
+                    m_OrderFilled = false;
+                    m_FirstTickAfterOrder = false;
+                    
+                    // Update the indicator with the new target price
+                    UpdateIndicatorLine(m_TargetBuyPrice);
+                    
+                    Output.WriteLine("TARGET SET: Buy market order will trigger at " + m_TargetBuyPrice);
+                    
+                    // Reset the signal
+                    StrategyInfo.SetPlotValue(3, 0);
+                }
+            }
+            
+            // Check if position was closed externally
+            if (StrategyInfo.MarketPosition == 0 && m_LastKnownPosition != 0)
+            {
+                ResetAllState();
+            }
+            
+            // Update last known position
+            m_LastKnownPosition = StrategyInfo.MarketPosition;
+            
+            // Process cancel request
             if (m_CancelOrder)
             {
-                // Cancel orders by sending zero-quantity orders
-                if (m_IsBuyOrder && m_StopLimitBuy != null)
+                // Close any open positions
+                if (StrategyInfo.MarketPosition > 0)
                 {
-                    // Send a zero-quantity order to cancel the existing buy order
-                    m_StopLimitBuy.Send(0, 0, 0);
-                    Output.WriteLine("Canceled buy order");
+                    m_ExitLongOrder.Send(StrategyInfo.MarketPosition);
+                    Output.WriteLine("CLOSING: Long position with market order");
                 }
-                else if (!m_IsBuyOrder && m_StopLimitSell != null)
+                else if (StrategyInfo.MarketPosition < 0)
                 {
-                    // Send a zero-quantity order to cancel the existing sell order
-                    m_StopLimitSell.Send(0, 0, 0);
-                    Output.WriteLine("Canceled sell order");
+                    m_ExitShortOrder.Send(Math.Abs(StrategyInfo.MarketPosition));
+                    Output.WriteLine("CLOSING: Short position with market order");
                 }
-
-                // Reset flags
+                
+                // Reset monitoring state
+                ResetAllState();
+                
+                // Reset cancel flag
                 m_CancelOrder = false;
-                m_ActiveStopLimitOrder = false;
-                m_OrderCreatedInMouseEvent = false;
-                Output.WriteLine("Orders cancelled");
+            }
+            
+            // Skip processing on the first tick after order submission when the bar is still forming
+            // This prevents order cancellation issues with Renko bars
+            if (Bars.Status == EBarState.Inside && m_FirstTickAfterOrder)
+            {
                 return;
             }
-
-            // Check if we have a new order from mouse click
-            if (m_OrderCreatedInMouseEvent && m_ClickPrice > 0)
+            
+            // Monitor for target buy price
+            if (m_MonitoringBuyPrice && !m_OrderFilled)
             {
-                // Create the order based on buy/sell flag
-                if (m_IsBuyOrder)
+                // Debug output - show current price and target price with more details
+                Output.WriteLine("PRICE MONITOR: Current price = " + Bars.Close[0] + ", Target buy price = " + m_TargetBuyPrice);
+                Output.WriteLine("PRICE MONITOR: Difference = " + (Bars.Close[0] - m_TargetBuyPrice) + ", Monitoring = " + m_MonitoringBuyPrice + ", OrderFilled = " + m_OrderFilled);
+                
+                // Check if current price or high of the bar has reached or exceeded target price
+                // This ensures we don't miss price movements that passed through our target
+                bool priceConditionMet = Bars.Close[0] >= m_TargetBuyPrice || // Current close price
+                                       Bars.High[0] >= m_TargetBuyPrice || // High of current bar
+                                       Math.Abs(Bars.Close[0] - m_TargetBuyPrice) < 0.0001; // Small tolerance
+                
+                Output.WriteLine("PRICE MONITOR: Current close = " + Bars.Close[0] + ", High = " + Bars.High[0] + ", Target = " + m_TargetBuyPrice);
+                Output.WriteLine("PRICE MONITOR: Price condition met? " + priceConditionMet);
+                
+                if (priceConditionMet)
                 {
-                    // For buy orders, place stop PointsOffset points ABOVE the click price
-                    // Convert points to price using the instrument's point value
-                    double pointValue = Bars.Info.MinMove / Bars.Info.PriceScale;
-                    m_StopPrice = m_ClickPrice + (PointsOffset * pointValue);
-                    // Set limit price 5 points above stop price
-                    m_LimitPrice = m_StopPrice + (5 * pointValue);
-                    Output.WriteLine("DEBUG: MinMove=" + Bars.Info.MinMove + ", PriceScale=" + Bars.Info.PriceScale + ", PointValue=" + pointValue);
-
-                    // Send the buy order
-                    m_StopLimitBuy.Send(m_StopPrice, m_LimitPrice, OrderQty);
-                    m_ActiveStopLimitOrder = true;
-                    Output.WriteLine("Buy order sent at " + m_StopPrice + " (" + PointsOffset + " points above click)");
+                    Output.WriteLine("ATTEMPTING ORDER: Sending buy market order at " + Bars.Close[0]);
+                    
+                    try
+                    {
+                        // Submit market order
+                        m_BuyMarketOrder.Send(OrderQty);
+                        Output.WriteLine("ORDER EXECUTED: Buy market order at " + Bars.Close[0]);
+                        Output.WriteLine("POSITION STATUS: Current position = " + StrategyInfo.MarketPosition);
+                        
+                        // Update state
+                        m_OrderFilled = true;
+                        m_FirstTickAfterOrder = true;
+                        m_MonitoringBuyPrice = false;
+                        
+                        // Tell indicator to clear the line
+                        if (UseIndicatorForVisualization)
+                        {
+                            StrategyInfo.SetPlotValue(2, 1); // Signal to clear lines
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Output.WriteLine("ERROR SENDING ORDER: " + ex.Message);
+                    }
                 }
-                else
-                {
-                    // For sell orders, place stop PointsOffset points BELOW the click price
-                    // Convert points to price using the instrument's point value
-                    double pointValue = Bars.Info.MinMove / Bars.Info.PriceScale;
-                    m_StopPrice = m_ClickPrice - (PointsOffset * pointValue);
-                    // Set limit price 5 points below stop price
-                    m_LimitPrice = m_StopPrice - (5 * pointValue);
-
-                    // Send the sell order
-                    m_StopLimitSell.Send(m_StopPrice, m_LimitPrice, OrderQty);
-                    m_ActiveStopLimitOrder = true;
-                    Output.WriteLine("Sell order sent at " + m_StopPrice + " (" + PointsOffset + " points below click)");
-                }
-
-                // Reset flag after sending order
-                m_OrderCreatedInMouseEvent = false;
             }
-            // Resubmit active orders on each bar until filled or canceled
-            else if (m_ActiveStopLimitOrder && !m_OrderCreatedInMouseEvent)
+            
+            // Monitor for target sell price
+            if (m_MonitoringSellPrice && !m_OrderFilled)
             {
-                // Check if the order has been filled
-                int marketPosition = StrategyInfo.MarketPosition;
-                bool orderFilled = (m_IsBuyOrder && marketPosition > 0) || (!m_IsBuyOrder && marketPosition < 0);
-
-                if (!orderFilled)
+                // Debug output - show current price and target price with more details
+                Output.WriteLine("PRICE MONITOR: Current price = " + Bars.Close[0] + ", Target sell price = " + m_TargetSellPrice);
+                Output.WriteLine("PRICE MONITOR: Difference = " + (m_TargetSellPrice - Bars.Close[0]) + ", Monitoring = " + m_MonitoringSellPrice + ", OrderFilled = " + m_OrderFilled);
+                
+                // Check if current price or low of the bar has reached or gone below target price
+                // This ensures we don't miss price movements that passed through our target
+                bool priceConditionMet = Bars.Close[0] <= m_TargetSellPrice || // Current close price
+                                       Bars.Low[0] <= m_TargetSellPrice || // Low of current bar
+                                       Math.Abs(Bars.Close[0] - m_TargetSellPrice) < 0.0001; // Small tolerance
+                
+                Output.WriteLine("PRICE MONITOR: Current close = " + Bars.Close[0] + ", Low = " + Bars.Low[0] + ", Target = " + m_TargetSellPrice);
+                Output.WriteLine("PRICE MONITOR: Price condition met? " + priceConditionMet);
+                
+                if (priceConditionMet)
                 {
-                    // Resubmit the order
-                    if (m_IsBuyOrder)
+                    Output.WriteLine("ATTEMPTING ORDER: Sending sell market order at " + Bars.Close[0]);
+                    
+                    try
                     {
-                        m_StopLimitBuy.Send(m_StopPrice, m_LimitPrice, OrderQty);
+                        // Submit market order
+                        m_SellMarketOrder.Send(OrderQty);
+                        Output.WriteLine("ORDER EXECUTED: Sell market order at " + Bars.Close[0]);
+                        Output.WriteLine("POSITION STATUS: Current position = " + StrategyInfo.MarketPosition);
+                        
+                        // Update state
+                        m_OrderFilled = true;
+                        m_FirstTickAfterOrder = true;
+                        m_MonitoringSellPrice = false;
+                        
+                        // Tell indicator to clear the line
+                        if (UseIndicatorForVisualization)
+                        {
+                            StrategyInfo.SetPlotValue(2, 1); // Signal to clear lines
+                        }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        m_StopLimitSell.Send(m_StopPrice, m_LimitPrice, OrderQty);
+                        Output.WriteLine("ERROR SENDING ORDER: " + ex.Message);
                     }
                 }
-                else
+            }
+            
+            // If we need to update the indicator with new target prices
+            if (m_NeedToUpdateIndicator)
+            {
+                if (m_MonitoringBuyPrice)
                 {
-                    // Order has been filled, reset the active order flag
-                    m_ActiveStopLimitOrder = false;
-                    Output.WriteLine("Order filled");
+                    UpdateIndicatorLine(m_TargetBuyPrice);
                 }
+                else if (m_MonitoringSellPrice)
+                {
+                    UpdateIndicatorLine(m_TargetSellPrice);
+                }
+                m_NeedToUpdateIndicator = false;
             }
         }
 
-        // Ultra-minimal mouse handler - just two essential actions
+        // Mouse event handler - only sets flags and target prices
         protected override void OnMouseEvent(MouseClickArgs arg)
         {
-            // Only log important mouse events
-
-            // RIGHT CLICK: Cancel all orders
-            if (arg.buttons == MouseButtons.Right)
-            {
-                m_CancelOrder = true;
-                Output.WriteLine("Right click detected - canceling orders");
-                return;
-            }
-
-            // SHIFT+LEFT CLICK: Create buy stop limit order
+            // SHIFT+LEFT CLICK: Set target buy price 15 points above click price
             if (arg.buttons == MouseButtons.Left && (arg.keys & Keys.Shift) == Keys.Shift)
             {
                 // Get the price at the click position
-                m_ClickPrice = arg.point.Price;
-                Output.WriteLine("DEBUG: Raw click price = " + arg.point.Price);
-
-                // Set up for buy order
-                m_IsBuyOrder = true;
-                m_OrderCreatedInMouseEvent = true;
-                Output.WriteLine("Shift+Left click detected - setting up buy order at " + m_ClickPrice);
-                return;
+                double clickPrice = arg.point.Price;
+                
+                // Calculate target price using the configurable tick offset
+                // Convert ticks to price points using MinMove and PriceScale
+                double offsetInPrice = TickOffset * Bars.Info.MinMove / Bars.Info.PriceScale;
+                m_TargetBuyPrice = clickPrice + offsetInPrice;
+                
+                // Set monitoring flag
+                m_MonitoringBuyPrice = true;
+                m_MonitoringSellPrice = false;
+                m_OrderFilled = false;
+                m_FirstTickAfterOrder = false;
+                
+                // Flag that we need to update the indicator
+                if (UseIndicatorForVisualization)
+                {
+                    UpdateIndicatorLine(m_TargetBuyPrice);
+                }
+                
+                Output.WriteLine("TARGET SET: Buy market order will trigger at " + m_TargetBuyPrice);
             }
-
-            // CTRL+LEFT CLICK: Create sell stop limit order
+            
+            // CTRL+LEFT CLICK: Set target sell price 15 points below click price
             if (arg.buttons == MouseButtons.Left && (arg.keys & Keys.Control) == Keys.Control)
             {
                 // Get the price at the click position
-                m_ClickPrice = arg.point.Price;
-
-                // Set up for sell order
-                m_IsBuyOrder = false;
-                m_OrderCreatedInMouseEvent = true;
-                Output.WriteLine("Ctrl+Left click detected - setting up sell order at " + m_ClickPrice);
-                return;
+                double clickPrice = arg.point.Price;
+                
+                // Calculate target price using the configurable tick offset
+                // Convert ticks to price points using MinMove and PriceScale
+                double offsetInPrice = TickOffset * Bars.Info.MinMove / Bars.Info.PriceScale;
+                m_TargetSellPrice = clickPrice - offsetInPrice;
+                
+                // Set monitoring flag
+                m_MonitoringSellPrice = true;
+                m_MonitoringBuyPrice = false;
+                m_OrderFilled = false;
+                m_FirstTickAfterOrder = false;
+                
+                // Flag that we need to update the indicator
+                if (UseIndicatorForVisualization)
+                {
+                    UpdateIndicatorLine(m_TargetSellPrice);
+                }
+                
+                Output.WriteLine("TARGET SET: Sell market order will trigger at " + m_TargetSellPrice);
+            }
+            
+            // RIGHT CLICK: Cancel order monitoring or close position
+            if (arg.buttons == MouseButtons.Right)
+            {
+                m_CancelOrder = true;
+                Output.WriteLine("CANCEL REQUESTED: Will process in CalcBar");
+            }
+            
+            // CTRL+RIGHT CLICK: Reset all state (for when positions are closed externally)
+            if (arg.buttons == MouseButtons.Right && (arg.keys & Keys.Control) == Keys.Control)
+            {
+                ResetAllState();
+                Output.WriteLine("MANUAL RESET: All state variables reset");
             }
         }
     }
