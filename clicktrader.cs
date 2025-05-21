@@ -16,12 +16,14 @@ namespace PowerLanguage.Strategy
         // Input variables
         [Input] public int OrderQty { get; set; } // Quantity of contracts to trade
         [Input] public double TickOffset { get; set; } // Number of ticks to offset the target price
+        [Input] public int ProtectiveStopTicks { get; set; } // Number of ticks for protective stop
 
         // Order objects for trade execution
         private IOrderStopLimit m_BuyStopLimitOrder;
         private IOrderStopLimit m_SellStopLimitOrder;
         private IOrderMarket m_ExitLongOrder;
         private IOrderMarket m_ExitShortOrder;
+        private IOrderPriced m_ProtectiveStopShort; // Protective stop for short positions
 
         // Price monitoring variables
         private double m_TargetBuyPrice = 0;
@@ -42,12 +44,15 @@ namespace PowerLanguage.Strategy
         private int m_BuyOrderQty = 0;
         private double m_BuyStopPrice = 0;
         private double m_BuyLimitPrice = 0;
+        private double m_ProtectiveStopPrice = 0; // Price level for protective stop
+        private bool m_ProtectiveStopActive = false; // Flag to track if we have a protective stop pending
 
         public clicktrader(object ctx) : base(ctx)
         {
             // Default quantity
             OrderQty = 1;
             TickOffset = 15;  // Default to 15 ticks offset
+            ProtectiveStopTicks = 22; // Default to 22 ticks for protective stop
         }
 
         protected override void Create()
@@ -66,12 +71,14 @@ namespace PowerLanguage.Strategy
 
             m_ExitShortOrder = OrderCreator.MarketThisBar(
                 new SOrderParameters(Contracts.Default, "ExitShort", EOrderAction.BuyToCover));
+                
+            m_ProtectiveStopShort = OrderCreator.Stop(
+                new SOrderParameters(Contracts.Default, "ProtectiveStopShort", EOrderAction.BuyToCover));
 
             Output.WriteLine("ORDER OBJECTS: Created market orders for buy, sell, and position exits");
 
-            // Strategy is ready
-            Output.WriteLine("Strategy initialized with order objects");
-            Output.WriteLine("Make sure to add the pricemonitor indicator to visualize target prices");
+            // Initialize the strategy
+            Output.WriteLine("ClickTrader Ready");
         }
 
         // Reset all state variables to start fresh
@@ -99,10 +106,15 @@ namespace PowerLanguage.Strategy
             m_BuyOrderQty = 0; // Clear buy order quantity
             m_BuyStopPrice = 0; // Clear buy stop price
             m_BuyLimitPrice = 0; // Clear buy limit price
+            m_ProtectiveStopPrice = 0; // Clear protective stop price
+            m_ProtectiveStopActive = false; // Reset protective stop flag
             m_LastKnownPosition = 0; // Force position tracking reset
 
             // Signal to the indicator to clear all lines
             StrategyInfo.SetPlotValue(2, 1); // Signal 2 = clear lines
+            
+            // Note: We don't need to explicitly cancel orders in MultiCharts .NET
+            // Orders are automatically canceled when new ones are submitted
 
             Output.WriteLine("All state reset");
         }
@@ -113,41 +125,11 @@ namespace PowerLanguage.Strategy
             // Get the current position from StrategyInfo
             int currentPosition = StrategyInfo.MarketPosition;
 
-            // Check if position changed since last check
-            if (currentPosition != m_LastKnownPosition)
+            // If our tracking is different, update it
+            if (m_LastKnownPosition != currentPosition)
             {
-                // Log the position change
                 Output.WriteLine("POSITION SYNC: Position changed from " + m_LastKnownPosition + " to " + currentPosition);
-
-                // If position was closed externally (went to zero from non-zero)
-                if (currentPosition == 0 && m_LastKnownPosition != 0)
-                {
-                    Output.WriteLine("POSITION SYNC: Position was closed externally. Resetting order filled state.");
-                    m_OrderFilled = false;
-                }
-
-                // Update the last known position
                 m_LastKnownPosition = currentPosition;
-            }
-        }
-
-        // Tell the indicator to draw a line at the specified price
-        private void UpdateIndicatorLine(double price)
-        {
-            if (price > 0)
-            {
-                // First, clear any existing lines in the indicator by sending signal 2
-                StrategyInfo.SetPlotValue(2, 1);
-
-                // Force reset the plot value to 0 first to ensure the indicator sees the change
-                StrategyInfo.SetPlotValue(1, 0);
-
-                // Now set the actual target price
-                StrategyInfo.SetPlotValue(1, price); // Signal 1 = draw line at price
-                Output.WriteLine("TARGET LINE: Drawing at price " + price);
-
-                // Reset the clear signal
-                StrategyInfo.SetPlotValue(2, 0);
             }
         }
 
@@ -235,6 +217,13 @@ namespace PowerLanguage.Strategy
                     m_SellOrderQty = 0;
                     m_SellStopPrice = 0;
                     m_SellLimitPrice = 0;
+                    
+                    // Calculate the protective stop price (22 ticks above entry)
+                    double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+                    m_ProtectiveStopPrice = Bars.Close[0] + (ProtectiveStopTicks * tickSize);
+                    
+                    // Set the flag to indicate we need to place a protective stop
+                    m_ProtectiveStopActive = true;
                 }
                 else
                 {
@@ -243,7 +232,7 @@ namespace PowerLanguage.Strategy
                     {
                         m_SellStopLimitOrder.Send(m_SellStopPrice, m_SellLimitPrice, m_SellOrderQty);
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
                         // Silently handle exception
                     }
@@ -272,7 +261,7 @@ namespace PowerLanguage.Strategy
                     {
                         m_BuyStopLimitOrder.Send(m_BuyStopPrice, m_BuyLimitPrice, m_BuyOrderQty);
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
                         // Silently handle exception
                     }
@@ -280,6 +269,35 @@ namespace PowerLanguage.Strategy
 
                 // Update last known position
                 m_LastKnownPosition = StrategyInfo.MarketPosition;
+            }
+            
+            // Check if we need to place or resubmit a protective stop for short positions
+            if (m_ProtectiveStopActive && StrategyInfo.MarketPosition < 0)
+            {
+                try
+                {
+                    // Place or resubmit a stop order at the protective stop price
+                    m_ProtectiveStopShort.Send(m_ProtectiveStopPrice, Math.Abs(StrategyInfo.MarketPosition));
+                }
+                catch (Exception)
+                {
+                    // Silently handle exception
+                }
+                
+                // Check if the position has been closed, indicating the stop was triggered
+                if (StrategyInfo.MarketPosition == 0)
+                {
+                    // Reset the protective stop tracking variables
+                    m_ProtectiveStopActive = false;
+                    m_ProtectiveStopPrice = 0;
+                }
+            }
+            else if (m_ProtectiveStopActive && StrategyInfo.MarketPosition >= 0)
+            {
+                // If we no longer have a short position but the flag is still active,
+                // reset the protective stop tracking variables
+                m_ProtectiveStopActive = false;
+                m_ProtectiveStopPrice = 0;
             }
 
             // No duplicate code needed here
@@ -324,7 +342,7 @@ namespace PowerLanguage.Strategy
                 m_BuyOrderQty = OrderQty;
                 m_LastKnownPosition = StrategyInfo.MarketPosition; // Store current position for comparison
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 // Silently handle exception
             }
@@ -363,7 +381,7 @@ namespace PowerLanguage.Strategy
                 m_SellOrderQty = OrderQty;
                 m_LastKnownPosition = StrategyInfo.MarketPosition; // Store current position for comparison
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 // Silently handle exception
             }
@@ -419,19 +437,26 @@ namespace PowerLanguage.Strategy
                 Output.WriteLine("TARGET SET: Sell target at " + m_TargetSellPrice);
             }
 
-            // RIGHT CLICK: Cancel target price monitoring
+            // RIGHT CLICK: Cancel all orders
             if (arg.buttons == MouseButtons.Right)
             {
                 m_CancelOrder = true;
-                Output.WriteLine("CANCEL REQUESTED: Will clear target price");
+                Output.WriteLine("CANCEL REQUEST: Will cancel all orders in CalcBar");
             }
 
-            // CTRL+RIGHT CLICK: Reset all state
+            // CTRL+RIGHT CLICK: Close all positions
             if (arg.buttons == MouseButtons.Right && (arg.keys & Keys.Control) == Keys.Control)
             {
-                ResetAllState();
-                Output.WriteLine("MANUAL RESET: All state variables reset");
+                m_ClosePositionFlag = true;
+                Output.WriteLine("CLOSE POSITION REQUEST: Will close all positions in CalcBar");
             }
+        }
+
+        // Helper method to update the indicator line on the chart
+        private void UpdateIndicatorLine(double price)
+        {
+            // Draw a horizontal line at the target price
+            StrategyInfo.SetPlotValue(1, price);
         }
     }
 }
