@@ -24,6 +24,7 @@ namespace PowerLanguage.Strategy
         private IOrderMarket m_ExitLongOrder;
         private IOrderMarket m_ExitShortOrder;
         private IOrderPriced m_ProtectiveStopShort; // Protective stop for short positions
+        private IOrderPriced m_ProtectiveStopLong; // Protective stop for long positions
 
         // Price monitoring variables
         private double m_TargetBuyPrice = 0;
@@ -44,8 +45,10 @@ namespace PowerLanguage.Strategy
         private int m_BuyOrderQty = 0;
         private double m_BuyStopPrice = 0;
         private double m_BuyLimitPrice = 0;
-        private double m_ProtectiveStopPrice = 0; // Price level for protective stop
-        private bool m_ProtectiveStopActive = false; // Flag to track if we have a protective stop pending
+        private double m_ProtectiveStopShortPrice = 0; // Price level for protective stop for short positions
+        private bool m_ProtectiveStopShortActive = false; // Flag to track if we have a protective stop pending for short positions
+        private double m_ProtectiveStopLongPrice = 0; // Price level for protective stop for long positions
+        private bool m_ProtectiveStopLongActive = false; // Flag to track if we have a protective stop pending for long positions
 
         public clicktrader(object ctx) : base(ctx)
         {
@@ -74,6 +77,9 @@ namespace PowerLanguage.Strategy
                 
             m_ProtectiveStopShort = OrderCreator.Stop(
                 new SOrderParameters(Contracts.Default, "ProtectiveStopShort", EOrderAction.BuyToCover));
+                
+            m_ProtectiveStopLong = OrderCreator.Stop(
+                new SOrderParameters(Contracts.Default, "ProtectiveStopLong", EOrderAction.Sell));
 
             Output.WriteLine("ORDER OBJECTS: Created market orders for buy, sell, and position exits");
 
@@ -106,8 +112,10 @@ namespace PowerLanguage.Strategy
             m_BuyOrderQty = 0; // Clear buy order quantity
             m_BuyStopPrice = 0; // Clear buy stop price
             m_BuyLimitPrice = 0; // Clear buy limit price
-            m_ProtectiveStopPrice = 0; // Clear protective stop price
-            m_ProtectiveStopActive = false; // Reset protective stop flag
+            m_ProtectiveStopShortPrice = 0; // Clear protective stop price for short positions
+            m_ProtectiveStopShortActive = false; // Reset protective stop flag for short positions
+            m_ProtectiveStopLongPrice = 0; // Clear protective stop price for long positions
+            m_ProtectiveStopLongActive = false; // Reset protective stop flag for long positions
             m_LastKnownPosition = 0; // Force position tracking reset
 
             // Signal to the indicator to clear all lines
@@ -220,10 +228,10 @@ namespace PowerLanguage.Strategy
                     
                     // Calculate the protective stop price (22 ticks above entry)
                     double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
-                    m_ProtectiveStopPrice = Bars.Close[0] + (ProtectiveStopTicks * tickSize);
+                    m_ProtectiveStopShortPrice = Bars.Close[0] + (ProtectiveStopTicks * tickSize);
                     
                     // Set the flag to indicate we need to place a protective stop
-                    m_ProtectiveStopActive = true;
+                    m_ProtectiveStopShortActive = true;
                 }
                 else
                 {
@@ -253,6 +261,13 @@ namespace PowerLanguage.Strategy
                     m_BuyOrderQty = 0;
                     m_BuyStopPrice = 0;
                     m_BuyLimitPrice = 0;
+                    
+                    // Calculate the protective stop price (22 ticks below entry)
+                    double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+                    m_ProtectiveStopLongPrice = Bars.Close[0] - (ProtectiveStopTicks * tickSize);
+                    
+                    // Set the flag to indicate we need to place a protective stop
+                    m_ProtectiveStopLongActive = true;
                 }
                 else
                 {
@@ -272,12 +287,12 @@ namespace PowerLanguage.Strategy
             }
             
             // Check if we need to place or resubmit a protective stop for short positions
-            if (m_ProtectiveStopActive && StrategyInfo.MarketPosition < 0)
+            if (m_ProtectiveStopShortActive && StrategyInfo.MarketPosition < 0)
             {
                 try
                 {
                     // Place or resubmit a stop order at the protective stop price
-                    m_ProtectiveStopShort.Send(m_ProtectiveStopPrice, Math.Abs(StrategyInfo.MarketPosition));
+                    m_ProtectiveStopShort.Send(m_ProtectiveStopShortPrice, Math.Abs(StrategyInfo.MarketPosition));
                 }
                 catch (Exception)
                 {
@@ -288,16 +303,45 @@ namespace PowerLanguage.Strategy
                 if (StrategyInfo.MarketPosition == 0)
                 {
                     // Reset the protective stop tracking variables
-                    m_ProtectiveStopActive = false;
-                    m_ProtectiveStopPrice = 0;
+                    m_ProtectiveStopShortActive = false;
+                    m_ProtectiveStopShortPrice = 0;
                 }
             }
-            else if (m_ProtectiveStopActive && StrategyInfo.MarketPosition >= 0)
+            else if (m_ProtectiveStopShortActive && StrategyInfo.MarketPosition >= 0)
             {
                 // If we no longer have a short position but the flag is still active,
                 // reset the protective stop tracking variables
-                m_ProtectiveStopActive = false;
-                m_ProtectiveStopPrice = 0;
+                m_ProtectiveStopShortActive = false;
+                m_ProtectiveStopShortPrice = 0;
+            }
+            
+            // Check if we need to place or resubmit a protective stop for long positions
+            if (m_ProtectiveStopLongActive && StrategyInfo.MarketPosition > 0)
+            {
+                try
+                {
+                    // Place or resubmit a stop order at the protective stop price
+                    m_ProtectiveStopLong.Send(m_ProtectiveStopLongPrice, StrategyInfo.MarketPosition);
+                }
+                catch (Exception)
+                {
+                    // Silently handle exception
+                }
+                
+                // Check if the position has been closed, indicating the stop was triggered
+                if (StrategyInfo.MarketPosition == 0)
+                {
+                    // Reset the protective stop tracking variables
+                    m_ProtectiveStopLongActive = false;
+                    m_ProtectiveStopLongPrice = 0;
+                }
+            }
+            else if (m_ProtectiveStopLongActive && StrategyInfo.MarketPosition <= 0)
+            {
+                // If we no longer have a long position but the flag is still active,
+                // reset the protective stop tracking variables
+                m_ProtectiveStopLongActive = false;
+                m_ProtectiveStopLongPrice = 0;
             }
 
             // No duplicate code needed here
