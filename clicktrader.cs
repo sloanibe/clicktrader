@@ -172,7 +172,7 @@ namespace PowerLanguage.Strategy
                 {
                     Output.WriteLine("CANCEL: No open position to close");
                 }
-                
+
                 // Then reset all state variables
                 ResetAllState();
                 m_CancelOrder = false;
@@ -223,7 +223,7 @@ namespace PowerLanguage.Strategy
             {
                 processSellTarget();
             }
-            
+
             // Check if we're waiting for a sell order to be filled
             if (m_WaitingForSellFill)
             {
@@ -231,8 +231,6 @@ namespace PowerLanguage.Strategy
                 if (StrategyInfo.MarketPosition < m_LastKnownPosition)
                 {
                     // Order was filled
-                    Output.WriteLine("ORDER FILLED: Sell stop-limit order has been filled. Position changed from " + 
-                                    m_LastKnownPosition + " to " + StrategyInfo.MarketPosition);
                     m_WaitingForSellFill = false;
                     m_SellOrderQty = 0;
                     m_SellStopPrice = 0;
@@ -241,22 +239,20 @@ namespace PowerLanguage.Strategy
                 else
                 {
                     // Order not filled yet, resubmit
-                    Output.WriteLine("ORDER RESUBMISSION: Resubmitting sell stop-limit order for " + m_SellOrderQty + 
-                                    " contracts, Stop=" + m_SellStopPrice + ", Limit=" + m_SellLimitPrice);
                     try
                     {
                         m_SellStopLimitOrder.Send(m_SellStopPrice, m_SellLimitPrice, m_SellOrderQty);
                     }
                     catch (Exception ex)
                     {
-                        Output.WriteLine("ORDER ERROR: Failed to resubmit sell order: " + ex.Message);
+                        // Silently handle exception
                     }
                 }
-                
+
                 // Update last known position
                 m_LastKnownPosition = StrategyInfo.MarketPosition;
             }
-            
+
             // Check if we're waiting for a buy order to be filled
             if (m_WaitingForBuyFill)
             {
@@ -264,8 +260,6 @@ namespace PowerLanguage.Strategy
                 if (StrategyInfo.MarketPosition > m_LastKnownPosition)
                 {
                     // Order was filled
-                    Output.WriteLine("ORDER FILLED: Buy stop-limit order has been filled. Position changed from " + 
-                                    m_LastKnownPosition + " to " + StrategyInfo.MarketPosition);
                     m_WaitingForBuyFill = false;
                     m_BuyOrderQty = 0;
                     m_BuyStopPrice = 0;
@@ -274,22 +268,20 @@ namespace PowerLanguage.Strategy
                 else
                 {
                     // Order not filled yet, resubmit
-                    Output.WriteLine("ORDER RESUBMISSION: Resubmitting buy stop-limit order for " + m_BuyOrderQty + 
-                                    " contracts, Stop=" + m_BuyStopPrice + ", Limit=" + m_BuyLimitPrice);
                     try
                     {
                         m_BuyStopLimitOrder.Send(m_BuyStopPrice, m_BuyLimitPrice, m_BuyOrderQty);
                     }
                     catch (Exception ex)
                     {
-                        Output.WriteLine("ORDER ERROR: Failed to resubmit buy order: " + ex.Message);
+                        // Silently handle exception
                     }
                 }
-                
+
                 // Update last known position
                 m_LastKnownPosition = StrategyInfo.MarketPosition;
             }
-            
+
             // No duplicate code needed here
         }
 
@@ -311,34 +303,30 @@ namespace PowerLanguage.Strategy
 
         private void processBuyTarget()
         {
-            Output.WriteLine("TARGET REACHED: Price " + Bars.Close[0] + " hit buy target " + m_TargetBuyPrice);
-
             // Execute buy stop-limit order with error handling
             try
             {
                 // For a buy stop-limit order:
                 // - Stop price: The price that triggers the order (at or above current price)
                 // - Limit price: The maximum price you're willing to pay (slightly above stop price)
-                
+
                 // Calculate and store stop and limit prices
-                m_BuyStopPrice = m_TargetBuyPrice;
-                m_BuyLimitPrice = m_BuyStopPrice + (1 * Bars.Info.MinMove / Bars.Info.PriceScale); // 1 tick above stop price
-                
+                // Set stop price 1 tick above target price
+                double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+                m_BuyStopPrice = m_TargetBuyPrice + tickSize;
+                m_BuyLimitPrice = m_BuyStopPrice + tickSize; // 1 tick above stop price
+
                 // Send the stop-limit order with stop price, limit price, and quantity as int
                 m_BuyStopLimitOrder.Send(m_BuyStopPrice, m_BuyLimitPrice, OrderQty);
-                Output.WriteLine("ORDER SUBMISSION: Buy stop-limit order sent for " + OrderQty + 
-                                " contracts, Stop=" + m_BuyStopPrice + ", Limit=" + m_BuyLimitPrice);
-                
+
                 // Set flags to track order fill status
                 m_WaitingForBuyFill = true;
                 m_BuyOrderQty = OrderQty;
                 m_LastKnownPosition = StrategyInfo.MarketPosition; // Store current position for comparison
-                Output.WriteLine("ORDER TRACKING: Now monitoring for buy order fill");
             }
             catch (Exception ex)
             {
-                Output.WriteLine("ORDER ERROR: Failed to send buy order: " + ex.Message);
-                Output.WriteLine("ORDER ERROR: Exception type: " + ex.GetType().Name);
+                // Silently handle exception
             }
 
             // Clear the target price and monitoring flag
@@ -351,31 +339,8 @@ namespace PowerLanguage.Strategy
 
         private void processSellTarget()
         {
-            // Diagnostic information
-            Output.WriteLine("DIAGNOSTICS: Bar status = " + Bars.Status +
-                            ", Current position = " + StrategyInfo.MarketPosition +
-                            ", Bar# = " + Bars.CurrentBar);
-            Output.WriteLine("DIAGNOSTICS: Price details - High = " + Bars.High[0] +
-                            ", Low = " + Bars.Low[0] +
-                            ", Close = " + Bars.Close[0]);
-
-            // Position diagnostic - just information, not changing logic
-            if (StrategyInfo.MarketPosition < 0)
-                Output.WriteLine("POSITION CHECK: Already have a short position of " + Math.Abs(StrategyInfo.MarketPosition) + " contracts");
-            else if (StrategyInfo.MarketPosition > 0)
-                Output.WriteLine("POSITION CHECK: Have a long position of " + StrategyInfo.MarketPosition + " contracts");
-            else
-                Output.WriteLine("POSITION CHECK: No current position");
-
-            // Check if position changed externally (comparing to last known position)
-            if (StrategyInfo.MarketPosition != m_LastKnownPosition)
-                Output.WriteLine("POSITION CHANGE: Position changed from " + m_LastKnownPosition + " to " + StrategyInfo.MarketPosition +
-                                ". This could indicate an external position change.");
-
             // Update last known position
             m_LastKnownPosition = StrategyInfo.MarketPosition;
-
-            Output.WriteLine("TARGET REACHED: Price " + Bars.Close[0] + " hit sell target " + m_TargetSellPrice);
 
             // Execute sell stop-limit order with error handling
             try
@@ -383,26 +348,24 @@ namespace PowerLanguage.Strategy
                 // For a sell stop-limit order:
                 // - Stop price: The price that triggers the order (at or below current price)
                 // - Limit price: The minimum price you're willing to accept (slightly below stop price)
-                
+
                 // Calculate and store stop and limit prices
-                m_SellStopPrice = m_TargetSellPrice;
-                m_SellLimitPrice = m_SellStopPrice - (1 * Bars.Info.MinMove / Bars.Info.PriceScale); // 1 tick below stop price
-                
+                // Set stop price 1 tick below target price
+                double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+                m_SellStopPrice = m_TargetSellPrice - tickSize;
+                m_SellLimitPrice = m_SellStopPrice - tickSize; // 1 tick below stop price
+
                 // Send the stop-limit order with stop price, limit price, and quantity as int
                 m_SellStopLimitOrder.Send(m_SellStopPrice, m_SellLimitPrice, OrderQty);
-                Output.WriteLine("ORDER SUBMISSION: Sell stop-limit order sent for " + OrderQty + 
-                                " contracts, Stop=" + m_SellStopPrice + ", Limit=" + m_SellLimitPrice);
-                
+
                 // Set flags to track order fill status
                 m_WaitingForSellFill = true;
                 m_SellOrderQty = OrderQty;
                 m_LastKnownPosition = StrategyInfo.MarketPosition; // Store current position for comparison
-                Output.WriteLine("ORDER TRACKING: Now monitoring for sell order fill");
             }
             catch (Exception ex)
             {
-                Output.WriteLine("ORDER ERROR: Failed to send sell order: " + ex.Message);
-                Output.WriteLine("ORDER ERROR: Exception type: " + ex.GetType().Name);
+                // Silently handle exception
             }
 
             // Clear the target price and monitoring flag
