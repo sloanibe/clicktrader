@@ -20,6 +20,8 @@ namespace PowerLanguage.Strategy
 
         // Order objects for trade execution
         private IOrderStopLimit m_BuyStopLimitOrder;
+        private IOrderPriced m_BuyStopOrder;
+        private IOrderMarket m_BuyMarketOrder;
         private IOrderStopLimit m_SellStopLimitOrder;
         private IOrderMarket m_ExitLongOrder;
         private IOrderMarket m_ExitShortOrder;
@@ -65,6 +67,14 @@ namespace PowerLanguage.Strategy
             // Create order objects for trade execution
             m_BuyStopLimitOrder = OrderCreator.StopLimit(
                 new SOrderParameters(Contracts.Default, "BuyStopLimit", EOrderAction.Buy));
+                
+            // Add Buy Stop order for faster execution
+            m_BuyStopOrder = OrderCreator.Stop(
+                new SOrderParameters(Contracts.Default, "BuyStop", EOrderAction.Buy));
+                
+            // Add Buy Market order for immediate execution
+            m_BuyMarketOrder = OrderCreator.MarketNextBar(
+                new SOrderParameters(Contracts.Default, "BuyMarket", EOrderAction.Buy));
 
             m_SellStopLimitOrder = OrderCreator.StopLimit(
                 new SOrderParameters(Contracts.Default, "SellStopLimit", EOrderAction.SellShort));
@@ -365,30 +375,43 @@ namespace PowerLanguage.Strategy
 
         private void processBuyTarget()
         {
-            // Execute buy stop-limit order with error handling
+            // Execute buy market order with error handling
             try
             {
-                // For a buy stop-limit order:
-                // - Stop price: The price that triggers the order (at or above current price)
-                // - Limit price: The maximum price you're willing to pay (slightly above stop price)
-
-                // Calculate and store stop and limit prices
-                // Set stop price 1 tick above target price
-                double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
-                m_BuyStopPrice = m_TargetBuyPrice + tickSize;
-                m_BuyLimitPrice = m_BuyStopPrice + tickSize; // 1 tick above stop price
-
-                // Send the stop-limit order with stop price, limit price, and quantity as int
-                m_BuyStopLimitOrder.Send(m_BuyStopPrice, m_BuyLimitPrice, OrderQty);
-
-                // Set flags to track order fill status
-                m_WaitingForBuyFill = true;
-                m_BuyOrderQty = OrderQty;
-                m_LastKnownPosition = StrategyInfo.MarketPosition; // Store current position for comparison
+                // For a market order:
+                // - Executes immediately at the current market price
+                // - Fastest possible execution with no price conditions
+                
+                // Log environment information
+                Output.WriteLine("ENVIRONMENT: IsRealTimeCalc=" + Environment.IsRealTimeCalc);
+                
+                // Log order submission attempt
+                Output.WriteLine("SUBMITTING ORDER: Buy market order at current price");
+                
+                // Submit the market order once for immediate execution
+                try
+                {
+                    // Send the market order with quantity
+                    // According to documentation: IOrderMarket.Send(int numLots)
+                    m_BuyMarketOrder.Send(OrderQty);
+                    Output.WriteLine("ORDER SENT: Buy market order sent for " + OrderQty + " contracts");
+                    
+                    // Set flags to track order fill status immediately after sending
+                    m_WaitingForBuyFill = true;
+                    m_BuyOrderQty = OrderQty;
+                    m_LastKnownPosition = StrategyInfo.MarketPosition; // Store current position for comparison
+                }
+                catch (Exception ex)
+                {
+                    Output.WriteLine("ORDER ERROR: " + ex.Message);
+                }
+                
+                // Check order status immediately after sending
+                CheckOrderStatus();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // Silently handle exception
+                Output.WriteLine("PROCESS ERROR: " + ex.Message);
             }
 
             // Clear the target price and monitoring flag
