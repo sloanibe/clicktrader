@@ -64,6 +64,17 @@ namespace PowerLanguage.Indicator
                 // Determine bar direction (up or down)
                 bool isUpBar = currentClose > previousClose;
                 
+                // Detect if this is a color change bar (direction changed from previous bar)
+                m_IsColorChangeBar = false;
+                if (Bars.CurrentBar > 2) // Need at least 3 bars to detect color change
+                {
+                    double priorClose = Bars.Close[2]; // Two bars ago
+                    bool priorBarWasUp = previousClose > priorClose;
+                    m_IsColorChangeBar = (isUpBar != priorBarWasUp);
+                }
+                
+                Output.WriteLine("Initial bar direction: " + (isUpBar ? "UP" : "DOWN") + ", Color change: " + (m_IsColorChangeBar ? "YES" : "NO"));
+                
                 // Calculate the box size
                 m_BoxSize = Math.Abs(currentClose - previousClose);
                 
@@ -89,11 +100,11 @@ namespace PowerLanguage.Indicator
                 }
                 
                 // Draw projections immediately instead of waiting for CalcBar
-                DrawSameDirectionProjection();
+                DrawSameDirectionProjection(m_IsColorChangeBar);
                 
                 if (ShowOppositeProjection)
                 {
-                    DrawOppositeDirectionProjection();
+                    DrawOppositeDirectionProjection(m_IsColorChangeBar);
                 }
                 
                 // No need to set flag since we already drew the projections
@@ -113,6 +124,9 @@ namespace PowerLanguage.Indicator
             }
         }
 
+        // Class-level variable to track color change
+        private bool m_IsColorChangeBar = false;
+        
         protected override void CalcBar()
         {
             // Keep indicator active with a constant value that won't affect the chart
@@ -142,6 +156,17 @@ namespace PowerLanguage.Indicator
 
                     // Determine bar direction (up or down)
                     bool isUpBar = (currentClose > previousClose) || (previousClose == 0 && currentClose > Bars.Open[0]);
+                
+                    // Detect if this is a color change bar (direction changed from previous bar)
+                    m_IsColorChangeBar = false;
+                    if (Bars.CurrentBar > 2) // Need at least 3 bars to detect color change
+                    {
+                        double priorClose = Bars.Close[2]; // Two bars ago
+                        bool priorBarWasUp = previousClose > priorClose;
+                        m_IsColorChangeBar = (isUpBar != priorBarWasUp);
+                    }
+                
+                    Output.WriteLine("Bar direction: " + (isUpBar ? "UP" : "DOWN") + ", Color change: " + (m_IsColorChangeBar ? "YES" : "NO"));
 
                     // Calculate the Renko box size based on the current bar
                     if (previousClose > 0)
@@ -189,19 +214,19 @@ namespace PowerLanguage.Indicator
             if (m_NeedToUpdate)
             {
                 // Always draw same direction projection
-                DrawSameDirectionProjection();
+                DrawSameDirectionProjection(m_IsColorChangeBar);
 
                 // Only draw opposite direction if enabled
                 if (ShowOppositeProjection)
                 {
-                    DrawOppositeDirectionProjection();
+                    DrawOppositeDirectionProjection(m_IsColorChangeBar);
                 }
 
                 m_NeedToUpdate = false;
             }
         }
 
-        private void DrawSameDirectionProjection()
+        private void DrawSameDirectionProjection(bool isColorChangeBar = false)
         {
             try
             {
@@ -215,17 +240,38 @@ namespace PowerLanguage.Indicator
                 double bottomPrice, topPrice;
                 
                 // For Renko bars, we need to ensure the projection is exactly one box size
+                // For color change bars, we need special handling
                 if (m_LastBarWasUp)
                 {
-                    // For up bars, bottom is last close, top is exactly one box size higher
-                    bottomPrice = m_LastClosePrice;
-                    topPrice = bottomPrice + m_BoxSize; // Exactly one box size
+                    if (isColorChangeBar)
+                    {
+                        // For color change up bars, we need to use half the box size
+                        bottomPrice = m_LastClosePrice;
+                        topPrice = bottomPrice + (m_BoxSize / 2); // Half box size for color change bars
+                        Output.WriteLine("Color change UP bar - Same direction projection height: " + (topPrice - bottomPrice));
+                    }
+                    else
+                    {
+                        // For regular up bars, bottom is last close, top is exactly one box size higher
+                        bottomPrice = m_LastClosePrice;
+                        topPrice = bottomPrice + m_BoxSize; // Exactly one box size
+                    }
                 }
                 else
                 {
-                    // For down bars, top is last close, bottom is exactly one box size lower
-                    topPrice = m_LastClosePrice;
-                    bottomPrice = topPrice - m_BoxSize; // Exactly one box size
+                    if (isColorChangeBar)
+                    {
+                        // For color change down bars, we need to use half the box size
+                        topPrice = m_LastClosePrice;
+                        bottomPrice = topPrice - (m_BoxSize / 2); // Half box size for color change bars
+                        Output.WriteLine("Color change DOWN bar - Same direction projection height: " + (topPrice - bottomPrice));
+                    }
+                    else
+                    {
+                        // For regular down bars, top is last close, bottom is exactly one box size lower
+                        topPrice = m_LastClosePrice;
+                        bottomPrice = topPrice - m_BoxSize; // Exactly one box size
+                    }
                 }
 
                 Output.WriteLine("Drawing same direction projection from " + bottomPrice + " to " + topPrice);
@@ -271,7 +317,7 @@ namespace PowerLanguage.Indicator
             }
         }
 
-        private void DrawOppositeDirectionProjection()
+        private void DrawOppositeDirectionProjection(bool isColorChangeBar = false)
         {
             try
             {
@@ -284,27 +330,48 @@ namespace PowerLanguage.Indicator
                 // For opposite direction projection, we need to start at the open of the next potential bar
                 double bottomPrice, topPrice;
 
-                // For opposite direction projection, we need to start at the open of the last bar
-                // and project one box size in the opposite direction
+                // For opposite direction projection, we need special handling for color change bars
                 if (m_LastBarWasUp)
                 {
-                    // Last bar was up, so opposite projection is down
-                    // For an up bar, the open is at the bottom
-                    double openPrice = m_LastClosePrice - m_BoxSize;
-                    
-                    // Project one box size down from the open
-                    topPrice = openPrice;
-                    bottomPrice = openPrice - m_BoxSize; // Exactly one box size
+                    if (isColorChangeBar)
+                    {
+                        // For color change up bars, the opposite projection should start at the close
+                        // and project one box size down
+                        topPrice = m_LastClosePrice;
+                        bottomPrice = topPrice - m_BoxSize; // Exactly one box size
+                        Output.WriteLine("Color change UP bar - Opposite direction projection height: " + (topPrice - bottomPrice));
+                    }
+                    else
+                    {
+                        // For regular up bars, start at the open and project down
+                        // For an up bar, the open is at the bottom
+                        double openPrice = m_LastClosePrice - m_BoxSize;
+                        
+                        // Project one box size down from the open
+                        topPrice = openPrice;
+                        bottomPrice = openPrice - m_BoxSize; // Exactly one box size
+                    }
                 }
                 else
                 {
-                    // Last bar was down, so opposite projection is up
-                    // For a down bar, the open is at the top
-                    double openPrice = m_LastClosePrice + m_BoxSize;
-                    
-                    // Project one box size up from the open
-                    bottomPrice = openPrice;
-                    topPrice = openPrice + m_BoxSize; // Exactly one box size
+                    if (isColorChangeBar)
+                    {
+                        // For color change down bars, the opposite projection should start at the close
+                        // and project one box size up
+                        bottomPrice = m_LastClosePrice;
+                        topPrice = bottomPrice + m_BoxSize; // Exactly one box size
+                        Output.WriteLine("Color change DOWN bar - Opposite direction projection height: " + (topPrice - bottomPrice));
+                    }
+                    else
+                    {
+                        // For regular down bars, start at the open and project up
+                        // For a down bar, the open is at the top
+                        double openPrice = m_LastClosePrice + m_BoxSize;
+                        
+                        // Project one box size up from the open
+                        bottomPrice = openPrice;
+                        topPrice = openPrice + m_BoxSize; // Exactly one box size
+                    }
                 }
 
                 Output.WriteLine("Drawing opposite direction projection from " + bottomPrice + " to " + topPrice);
