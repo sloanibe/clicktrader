@@ -8,7 +8,6 @@ namespace PowerLanguage.Indicator
 {
     [RecoverDrawings(false)]
     [SameAsSymbol(true)]
-    [UpdateOnEveryTick(true)] // Update on every tick for real-time projections
     public class projected_future_renko : IndicatorObject
     {
         [Input]
@@ -27,7 +26,6 @@ namespace PowerLanguage.Indicator
         private List<ITrendLineObject> m_SameDirectionLines;
         private List<ITrendLineObject> m_OppositeDirectionLines;
         private bool m_NeedToUpdate;
-        private DateTime m_LastUpdateTime; // For throttling updates
         private double m_LastClosePrice;
         private double m_SameDirectionPrice;
         private double m_OppositeDirectionPrice;
@@ -37,9 +35,9 @@ namespace PowerLanguage.Indicator
 
         public projected_future_renko(object ctx) : base(ctx)
         {
-            BarWidthPixels = 5; // Default to 5 pixels width
-            SameDirectionColor = Color.Yellow; // Default to yellow for same direction
-            OppositeDirectionColor = Color.Yellow; // Changed to yellow for opposite direction
+            BarWidthPixels = 3; // Default to 3 pixels width (narrower)
+            SameDirectionColor = Color.Blue; // Default to blue for up bars
+            OppositeDirectionColor = Color.Red; // Default to red for down bars
             ShowOppositeProjection = true; // Enable opposite direction projection by default
         }
 
@@ -55,61 +53,51 @@ namespace PowerLanguage.Indicator
         protected override void StartCalc()
         {
             ClearAllLines();
-            m_LastUpdateTime = DateTime.MinValue; // Initialize throttling timer
-            
-            // Skip historical calculation - only calculate for real-time data
-            if (!Environment.IsRealTimeCalc)
-            {
-                Output.WriteLine("Skipping historical calculation - indicator only works in real-time");
-                return;
-            }
             
             // Initialize with the most recent bar data so we don't have to wait for a new bar
             if (Bars.CurrentBar > 1) // Check if we have at least 2 bars
             {
-                // Get the last completed bar
-                double currentClose = Bars.Close[0];
-                double previousClose = Bars.Close[1];
+                // Get the last COMPLETED bar (index 1) and the one before it
+                double lastBarClose = Bars.Close[1]; // Last completed bar
+                double previousBarClose = Bars.Close[2]; // Bar before the last completed bar
                 
-                // Determine bar direction (up or down)
-                bool isUpBar = currentClose > previousClose;
+                // Determine bar direction (up or down) based on the last completed bar
+                bool isUpBar = lastBarClose > previousBarClose;
                 
                 // Detect if this is a color change bar (direction changed from previous bar)
                 m_IsColorChangeBar = false;
                 if (Bars.CurrentBar > 2) // Need at least 3 bars to detect color change
                 {
-                    double priorClose = Bars.Close[2]; // Two bars ago
-                    bool priorBarWasUp = previousClose > priorClose;
+                    double twoBarsPriorClose = Bars.Close[3]; // Three bars ago
+                    bool priorBarWasUp = previousBarClose > twoBarsPriorClose;
                     m_IsColorChangeBar = (isUpBar != priorBarWasUp);
                 }
                 
-                Output.WriteLine("Initial bar direction: " + (isUpBar ? "UP" : "DOWN") + ", Color change: " + (m_IsColorChangeBar ? "YES" : "NO"));
+                // Calculate the box size from the last completed bar
+                m_BoxSize = Math.Abs(lastBarClose - previousBarClose);
                 
-                // Calculate the box size
-                m_BoxSize = Math.Abs(currentClose - previousClose);
-                
-                // Store the values
-                m_LastClosePrice = currentClose;
-                m_LastCloseTime = Bars.Time[0];
+                // Store the values from the last completed bar
+                m_LastClosePrice = lastBarClose;
+                m_LastCloseTime = Bars.Time[1]; // Time of the last completed bar
                 m_LastBarWasUp = isUpBar;
                 
                 // Calculate projection prices
                 if (isUpBar)
                 {
                     // For up bars, project one box size up from close
-                    m_SameDirectionPrice = currentClose + m_BoxSize;
+                    m_SameDirectionPrice = lastBarClose + m_BoxSize;
                     // For opposite direction, project one box size down from close
-                    m_OppositeDirectionPrice = currentClose - m_BoxSize;
+                    m_OppositeDirectionPrice = lastBarClose - m_BoxSize;
                 }
                 else
                 {
                     // For down bars, project one box size down from close
-                    m_SameDirectionPrice = currentClose - m_BoxSize;
+                    m_SameDirectionPrice = lastBarClose - m_BoxSize;
                     // For opposite direction, project one box size up from close
-                    m_OppositeDirectionPrice = currentClose + m_BoxSize;
+                    m_OppositeDirectionPrice = lastBarClose + m_BoxSize;
                 }
                 
-                // Draw projections immediately instead of waiting for CalcBar
+                // Draw projections immediately
                 DrawSameDirectionProjection(m_IsColorChangeBar);
                 
                 if (ShowOppositeProjection)
@@ -119,8 +107,6 @@ namespace PowerLanguage.Indicator
                 
                 // No need to set flag since we already drew the projections
                 m_NeedToUpdate = false;
-                
-                Output.WriteLine("Initialized and drew projections with existing bar data");
             }
             else
             {
@@ -141,104 +127,77 @@ namespace PowerLanguage.Indicator
         {
             // Keep indicator active with a constant value that won't affect the chart
             m_Plot.Set(0);
-            
-            // Skip historical calculation - only calculate for real-time data
-            if (!Environment.IsRealTimeCalc)
+
+            // Process immediately on every tick to ensure projections are always visible
+            // But only update when we have a new bar or on the first calculation
+            bool isNewBar = false;
+
+            // Make sure we have at least 2 bars (current and last completed)
+            if (Bars.CurrentBar > 1)
             {
-                return;
-            }
-
-            // Only process on bar close
-            if (Bars.Status == EBarState.Close)
-            {
-                // Determine if this is a new bar close
-                bool isNewBar = false;
-
-                // Check if this is a new bar or the first bar
-                if (m_LastClosePrice == 0)
-                {
-                    isNewBar = true;
-                }
-                else if (Bars.Close[0] != m_LastClosePrice)
-                {
-                    isNewBar = true;
-                }
-
-                if (isNewBar)
-                {
-                    // Store the current bar's information
-                    double currentClose = Bars.Close[0];
-                    double previousClose = m_LastClosePrice;
-
-                    // Determine bar direction (up or down)
-                    bool isUpBar = (currentClose > previousClose) || (previousClose == 0 && currentClose > Bars.Open[0]);
+                // Get the last COMPLETED bar (index 1)
+                double lastBarClose = Bars.Close[1];
                 
-                    // Detect if this is a color change bar (direction changed from previous bar)
+                // Check if this is a new bar or the first calculation
+                if (m_LastClosePrice == 0 || lastBarClose != m_LastClosePrice)
+                {
+                    isNewBar = true;
+                    
+                    // Get the bar before the last completed bar
+                    double previousBarClose = (Bars.CurrentBar > 2) ? Bars.Close[2] : Bars.Open[1];
+
+                    // Determine bar direction (up or down) based on the last completed bar
+                    bool isUpBar = lastBarClose > previousBarClose;
+                
+                    // Detect if this is a color change bar
                     m_IsColorChangeBar = false;
                     if (Bars.CurrentBar > 2) // Need at least 3 bars to detect color change
                     {
-                        double priorClose = Bars.Close[2]; // Two bars ago
-                        bool priorBarWasUp = previousClose > priorClose;
+                        double twoBarsPriorClose = Bars.Close[3]; // Three bars ago
+                        bool priorBarWasUp = previousBarClose > twoBarsPriorClose;
                         m_IsColorChangeBar = (isUpBar != priorBarWasUp);
                     }
                 
-                    Output.WriteLine("Bar direction: " + (isUpBar ? "UP" : "DOWN") + ", Color change: " + (m_IsColorChangeBar ? "YES" : "NO"));
+                    // Bar direction and color change detected
 
-                    // Calculate the Renko box size based on the current bar
-                    if (previousClose > 0)
-                    {
-                        m_BoxSize = Math.Abs(currentClose - previousClose);
-                    }
-                    else
-                    {
-                        // For the first bar, use the difference between open and close
-                        m_BoxSize = Math.Abs(currentClose - Bars.Open[0]);
-                    }
+                    // Calculate the Renko box size based on the last completed bar
+                    m_BoxSize = Math.Abs(lastBarClose - previousBarClose);
 
-                    // Store the current values for next comparison
-                    m_LastClosePrice = currentClose;
-                    m_LastCloseTime = Bars.Time[0];
+                    // Store the values from the last completed bar
+                    m_LastClosePrice = lastBarClose;
+                    m_LastCloseTime = Bars.Time[1]; // Time of the last completed bar
                     m_LastBarWasUp = isUpBar;
 
                     // Project the next bar in the same direction
                     if (isUpBar)
                     {
                         // For up bars, project one box size up from close
-                        m_SameDirectionPrice = currentClose + m_BoxSize;
+                        m_SameDirectionPrice = lastBarClose + m_BoxSize;
                         // For opposite direction, project one box size down from close
-                        m_OppositeDirectionPrice = currentClose - m_BoxSize;
+                        m_OppositeDirectionPrice = lastBarClose - m_BoxSize;
                     }
                     else
                     {
                         // For down bars, project one box size down from close
-                        m_SameDirectionPrice = currentClose - m_BoxSize;
+                        m_SameDirectionPrice = lastBarClose - m_BoxSize;
                         // For opposite direction, project one box size up from close
-                        m_OppositeDirectionPrice = currentClose + m_BoxSize;
+                        m_OppositeDirectionPrice = lastBarClose + m_BoxSize;
                     }
 
                     // Clear previous projections
                     ClearAllLines();
-                    m_NeedToUpdate = true;
+                    
+                    // Draw projections immediately
+                    DrawSameDirectionProjection(m_IsColorChangeBar);
 
-                    Output.WriteLine("New bar detected - Last bar was " + (isUpBar ? "UP" : "DOWN"));
-                    Output.WriteLine("Same direction projection: " + m_SameDirectionPrice);
-                    Output.WriteLine("Opposite direction projection: " + m_OppositeDirectionPrice);
+                    if (ShowOppositeProjection)
+                    {
+                        DrawOppositeDirectionProjection(m_IsColorChangeBar);
+                    }
+                    
+                    // No need to update again until a new bar
+                    m_NeedToUpdate = false;
                 }
-            }
-
-            // Draw the projections if needed
-            if (m_NeedToUpdate)
-            {
-                // Always draw same direction projection
-                DrawSameDirectionProjection(m_IsColorChangeBar);
-
-                // Only draw opposite direction if enabled
-                if (ShowOppositeProjection)
-                {
-                    DrawOppositeDirectionProjection(m_IsColorChangeBar);
-                }
-
-                m_NeedToUpdate = false;
             }
         }
 
@@ -264,7 +223,6 @@ namespace PowerLanguage.Indicator
                         // For color change up bars, we need to use half the box size
                         bottomPrice = m_LastClosePrice;
                         topPrice = bottomPrice + (m_BoxSize / 2); // Half box size for color change bars
-                        Output.WriteLine("Color change UP bar - Same direction projection height: " + (topPrice - bottomPrice));
                     }
                     else
                     {
@@ -280,7 +238,6 @@ namespace PowerLanguage.Indicator
                         // For color change down bars, we need to use half the box size
                         topPrice = m_LastClosePrice;
                         bottomPrice = topPrice - (m_BoxSize / 2); // Half box size for color change bars
-                        Output.WriteLine("Color change DOWN bar - Same direction projection height: " + (topPrice - bottomPrice));
                     }
                     else
                     {
@@ -290,8 +247,6 @@ namespace PowerLanguage.Indicator
                     }
                 }
 
-                Output.WriteLine("Drawing same direction projection from " + bottomPrice + " to " + topPrice);
-
                 try
                 {
                     // Create points for the rectangle
@@ -300,40 +255,39 @@ namespace PowerLanguage.Indicator
                     ChartPoint topLeft = new ChartPoint(leftTime, topPrice);
                     ChartPoint topRight = new ChartPoint(rightTime, topPrice);
 
+                    // Use blue for up bars and red for down bars
+                    Color lineColor = m_LastBarWasUp ? Color.Blue : Color.Red;
+                    
                     // Draw bottom line
                     ITrendLineObject bottomLine = DrwTrendLine.Create(bottomLeft, bottomRight);
-                    bottomLine.Color = SameDirectionColor;
-                    // Note: Dashed style not supported in this version of MultiCharts .NET
+                    bottomLine.Color = lineColor;
                     m_SameDirectionLines.Add(bottomLine);
 
                     // Draw top line
                     ITrendLineObject topLine = DrwTrendLine.Create(topLeft, topRight);
-                    topLine.Color = SameDirectionColor;
-                    // Note: Dashed style not supported in this version of MultiCharts .NET
+                    topLine.Color = lineColor;
                     m_SameDirectionLines.Add(topLine);
 
                     // Draw left line
                     ITrendLineObject leftLine = DrwTrendLine.Create(bottomLeft, topLeft);
-                    leftLine.Color = SameDirectionColor;
-                    // Note: Dashed style not supported in this version of MultiCharts .NET
+                    leftLine.Color = lineColor;
                     m_SameDirectionLines.Add(leftLine);
 
                     // Draw right line
                     ITrendLineObject rightLine = DrwTrendLine.Create(bottomRight, topRight);
-                    rightLine.Color = SameDirectionColor;
-                    // Note: Dashed style not supported in this version of MultiCharts .NET
+                    rightLine.Color = lineColor;
                     m_SameDirectionLines.Add(rightLine);
 
-                    Output.WriteLine("Same direction projection complete");
+                    // Same direction projection complete
                 }
                 catch (Exception ex)
                 {
-                    Output.WriteLine("Error creating same direction projection: " + ex.Message);
+                    // Silently handle errors
                 }
             }
             catch (Exception ex)
             {
-                Output.WriteLine("Error in DrawSameDirectionProjection method: " + ex.Message);
+                // Silently handle errors
             }
         }
 
@@ -359,7 +313,7 @@ namespace PowerLanguage.Indicator
                         // and project one box size down
                         topPrice = m_LastClosePrice;
                         bottomPrice = topPrice - m_BoxSize; // Exactly one box size
-                        Output.WriteLine("Color change UP bar - Opposite direction projection height: " + (topPrice - bottomPrice));
+                        // Color change UP bar - opposite direction projection
                     }
                     else
                     {
@@ -380,7 +334,7 @@ namespace PowerLanguage.Indicator
                         // and project one box size up
                         bottomPrice = m_LastClosePrice;
                         topPrice = bottomPrice + m_BoxSize; // Exactly one box size
-                        Output.WriteLine("Color change DOWN bar - Opposite direction projection height: " + (topPrice - bottomPrice));
+                        // Color change DOWN bar - opposite direction projection
                     }
                     else
                     {
@@ -394,8 +348,6 @@ namespace PowerLanguage.Indicator
                     }
                 }
 
-                Output.WriteLine("Drawing opposite direction projection from " + bottomPrice + " to " + topPrice);
-
                 try
                 {
                     // Create points for the rectangle
@@ -404,40 +356,40 @@ namespace PowerLanguage.Indicator
                     ChartPoint topLeft = new ChartPoint(leftTime, topPrice);
                     ChartPoint topRight = new ChartPoint(rightTime, topPrice);
 
+                    // For opposite direction, use red for up bars (projecting down) and blue for down bars (projecting up)
+                    // This is the reverse of the same direction projection
+                    Color lineColor = m_LastBarWasUp ? Color.Red : Color.Blue;
+                    
                     // Draw bottom line
                     ITrendLineObject bottomLine = DrwTrendLine.Create(bottomLeft, bottomRight);
-                    bottomLine.Color = OppositeDirectionColor;
-                    // Note: Dashed style not supported in this version of MultiCharts .NET
+                    bottomLine.Color = lineColor;
                     m_OppositeDirectionLines.Add(bottomLine);
 
                     // Draw top line
                     ITrendLineObject topLine = DrwTrendLine.Create(topLeft, topRight);
-                    topLine.Color = OppositeDirectionColor;
-                    // Note: Dashed style not supported in this version of MultiCharts .NET
+                    topLine.Color = lineColor;
                     m_OppositeDirectionLines.Add(topLine);
 
                     // Draw left line
                     ITrendLineObject leftLine = DrwTrendLine.Create(bottomLeft, topLeft);
-                    leftLine.Color = OppositeDirectionColor;
-                    // Note: Dashed style not supported in this version of MultiCharts .NET
+                    leftLine.Color = lineColor;
                     m_OppositeDirectionLines.Add(leftLine);
 
                     // Draw right line
                     ITrendLineObject rightLine = DrwTrendLine.Create(bottomRight, topRight);
-                    rightLine.Color = OppositeDirectionColor;
-                    // Note: Dashed style not supported in this version of MultiCharts .NET
+                    rightLine.Color = lineColor;
                     m_OppositeDirectionLines.Add(rightLine);
 
-                    Output.WriteLine("Opposite direction projection complete");
+                    // Opposite direction projection complete
                 }
                 catch (Exception ex)
                 {
-                    Output.WriteLine("Error creating opposite direction projection: " + ex.Message);
+                    // Silently handle errors
                 }
             }
             catch (Exception ex)
             {
-                Output.WriteLine("Error in DrawOppositeDirectionProjection method: " + ex.Message);
+                // Silently handle errors
             }
         }
 

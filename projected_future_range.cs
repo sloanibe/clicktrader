@@ -32,6 +32,7 @@ namespace PowerLanguage.Indicator
         private double m_LastHigh;
         private DateTime m_LastBarTime;
         private bool m_NeedToUpdate;
+        private DateTime m_LastUpdateTime; // For throttling updates
 
         public projected_future_range(object ctx) : base(ctx)
         {
@@ -51,6 +52,14 @@ namespace PowerLanguage.Indicator
         protected override void StartCalc()
         {
             ClearLines();
+            m_LastUpdateTime = DateTime.MinValue; // Initialize throttling timer
+            
+            // Skip historical calculation - only calculate for real-time data
+            if (!Environment.IsRealTimeCalc)
+            {
+                Output.WriteLine("Skipping historical calculation - indicator only works in real-time");
+                return;
+            }
             
             // Initialize with the most recent bar data
             if (Bars.CurrentBar > 0)
@@ -81,6 +90,12 @@ namespace PowerLanguage.Indicator
         {
             // Keep indicator active with a constant value that won't affect the chart
             m_Plot.Set(0);
+            
+            // Skip historical calculation - only calculate for real-time data
+            if (!Environment.IsRealTimeCalc)
+            {
+                return;
+            }
             
             // Check if this is a new bar
             bool isNewBar = (Bars.CurrentBar != m_LastBarIndex);
