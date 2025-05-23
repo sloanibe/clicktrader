@@ -12,52 +12,118 @@ namespace PowerLanguage.Indicator
     {
         [Input]
         public int BarWidthPixels { get; set; }
-        
+
         [Input]
-        public Color ProjectionColor { get; set; }
+        public Color SameDirectionColor { get; set; }
+
+        [Input]
+        public Color OppositeDirectionColor { get; set; }
+
+        [Input]
+        public bool ShowOppositeProjection { get; set; }
 
         private IPlotObject m_Plot;
-        private List<ITrendLineObject> m_Lines;
+        private List<ITrendLineObject> m_SameDirectionLines;
+        private List<ITrendLineObject> m_OppositeDirectionLines;
         private bool m_NeedToUpdate;
         private double m_LastClosePrice;
-        private double m_ProjectedPrice;
+        private double m_SameDirectionPrice;
+        private double m_OppositeDirectionPrice;
         private DateTime m_LastCloseTime;
         private bool m_LastBarWasUp;
+        private double m_BoxSize;
 
         public projected_future_renko(object ctx) : base(ctx)
         {
             BarWidthPixels = 5; // Default to 5 pixels width
-            ProjectionColor = Color.Green; // Default to green projection
+            SameDirectionColor = Color.Yellow; // Default to yellow for same direction
+            OppositeDirectionColor = Color.Red; // Default to red for opposite direction
+            ShowOppositeProjection = true; // Enable opposite direction projection by default
         }
 
         protected override void Create()
         {
             // Create an invisible plot that doesn't affect the chart
             m_Plot = AddPlot(new PlotAttributes("Projection", EPlotShapes.Line, Color.Transparent));
-            m_Lines = new List<ITrendLineObject>();
+            m_SameDirectionLines = new List<ITrendLineObject>();
+            m_OppositeDirectionLines = new List<ITrendLineObject>();
             m_NeedToUpdate = false;
         }
 
         protected override void StartCalc()
         {
-            ClearLines();
-            m_NeedToUpdate = false;
-            m_LastClosePrice = 0;
-            m_ProjectedPrice = 0;
-            m_LastBarWasUp = false;
+            ClearAllLines();
+            
+            // Initialize with the most recent bar data so we don't have to wait for a new bar
+            if (Bars.CurrentBar > 1) // Check if we have at least 2 bars
+            {
+                // Get the last completed bar
+                double currentClose = Bars.Close[0];
+                double previousClose = Bars.Close[1];
+                
+                // Determine bar direction (up or down)
+                bool isUpBar = currentClose > previousClose;
+                
+                // Calculate the box size
+                m_BoxSize = Math.Abs(currentClose - previousClose);
+                
+                // Store the values
+                m_LastClosePrice = currentClose;
+                m_LastCloseTime = Bars.Time[0];
+                m_LastBarWasUp = isUpBar;
+                
+                // Calculate projection prices
+                if (isUpBar)
+                {
+                    // For up bars, project one box size up from close
+                    m_SameDirectionPrice = currentClose + m_BoxSize;
+                    // For opposite direction, project one box size down from close
+                    m_OppositeDirectionPrice = currentClose - m_BoxSize;
+                }
+                else
+                {
+                    // For down bars, project one box size down from close
+                    m_SameDirectionPrice = currentClose - m_BoxSize;
+                    // For opposite direction, project one box size up from close
+                    m_OppositeDirectionPrice = currentClose + m_BoxSize;
+                }
+                
+                // Draw projections immediately instead of waiting for CalcBar
+                DrawSameDirectionProjection();
+                
+                if (ShowOppositeProjection)
+                {
+                    DrawOppositeDirectionProjection();
+                }
+                
+                // No need to set flag since we already drew the projections
+                m_NeedToUpdate = false;
+                
+                Output.WriteLine("Initialized and drew projections with existing bar data");
+            }
+            else
+            {
+                // Not enough bars yet
+                m_NeedToUpdate = false;
+                m_LastClosePrice = 0;
+                m_SameDirectionPrice = 0;
+                m_OppositeDirectionPrice = 0;
+                m_BoxSize = 0;
+                m_LastBarWasUp = false;
+            }
         }
 
         protected override void CalcBar()
         {
             // Keep indicator active with a constant value that won't affect the chart
             m_Plot.Set(0);
-            
+
             // Only process on bar close
             if (Bars.Status == EBarState.Close)
             {
                 // Determine if this is a new bar close
                 bool isNewBar = false;
-                
+
                 // Check if this is a new bar or the first bar
                 if (m_LastClosePrice == 0)
                 {
@@ -67,88 +133,103 @@ namespace PowerLanguage.Indicator
                 {
                     isNewBar = true;
                 }
-                
+
                 if (isNewBar)
                 {
                     // Store the current bar's information
                     double currentClose = Bars.Close[0];
                     double previousClose = m_LastClosePrice;
-                    
+
                     // Determine bar direction (up or down)
                     bool isUpBar = (currentClose > previousClose) || (previousClose == 0 && currentClose > Bars.Open[0]);
-                    
+
                     // Calculate the Renko box size based on the current bar
-                    double boxSize = 0;
-                    
                     if (previousClose > 0)
                     {
-                        boxSize = Math.Abs(currentClose - previousClose);
+                        m_BoxSize = Math.Abs(currentClose - previousClose);
                     }
                     else
                     {
                         // For the first bar, use the difference between open and close
-                        boxSize = Math.Abs(currentClose - Bars.Open[0]);
+                        m_BoxSize = Math.Abs(currentClose - Bars.Open[0]);
                     }
-                    
+
                     // Store the current values for next comparison
                     m_LastClosePrice = currentClose;
                     m_LastCloseTime = Bars.Time[0];
                     m_LastBarWasUp = isUpBar;
-                    
+
                     // Project the next bar in the same direction
                     if (isUpBar)
                     {
-                        m_ProjectedPrice = currentClose + boxSize;
+                        // For up bars, project one box size up from close
+                        m_SameDirectionPrice = currentClose + m_BoxSize;
+                        // For opposite direction, project one box size down from close
+                        m_OppositeDirectionPrice = currentClose - m_BoxSize;
                     }
                     else
                     {
-                        m_ProjectedPrice = currentClose - boxSize;
+                        // For down bars, project one box size down from close
+                        m_SameDirectionPrice = currentClose - m_BoxSize;
+                        // For opposite direction, project one box size up from close
+                        m_OppositeDirectionPrice = currentClose + m_BoxSize;
                     }
-                    
-                    // Clear previous projections and draw a new one
-                    ClearLines();
+
+                    // Clear previous projections
+                    ClearAllLines();
                     m_NeedToUpdate = true;
-                    
-                    Output.WriteLine("New bar detected - Projecting next Renko at price: " + m_ProjectedPrice);
+
+                    Output.WriteLine("New bar detected - Last bar was " + (isUpBar ? "UP" : "DOWN"));
+                    Output.WriteLine("Same direction projection: " + m_SameDirectionPrice);
+                    Output.WriteLine("Opposite direction projection: " + m_OppositeDirectionPrice);
                 }
             }
-            
-            // Draw the projection if needed
+
+            // Draw the projections if needed
             if (m_NeedToUpdate)
             {
-                DrawProjection();
+                // Always draw same direction projection
+                DrawSameDirectionProjection();
+
+                // Only draw opposite direction if enabled
+                if (ShowOppositeProjection)
+                {
+                    DrawOppositeDirectionProjection();
+                }
+
                 m_NeedToUpdate = false;
             }
         }
 
-        private void DrawProjection()
+        private void DrawSameDirectionProjection()
         {
             try
             {
                 // Calculate the Renko box coordinates
                 DateTime leftTime = m_LastCloseTime;
-                
+
                 // Use a small time increment for width
                 DateTime rightTime = leftTime.AddMilliseconds(BarWidthPixels * 10); // Scale factor of 10ms per pixel
-                
+
                 // Determine the bottom and top prices based on direction
                 double bottomPrice, topPrice;
                 
+                // For Renko bars, we need to ensure the projection is exactly one box size
                 if (m_LastBarWasUp)
                 {
-                    // For up bars, bottom is last close, top is projected price
+                    // For up bars, bottom is last close, top is exactly one box size higher
                     bottomPrice = m_LastClosePrice;
-                    topPrice = m_ProjectedPrice;
+                    topPrice = bottomPrice + m_BoxSize; // Exactly one box size
                 }
                 else
                 {
-                    // For down bars, bottom is projected price, top is last close
-                    bottomPrice = m_ProjectedPrice;
+                    // For down bars, top is last close, bottom is exactly one box size lower
                     topPrice = m_LastClosePrice;
+                    bottomPrice = topPrice - m_BoxSize; // Exactly one box size
                 }
-                
-                Output.WriteLine("Drawing projection from " + bottomPrice + " to " + topPrice);
-                
+
+                Output.WriteLine("Drawing same direction projection from " + bottomPrice + " to " + topPrice);
+
                 try
                 {
                     // Create points for the rectangle
@@ -156,46 +237,132 @@ namespace PowerLanguage.Indicator
                     ChartPoint bottomRight = new ChartPoint(rightTime, bottomPrice);
                     ChartPoint topLeft = new ChartPoint(leftTime, topPrice);
                     ChartPoint topRight = new ChartPoint(rightTime, topPrice);
-                    
+
                     // Draw bottom line
                     ITrendLineObject bottomLine = DrwTrendLine.Create(bottomLeft, bottomRight);
-                    bottomLine.Color = ProjectionColor;
-                    m_Lines.Add(bottomLine);
-                    
+                    bottomLine.Color = SameDirectionColor;
+                    m_SameDirectionLines.Add(bottomLine);
+
                     // Draw top line
                     ITrendLineObject topLine = DrwTrendLine.Create(topLeft, topRight);
-                    topLine.Color = ProjectionColor;
-                    m_Lines.Add(topLine);
-                    
+                    topLine.Color = SameDirectionColor;
+                    m_SameDirectionLines.Add(topLine);
+
                     // Draw left line
                     ITrendLineObject leftLine = DrwTrendLine.Create(bottomLeft, topLeft);
-                    leftLine.Color = ProjectionColor;
-                    m_Lines.Add(leftLine);
-                    
+                    leftLine.Color = SameDirectionColor;
+                    m_SameDirectionLines.Add(leftLine);
+
                     // Draw right line
                     ITrendLineObject rightLine = DrwTrendLine.Create(bottomRight, topRight);
-                    rightLine.Color = ProjectionColor;
-                    m_Lines.Add(rightLine);
-                    
-                    Output.WriteLine("Projection drawing complete");
+                    rightLine.Color = SameDirectionColor;
+                    m_SameDirectionLines.Add(rightLine);
+
+                    Output.WriteLine("Same direction projection complete");
                 }
                 catch (Exception ex)
                 {
-                    Output.WriteLine("Error creating projection: " + ex.Message);
+                    Output.WriteLine("Error creating same direction projection: " + ex.Message);
                 }
             }
             catch (Exception ex)
             {
-                Output.WriteLine("Error in DrawProjection method: " + ex.Message);
+                Output.WriteLine("Error in DrawSameDirectionProjection method: " + ex.Message);
+            }
+        }
+
+        private void DrawOppositeDirectionProjection()
+        {
+            try
+            {
+                // Calculate the Renko box coordinates
+                DateTime leftTime = m_LastCloseTime;
+
+                // Use a small time increment for width
+                DateTime rightTime = leftTime.AddMilliseconds(BarWidthPixels * 10); // Scale factor of 10ms per pixel
+
+                // For opposite direction projection, we need to start at the open of the next potential bar
+                double bottomPrice, topPrice;
+
+                // For opposite direction projection, we need to start at the open of the last bar
+                // and project one box size in the opposite direction
+                if (m_LastBarWasUp)
+                {
+                    // Last bar was up, so opposite projection is down
+                    // For an up bar, the open is at the bottom
+                    double openPrice = m_LastClosePrice - m_BoxSize;
+                    
+                    // Project one box size down from the open
+                    topPrice = openPrice;
+                    bottomPrice = openPrice - m_BoxSize; // Exactly one box size
+                }
+                else
+                {
+                    // Last bar was down, so opposite projection is up
+                    // For a down bar, the open is at the top
+                    double openPrice = m_LastClosePrice + m_BoxSize;
+                    
+                    // Project one box size up from the open
+                    bottomPrice = openPrice;
+                    topPrice = openPrice + m_BoxSize; // Exactly one box size
+                }
+
+                Output.WriteLine("Drawing opposite direction projection from " + bottomPrice + " to " + topPrice);
+
+                try
+                {
+                    // Create points for the rectangle
+                    ChartPoint bottomLeft = new ChartPoint(leftTime, bottomPrice);
+                    ChartPoint bottomRight = new ChartPoint(rightTime, bottomPrice);
+                    ChartPoint topLeft = new ChartPoint(leftTime, topPrice);
+                    ChartPoint topRight = new ChartPoint(rightTime, topPrice);
+
+                    // Draw bottom line
+                    ITrendLineObject bottomLine = DrwTrendLine.Create(bottomLeft, bottomRight);
+                    bottomLine.Color = OppositeDirectionColor;
+                    m_OppositeDirectionLines.Add(bottomLine);
+
+                    // Draw top line
+                    ITrendLineObject topLine = DrwTrendLine.Create(topLeft, topRight);
+                    topLine.Color = OppositeDirectionColor;
+                    m_OppositeDirectionLines.Add(topLine);
+
+                    // Draw left line
+                    ITrendLineObject leftLine = DrwTrendLine.Create(bottomLeft, topLeft);
+                    leftLine.Color = OppositeDirectionColor;
+                    m_OppositeDirectionLines.Add(leftLine);
+
+                    // Draw right line
+                    ITrendLineObject rightLine = DrwTrendLine.Create(bottomRight, topRight);
+                    rightLine.Color = OppositeDirectionColor;
+                    m_OppositeDirectionLines.Add(rightLine);
+
+                    Output.WriteLine("Opposite direction projection complete");
+                }
+                catch (Exception ex)
+                {
+                    Output.WriteLine("Error creating opposite direction projection: " + ex.Message);
+                }
+            }
+            catch (Exception ex)
+            {
+                Output.WriteLine("Error in DrawOppositeDirectionProjection method: " + ex.Message);
             }
         }
 
         // Helper method to clear all lines
-        private void ClearLines()
+        private void ClearAllLines()
         {
-            if (m_Lines != null)
+            ClearSameDirectionLines();
+            ClearOppositeDirectionLines();
+        }
+
+        // Helper method to clear same direction lines
+        private void ClearSameDirectionLines()
+        {
+            if (m_SameDirectionLines != null)
             {
-                foreach (var line in m_Lines)
+                foreach (var line in m_SameDirectionLines)
                 {
                     try
                     {
@@ -206,8 +373,29 @@ namespace PowerLanguage.Indicator
                         // Ignore errors during cleanup
                     }
                 }
-                
-                m_Lines.Clear();
+
+                m_SameDirectionLines.Clear();
+            }
+        }
+
+        // Helper method to clear opposite direction lines
+        private void ClearOppositeDirectionLines()
+        {
+            if (m_OppositeDirectionLines != null)
+            {
+                foreach (var line in m_OppositeDirectionLines)
+                {
+                    try
+                    {
+                        line.Delete();
+                    }
+                    catch
+                    {
+                        // Ignore errors during cleanup
+                    }
+                }
+
+                m_OppositeDirectionLines.Clear();
             }
         }
     }
