@@ -26,10 +26,19 @@ namespace PowerLanguage.Indicator
         [Input]
         public int LineLength { get; set; }
 
+        [Input]
+        public bool ShowOppositeDirectionLevels { get; set; }
+
+        [Input]
+        public Color OppositeDirectionColor { get; set; }
+
         private IPlotObject m_Plot;
         private ITrendLineObject m_Level1Line;
         private ITrendLineObject m_Level2Line;
+        private ITrendLineObject m_OppositeLevel1Line;
+        private ITrendLineObject m_OppositeLevel2Line;
         private double m_LastClosePrice;
+        private double m_LastOpenPrice;
         private DateTime m_LastCloseTime;
         private bool m_LastBarWasUp;
         private double m_BoxSize;
@@ -42,6 +51,8 @@ namespace PowerLanguage.Indicator
             BullishColor = Color.Green; // Default to green for bullish
             BearishColor = Color.Red; // Default to red for bearish
             LineLength = 30; // Default line length in bars
+            ShowOppositeDirectionLevels = true; // Enable opposite direction projections by default
+            OppositeDirectionColor = Color.Yellow; // Default to yellow for opposite direction
         }
 
         protected override void Create()
@@ -69,6 +80,9 @@ namespace PowerLanguage.Indicator
                 double currentClose = Bars.Close[0];
                 double previousClose = Bars.Close[1];
 
+                // For Renko bars, we need to calculate the open based on the box size
+                double currentOpen = Bars.Open[0];
+
                 // Determine bar direction (up or down)
                 bool isUpBar = currentClose > previousClose;
 
@@ -77,6 +91,7 @@ namespace PowerLanguage.Indicator
 
                 // Store the values
                 m_LastClosePrice = currentClose;
+                m_LastOpenPrice = currentOpen;
                 m_LastCloseTime = Bars.Time[0];
                 m_LastBarWasUp = isUpBar;
 
@@ -90,6 +105,7 @@ namespace PowerLanguage.Indicator
                 // Not enough bars yet
                 m_NeedToUpdate = false;
                 m_LastClosePrice = 0;
+                m_LastOpenPrice = 0;
                 m_BoxSize = 0;
             }
         }
@@ -119,6 +135,7 @@ namespace PowerLanguage.Indicator
                     // Store the current bar's information
                     double currentClose = Bars.Close[0];
                     double previousClose = m_LastClosePrice;
+                    double currentOpen = Bars.Open[0];
 
                     // Determine bar direction (up or down)
                     bool isUpBar = currentClose > previousClose;
@@ -136,6 +153,7 @@ namespace PowerLanguage.Indicator
 
                     // Store the current values for next comparison
                     m_LastClosePrice = currentClose;
+                    m_LastOpenPrice = currentOpen;
                     m_LastCloseTime = Bars.Time[0];
                     m_LastBarWasUp = isUpBar;
                     m_LastBarIndex = Bars.CurrentBar;
@@ -168,6 +186,7 @@ namespace PowerLanguage.Indicator
 
                 // Calculate projection prices based on the direction of the last bar
                 double level1Projection, level2Projection;
+                double oppositeLevel1Projection, oppositeLevel2Projection;
 
                 // Calculate start and end points for the trend lines
                 // Use the current bar time as the start
@@ -182,6 +201,10 @@ namespace PowerLanguage.Indicator
                     // For up bars, project both levels above the close
                     level1Projection = m_LastClosePrice + (Level1 * tickSize);
                     level2Projection = m_LastClosePrice + (Level2 * tickSize);
+
+                    // For opposite direction, project from the open price downward
+                    oppositeLevel1Projection = m_LastOpenPrice - (Level1 * tickSize);
+                    oppositeLevel2Projection = m_LastOpenPrice - (Level2 * tickSize);
 
                     Output.WriteLine("Drawing bullish projections - Level1: " + level1Projection + ", Level2: " + level2Projection);
 
@@ -201,6 +224,26 @@ namespace PowerLanguage.Indicator
                         m_Level2Line = DrwTrendLine.Create(level2Start, level2End);
                         m_Level2Line.Color = BullishColor;
 
+                        // Draw opposite direction projections if enabled
+                        if (ShowOppositeDirectionLevels)
+                        {
+                            // Draw opposite Level1 projection (horizontal line below the open)
+                            ChartPoint oppLevel1Start = new ChartPoint(startTime, oppositeLevel1Projection);
+                            ChartPoint oppLevel1End = new ChartPoint(endTime, oppositeLevel1Projection);
+
+                            m_OppositeLevel1Line = DrwTrendLine.Create(oppLevel1Start, oppLevel1End);
+                            m_OppositeLevel1Line.Color = OppositeDirectionColor;
+
+                            // Draw opposite Level2 projection (horizontal line further below the open)
+                            ChartPoint oppLevel2Start = new ChartPoint(startTime, oppositeLevel2Projection);
+                            ChartPoint oppLevel2End = new ChartPoint(endTime, oppositeLevel2Projection);
+
+                            m_OppositeLevel2Line = DrwTrendLine.Create(oppLevel2Start, oppLevel2End);
+                            m_OppositeLevel2Line.Color = OppositeDirectionColor;
+
+                            Output.WriteLine("Opposite direction projections drawn - Level1: " + oppositeLevel1Projection + ", Level2: " + oppositeLevel2Projection);
+                        }
+
                         Output.WriteLine("Bullish projections drawn successfully");
                     }
                     catch (Exception ex)
@@ -213,6 +256,10 @@ namespace PowerLanguage.Indicator
                     // For down bars, project both levels below the close
                     level1Projection = m_LastClosePrice - (Level1 * tickSize);
                     level2Projection = m_LastClosePrice - (Level2 * tickSize);
+
+                    // For opposite direction, project from the open price upward
+                    oppositeLevel1Projection = m_LastOpenPrice + (Level1 * tickSize);
+                    oppositeLevel2Projection = m_LastOpenPrice + (Level2 * tickSize);
 
                     Output.WriteLine("Drawing bearish projections - Level1: " + level1Projection + ", Level2: " + level2Projection);
 
@@ -231,6 +278,26 @@ namespace PowerLanguage.Indicator
 
                         m_Level2Line = DrwTrendLine.Create(level2Start, level2End);
                         m_Level2Line.Color = BearishColor;
+
+                        // Draw opposite direction projections if enabled
+                        if (ShowOppositeDirectionLevels)
+                        {
+                            // Draw opposite Level1 projection (horizontal line above the open)
+                            ChartPoint oppLevel1Start = new ChartPoint(startTime, oppositeLevel1Projection);
+                            ChartPoint oppLevel1End = new ChartPoint(endTime, oppositeLevel1Projection);
+
+                            m_OppositeLevel1Line = DrwTrendLine.Create(oppLevel1Start, oppLevel1End);
+                            m_OppositeLevel1Line.Color = OppositeDirectionColor;
+
+                            // Draw opposite Level2 projection (horizontal line further above the open)
+                            ChartPoint oppLevel2Start = new ChartPoint(startTime, oppositeLevel2Projection);
+                            ChartPoint oppLevel2End = new ChartPoint(endTime, oppositeLevel2Projection);
+
+                            m_OppositeLevel2Line = DrwTrendLine.Create(oppLevel2Start, oppLevel2End);
+                            m_OppositeLevel2Line.Color = OppositeDirectionColor;
+
+                            Output.WriteLine("Opposite direction projections drawn - Level1: " + oppositeLevel1Projection + ", Level2: " + oppositeLevel2Projection);
+                        }
 
                         Output.WriteLine("Bearish projections drawn successfully");
                     }
@@ -260,6 +327,18 @@ namespace PowerLanguage.Indicator
                 {
                     m_Level2Line.Delete();
                     m_Level2Line = null;
+                }
+
+                if (m_OppositeLevel1Line != null)
+                {
+                    m_OppositeLevel1Line.Delete();
+                    m_OppositeLevel1Line = null;
+                }
+
+                if (m_OppositeLevel2Line != null)
+                {
+                    m_OppositeLevel2Line.Delete();
+                    m_OppositeLevel2Line = null;
                 }
             }
             catch
