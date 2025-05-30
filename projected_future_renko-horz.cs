@@ -12,7 +12,10 @@ namespace PowerLanguage.Indicator
     public class projected_future_renko_horz : IndicatorObject
     {
         [Input]
-        public int TickOffset { get; set; }
+        public int Level1 { get; set; }
+
+        [Input]
+        public int Level2 { get; set; }
 
         [Input]
         public Color BullishColor { get; set; }
@@ -24,8 +27,8 @@ namespace PowerLanguage.Indicator
         public int LineLength { get; set; }
 
         private IPlotObject m_Plot;
-        private ITrendLineObject m_BullishLine;
-        private ITrendLineObject m_BearishLine;
+        private ITrendLineObject m_Level1Line;
+        private ITrendLineObject m_Level2Line;
         private double m_LastClosePrice;
         private DateTime m_LastCloseTime;
         private bool m_LastBarWasUp;
@@ -34,7 +37,8 @@ namespace PowerLanguage.Indicator
 
         public projected_future_renko_horz(object ctx) : base(ctx)
         {
-            TickOffset = 15; // Default to 15 ticks
+            Level1 = 15; // Default to 15 ticks
+            Level2 = 30; // Default to 30 ticks
             BullishColor = Color.Green; // Default to green for bullish
             BearishColor = Color.Red; // Default to red for bearish
             LineLength = 30; // Default line length in bars
@@ -163,53 +167,77 @@ namespace PowerLanguage.Indicator
                 double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
 
                 // Calculate projection prices based on the direction of the last bar
-                double bullishProjection, bearishProjection;
+                double level1Projection, level2Projection;
 
                 if (m_LastBarWasUp)
                 {
-                    // For up bars, project TickOffset ticks above the close
-                    bullishProjection = m_LastClosePrice + (TickOffset * tickSize);
-                    // For down projection, use the same offset below
-                    bearishProjection = m_LastClosePrice - (TickOffset * tickSize);
+                    // For up bars, project both levels above the close
+                    level1Projection = m_LastClosePrice + (Level1 * tickSize);
+                    level2Projection = m_LastClosePrice + (Level2 * tickSize);
+
+                    // Calculate start and end points for the trend lines
+                    DateTime startTime = Bars.Time[0];
+                    DateTime endTime = startTime.AddSeconds(LineLength);
+
+                    Output.WriteLine("Drawing bullish projections - Level1: " + level1Projection + ", Level2: " + level2Projection);
+
+                    try
+                    {
+                        // Draw Level1 projection (horizontal line above the close)
+                        ChartPoint level1Start = new ChartPoint(startTime, level1Projection);
+                        ChartPoint level1End = new ChartPoint(endTime, level1Projection);
+
+                        m_Level1Line = DrwTrendLine.Create(level1Start, level1End);
+                        m_Level1Line.Color = BullishColor;
+
+                        // Draw Level2 projection (horizontal line further above the close)
+                        ChartPoint level2Start = new ChartPoint(startTime, level2Projection);
+                        ChartPoint level2End = new ChartPoint(endTime, level2Projection);
+
+                        m_Level2Line = DrwTrendLine.Create(level2Start, level2End);
+                        m_Level2Line.Color = BullishColor;
+
+                        Output.WriteLine("Bullish projections drawn successfully");
+                    }
+                    catch (Exception ex)
+                    {
+                        Output.WriteLine("Error drawing bullish projections: " + ex.Message);
+                    }
                 }
                 else
                 {
-                    // For down bars, project TickOffset ticks below the close
-                    bearishProjection = m_LastClosePrice - (TickOffset * tickSize);
-                    // For up projection, use the same offset above
-                    bullishProjection = m_LastClosePrice + (TickOffset * tickSize);
-                }
+                    // For down bars, project both levels below the close
+                    level1Projection = m_LastClosePrice - (Level1 * tickSize);
+                    level2Projection = m_LastClosePrice - (Level2 * tickSize);
 
-                // Calculate start and end points for the trend lines
-                // Start at the current bar
-                DateTime startTime = Bars.Time[0];
+                    // Calculate start and end points for the trend lines
+                    DateTime startTime = Bars.Time[0];
+                    DateTime endTime = startTime.AddSeconds(LineLength);
 
-                // Make the lines extend based on the LineLength parameter
-                DateTime endTime = startTime.AddSeconds(LineLength);
+                    Output.WriteLine("Drawing bearish projections - Level1: " + level1Projection + ", Level2: " + level2Projection);
 
-                Output.WriteLine("Drawing horizontal projections - Bullish: " + bullishProjection + ", Bearish: " + bearishProjection);
+                    try
+                    {
+                        // Draw Level1 projection (horizontal line below the close)
+                        ChartPoint level1Start = new ChartPoint(startTime, level1Projection);
+                        ChartPoint level1End = new ChartPoint(endTime, level1Projection);
 
-                try
-                {
-                    // Draw bullish projection (horizontal line above the close)
-                    ChartPoint bullishStart = new ChartPoint(startTime, bullishProjection);
-                    ChartPoint bullishEnd = new ChartPoint(endTime, bullishProjection);
+                        m_Level1Line = DrwTrendLine.Create(level1Start, level1End);
+                        m_Level1Line.Color = BearishColor;
 
-                    m_BullishLine = DrwTrendLine.Create(bullishStart, bullishEnd);
-                    m_BullishLine.Color = BullishColor;
+                        // Draw Level2 projection (horizontal line further below the close)
+                        ChartPoint level2Start = new ChartPoint(startTime, level2Projection);
+                        ChartPoint level2End = new ChartPoint(endTime, level2Projection);
 
-                    // Draw bearish projection (horizontal line below the close)
-                    ChartPoint bearishStart = new ChartPoint(startTime, bearishProjection);
-                    ChartPoint bearishEnd = new ChartPoint(endTime, bearishProjection);
+                        m_Level2Line = DrwTrendLine.Create(level2Start, level2End);
+                        m_Level2Line.Color = BearishColor;
 
-                    m_BearishLine = DrwTrendLine.Create(bearishStart, bearishEnd);
-                    m_BearishLine.Color = BearishColor;
-
-                    Output.WriteLine("Horizontal projections drawn successfully");
-                }
-                catch (Exception ex)
-                {
-                    Output.WriteLine("Error drawing projections: " + ex.Message);
+                        Output.WriteLine("Bearish projections drawn successfully");
+                    }
+                    catch (Exception ex)
+                    {
+                        Output.WriteLine("Error drawing bearish projections: " + ex.Message);
+                    }
                 }
             }
             catch (Exception ex)
@@ -222,16 +250,16 @@ namespace PowerLanguage.Indicator
         {
             try
             {
-                if (m_BullishLine != null)
+                if (m_Level1Line != null)
                 {
-                    m_BullishLine.Delete();
-                    m_BullishLine = null;
+                    m_Level1Line.Delete();
+                    m_Level1Line = null;
                 }
 
-                if (m_BearishLine != null)
+                if (m_Level2Line != null)
                 {
-                    m_BearishLine.Delete();
-                    m_BearishLine = null;
+                    m_Level2Line.Delete();
+                    m_Level2Line = null;
                 }
             }
             catch
