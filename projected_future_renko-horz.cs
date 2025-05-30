@@ -169,15 +169,19 @@ namespace PowerLanguage.Indicator
                 // Calculate projection prices based on the direction of the last bar
                 double level1Projection, level2Projection;
 
+                // Calculate start and end points for the trend lines
+                // Use the current bar time as the start
+                DateTime startTime = Bars.Time[0];
+
+                // For the end time, use a very large offset that will extend far beyond the visible chart
+                // This ensures the line always extends to the right edge of the chart
+                DateTime endTime = startTime.AddDays(365);  // Extend a year into the future
+
                 if (m_LastBarWasUp)
                 {
                     // For up bars, project both levels above the close
                     level1Projection = m_LastClosePrice + (Level1 * tickSize);
                     level2Projection = m_LastClosePrice + (Level2 * tickSize);
-
-                    // Calculate start and end points for the trend lines
-                    DateTime startTime = Bars.Time[0];
-                    DateTime endTime = startTime.AddSeconds(LineLength);
 
                     Output.WriteLine("Drawing bullish projections - Level1: " + level1Projection + ", Level2: " + level2Projection);
 
@@ -209,10 +213,6 @@ namespace PowerLanguage.Indicator
                     // For down bars, project both levels below the close
                     level1Projection = m_LastClosePrice - (Level1 * tickSize);
                     level2Projection = m_LastClosePrice - (Level2 * tickSize);
-
-                    // Calculate start and end points for the trend lines
-                    DateTime startTime = Bars.Time[0];
-                    DateTime endTime = startTime.AddSeconds(LineLength);
 
                     Output.WriteLine("Drawing bearish projections - Level1: " + level1Projection + ", Level2: " + level2Projection);
 
