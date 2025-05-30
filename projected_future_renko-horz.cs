@@ -15,7 +15,7 @@ namespace PowerLanguage.Indicator
         public int Level1 { get; set; }
 
         [Input]
-        public int Level2 { get; set; }
+        public int NumberOfLevels { get; set; }
 
         [Input]
         public Color BullishColor { get; set; }
@@ -24,19 +24,14 @@ namespace PowerLanguage.Indicator
         public Color BearishColor { get; set; }
 
         [Input]
-        public int LineLength { get; set; }
-
-        [Input]
         public bool ShowOppositeDirectionLevels { get; set; }
 
         [Input]
         public Color OppositeDirectionColor { get; set; }
 
         private IPlotObject m_Plot;
-        private ITrendLineObject m_Level1Line;
-        private ITrendLineObject m_Level2Line;
-        private ITrendLineObject m_OppositeLevel1Line;
-        private ITrendLineObject m_OppositeLevel2Line;
+        private List<ITrendLineObject> m_DirectionLines;
+        private List<ITrendLineObject> m_OppositeDirectionLines;
         private double m_LastClosePrice;
         private double m_LastOpenPrice;
         private DateTime m_LastCloseTime;
@@ -47,10 +42,9 @@ namespace PowerLanguage.Indicator
         public projected_future_renko_horz(object ctx) : base(ctx)
         {
             Level1 = 15; // Default to 15 ticks
-            Level2 = 30; // Default to 30 ticks
+            NumberOfLevels = 2; // Default to 2 levels
             BullishColor = Color.Green; // Default to green for bullish
             BearishColor = Color.Red; // Default to red for bearish
-            LineLength = 30; // Default line length in bars
             ShowOppositeDirectionLevels = true; // Enable opposite direction projections by default
             OppositeDirectionColor = Color.Yellow; // Default to yellow for opposite direction
         }
@@ -59,6 +53,8 @@ namespace PowerLanguage.Indicator
         {
             // Create an invisible plot that doesn't affect the chart
             m_Plot = AddPlot(new PlotAttributes("Projection", EPlotShapes.Line, Color.Transparent));
+            m_DirectionLines = new List<ITrendLineObject>();
+            m_OppositeDirectionLines = new List<ITrendLineObject>();
             m_NeedToUpdate = false;
         }
 
@@ -184,9 +180,8 @@ namespace PowerLanguage.Indicator
                 // Calculate the tick size
                 double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
 
-                // Calculate projection prices based on the direction of the last bar
-                double level1Projection, level2Projection;
-                double oppositeLevel1Projection, oppositeLevel2Projection;
+                // Ensure NumberOfLevels is at least 1
+                int numLevels = Math.Max(1, NumberOfLevels);
 
                 // Calculate start and end points for the trend lines
                 // Use the current bar time as the start
@@ -198,50 +193,48 @@ namespace PowerLanguage.Indicator
 
                 if (m_LastBarWasUp)
                 {
-                    // For up bars, project both levels above the close
-                    level1Projection = m_LastClosePrice + (Level1 * tickSize);
-                    level2Projection = m_LastClosePrice + (Level2 * tickSize);
-
-                    // For opposite direction, project from the open price downward
-                    oppositeLevel1Projection = m_LastOpenPrice - (Level1 * tickSize);
-                    oppositeLevel2Projection = m_LastOpenPrice - (Level2 * tickSize);
-
-                    Output.WriteLine("Drawing bullish projections - Level1: " + level1Projection + ", Level2: " + level2Projection);
+                    // For up bars, project levels above the close
+                    Output.WriteLine("Drawing bullish projections for " + numLevels + " levels");
 
                     try
                     {
-                        // Draw Level1 projection (horizontal line above the close)
-                        ChartPoint level1Start = new ChartPoint(startTime, level1Projection);
-                        ChartPoint level1End = new ChartPoint(endTime, level1Projection);
+                        // Draw projections in the direction of the close
+                        for (int i = 1; i <= numLevels; i++)
+                        {
+                            // Calculate the projection level (Level1 * i)
+                            double levelProjection = m_LastClosePrice + (Level1 * i * tickSize);
 
-                        m_Level1Line = DrwTrendLine.Create(level1Start, level1End);
-                        m_Level1Line.Color = BullishColor;
+                            // Draw the projection line
+                            ChartPoint levelStart = new ChartPoint(startTime, levelProjection);
+                            ChartPoint levelEnd = new ChartPoint(endTime, levelProjection);
 
-                        // Draw Level2 projection (horizontal line further above the close)
-                        ChartPoint level2Start = new ChartPoint(startTime, level2Projection);
-                        ChartPoint level2End = new ChartPoint(endTime, level2Projection);
+                            ITrendLineObject line = DrwTrendLine.Create(levelStart, levelEnd);
+                            line.Color = BullishColor;
 
-                        m_Level2Line = DrwTrendLine.Create(level2Start, level2End);
-                        m_Level2Line.Color = BullishColor;
+                            m_DirectionLines.Add(line);
+
+                            Output.WriteLine("Drew bullish projection level " + i + " at " + levelProjection);
+                        }
 
                         // Draw opposite direction projections if enabled
                         if (ShowOppositeDirectionLevels)
                         {
-                            // Draw opposite Level1 projection (horizontal line below the open)
-                            ChartPoint oppLevel1Start = new ChartPoint(startTime, oppositeLevel1Projection);
-                            ChartPoint oppLevel1End = new ChartPoint(endTime, oppositeLevel1Projection);
+                            for (int i = 1; i <= numLevels; i++)
+                            {
+                                // Calculate the opposite projection level (Level1 * i below the open)
+                                double oppLevelProjection = m_LastOpenPrice - (Level1 * i * tickSize);
 
-                            m_OppositeLevel1Line = DrwTrendLine.Create(oppLevel1Start, oppLevel1End);
-                            m_OppositeLevel1Line.Color = OppositeDirectionColor;
+                                // Draw the opposite projection line
+                                ChartPoint oppLevelStart = new ChartPoint(startTime, oppLevelProjection);
+                                ChartPoint oppLevelEnd = new ChartPoint(endTime, oppLevelProjection);
 
-                            // Draw opposite Level2 projection (horizontal line further below the open)
-                            ChartPoint oppLevel2Start = new ChartPoint(startTime, oppositeLevel2Projection);
-                            ChartPoint oppLevel2End = new ChartPoint(endTime, oppositeLevel2Projection);
+                                ITrendLineObject oppLine = DrwTrendLine.Create(oppLevelStart, oppLevelEnd);
+                                oppLine.Color = OppositeDirectionColor;
 
-                            m_OppositeLevel2Line = DrwTrendLine.Create(oppLevel2Start, oppLevel2End);
-                            m_OppositeLevel2Line.Color = OppositeDirectionColor;
+                                m_OppositeDirectionLines.Add(oppLine);
 
-                            Output.WriteLine("Opposite direction projections drawn - Level1: " + oppositeLevel1Projection + ", Level2: " + oppositeLevel2Projection);
+                                Output.WriteLine("Drew opposite direction projection level " + i + " at " + oppLevelProjection);
+                            }
                         }
 
                         Output.WriteLine("Bullish projections drawn successfully");
@@ -253,50 +246,48 @@ namespace PowerLanguage.Indicator
                 }
                 else
                 {
-                    // For down bars, project both levels below the close
-                    level1Projection = m_LastClosePrice - (Level1 * tickSize);
-                    level2Projection = m_LastClosePrice - (Level2 * tickSize);
-
-                    // For opposite direction, project from the open price upward
-                    oppositeLevel1Projection = m_LastOpenPrice + (Level1 * tickSize);
-                    oppositeLevel2Projection = m_LastOpenPrice + (Level2 * tickSize);
-
-                    Output.WriteLine("Drawing bearish projections - Level1: " + level1Projection + ", Level2: " + level2Projection);
+                    // For down bars, project levels below the close
+                    Output.WriteLine("Drawing bearish projections for " + numLevels + " levels");
 
                     try
                     {
-                        // Draw Level1 projection (horizontal line below the close)
-                        ChartPoint level1Start = new ChartPoint(startTime, level1Projection);
-                        ChartPoint level1End = new ChartPoint(endTime, level1Projection);
+                        // Draw projections in the direction of the close
+                        for (int i = 1; i <= numLevels; i++)
+                        {
+                            // Calculate the projection level (Level1 * i)
+                            double levelProjection = m_LastClosePrice - (Level1 * i * tickSize);
 
-                        m_Level1Line = DrwTrendLine.Create(level1Start, level1End);
-                        m_Level1Line.Color = BearishColor;
+                            // Draw the projection line
+                            ChartPoint levelStart = new ChartPoint(startTime, levelProjection);
+                            ChartPoint levelEnd = new ChartPoint(endTime, levelProjection);
 
-                        // Draw Level2 projection (horizontal line further below the close)
-                        ChartPoint level2Start = new ChartPoint(startTime, level2Projection);
-                        ChartPoint level2End = new ChartPoint(endTime, level2Projection);
+                            ITrendLineObject line = DrwTrendLine.Create(levelStart, levelEnd);
+                            line.Color = BearishColor;
 
-                        m_Level2Line = DrwTrendLine.Create(level2Start, level2End);
-                        m_Level2Line.Color = BearishColor;
+                            m_DirectionLines.Add(line);
+
+                            Output.WriteLine("Drew bearish projection level " + i + " at " + levelProjection);
+                        }
 
                         // Draw opposite direction projections if enabled
                         if (ShowOppositeDirectionLevels)
                         {
-                            // Draw opposite Level1 projection (horizontal line above the open)
-                            ChartPoint oppLevel1Start = new ChartPoint(startTime, oppositeLevel1Projection);
-                            ChartPoint oppLevel1End = new ChartPoint(endTime, oppositeLevel1Projection);
+                            for (int i = 1; i <= numLevels; i++)
+                            {
+                                // Calculate the opposite projection level (Level1 * i above the open)
+                                double oppLevelProjection = m_LastOpenPrice + (Level1 * i * tickSize);
 
-                            m_OppositeLevel1Line = DrwTrendLine.Create(oppLevel1Start, oppLevel1End);
-                            m_OppositeLevel1Line.Color = OppositeDirectionColor;
+                                // Draw the opposite projection line
+                                ChartPoint oppLevelStart = new ChartPoint(startTime, oppLevelProjection);
+                                ChartPoint oppLevelEnd = new ChartPoint(endTime, oppLevelProjection);
 
-                            // Draw opposite Level2 projection (horizontal line further above the open)
-                            ChartPoint oppLevel2Start = new ChartPoint(startTime, oppositeLevel2Projection);
-                            ChartPoint oppLevel2End = new ChartPoint(endTime, oppositeLevel2Projection);
+                                ITrendLineObject oppLine = DrwTrendLine.Create(oppLevelStart, oppLevelEnd);
+                                oppLine.Color = OppositeDirectionColor;
 
-                            m_OppositeLevel2Line = DrwTrendLine.Create(oppLevel2Start, oppLevel2End);
-                            m_OppositeLevel2Line.Color = OppositeDirectionColor;
+                                m_OppositeDirectionLines.Add(oppLine);
 
-                            Output.WriteLine("Opposite direction projections drawn - Level1: " + oppositeLevel1Projection + ", Level2: " + oppositeLevel2Projection);
+                                Output.WriteLine("Drew opposite direction projection level " + i + " at " + oppLevelProjection);
+                            }
                         }
 
                         Output.WriteLine("Bearish projections drawn successfully");
@@ -317,28 +308,38 @@ namespace PowerLanguage.Indicator
         {
             try
             {
-                if (m_Level1Line != null)
+                // Clear direction lines
+                if (m_DirectionLines != null)
                 {
-                    m_Level1Line.Delete();
-                    m_Level1Line = null;
+                    foreach (var line in m_DirectionLines)
+                    {
+                        try
+                        {
+                            line.Delete();
+                        }
+                        catch
+                        {
+                            // Ignore errors during cleanup
+                        }
+                    }
+                    m_DirectionLines.Clear();
                 }
 
-                if (m_Level2Line != null)
+                // Clear opposite direction lines
+                if (m_OppositeDirectionLines != null)
                 {
-                    m_Level2Line.Delete();
-                    m_Level2Line = null;
-                }
-
-                if (m_OppositeLevel1Line != null)
-                {
-                    m_OppositeLevel1Line.Delete();
-                    m_OppositeLevel1Line = null;
-                }
-
-                if (m_OppositeLevel2Line != null)
-                {
-                    m_OppositeLevel2Line.Delete();
-                    m_OppositeLevel2Line = null;
+                    foreach (var line in m_OppositeDirectionLines)
+                    {
+                        try
+                        {
+                            line.Delete();
+                        }
+                        catch
+                        {
+                            // Ignore errors during cleanup
+                        }
+                    }
+                    m_OppositeDirectionLines.Clear();
                 }
             }
             catch
