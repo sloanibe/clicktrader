@@ -8,7 +8,7 @@ namespace PowerLanguage.Indicator
 {
     [RecoverDrawings(false)]
     [SameAsSymbol(true)]
-    public class number_of_runs : IndicatorObject
+    public class number_of_runs1 : IndicatorObject
     {
         [Input]
         public int RunLength { get; set; }
@@ -53,7 +53,7 @@ namespace PowerLanguage.Indicator
         private Dictionary<int, int> m_RunLengthDistribution;
         private int m_MaxRunLength;
 
-        public number_of_runs(object ctx) : base(ctx)
+        public number_of_runs1(object ctx) : base(ctx)
         {
             RunLength = 5; // Default to 5 bars in a run
             TargetDate = DateTime.Today; // Default to today
