@@ -151,8 +151,6 @@ namespace PowerLanguage.Indicator
 
                             // Update the last low
                             lastBullishLow = currBarLow;
-
-                            Output.WriteLine(string.Format("Live Bar {0}: Updated BULLISH pattern - Previous 2 bars closed up, current bar's low reached/exceeded previous bar's open", Bars.CurrentBar));
                         }
                     }
                     else
@@ -221,8 +219,6 @@ namespace PowerLanguage.Indicator
 
                             // Update the last high
                             lastBearishHigh = currBarHigh;
-
-                            Output.WriteLine(string.Format("Live Bar {0}: Updated BEARISH pattern - Previous 2 bars closed down, current bar's high reached/exceeded previous bar's open", Bars.CurrentBar));
                         }
                     }
                     else
@@ -294,12 +290,6 @@ namespace PowerLanguage.Indicator
                     // Create the horizontal line
                     ITrendLineObject line = DrwTrendLine.Create(lineStart, lineEnd);
                     line.Color = Color.DarkBlue;
-
-                    // Optionally add some debug output
-                    if (Bars.Status == EBarState.Close)
-                    {
-                        Output.WriteLine(string.Format("Bar {0}: Found BULLISH pattern - Previous bar closed up, current bar's low reached/exceeded previous bar's open, and current bar closed up", Bars.CurrentBar));
-                    }
                 }
 
                 // BEARISH PATTERN: Previous bar closed down, current bar's high reaches or goes beyond previous bar's open, and current bar closes down
@@ -330,12 +320,6 @@ namespace PowerLanguage.Indicator
                     // Create the horizontal line
                     ITrendLineObject line = DrwTrendLine.Create(lineStart, lineEnd);
                     line.Color = Color.DarkBlue;
-
-                    // Optionally add some debug output
-                    if (Bars.Status == EBarState.Close)
-                    {
-                        Output.WriteLine(string.Format("Bar {0}: Found BEARISH pattern - Previous bar closed down, current bar's high reached/exceeded previous bar's open, and current bar closed down", Bars.CurrentBar));
-                    }
                 }
             }
         }
