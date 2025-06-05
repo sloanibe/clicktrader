@@ -28,8 +28,8 @@ namespace PowerLanguage.Indicator
 
         public renko_long_tail(object _ctx) : base(_ctx)
         {
-            // Default to showing all data (historical and live)
-            ShowOnlyLiveData = false;
+            // Default to showing only live data
+            ShowOnlyLiveData = true;
         }
 
         protected override void Create()
@@ -147,7 +147,7 @@ namespace PowerLanguage.Indicator
 
                             // Create the horizontal line
                             currentBullishLine = DrwTrendLine.Create(lineStart, lineEnd);
-                            currentBullishLine.Color = Color.Green;
+                            currentBullishLine.Color = Color.DarkBlue;
 
                             // Update the last low
                             lastBullishLow = currBarLow;
@@ -217,7 +217,7 @@ namespace PowerLanguage.Indicator
 
                             // Create the horizontal line
                             currentBearishLine = DrwTrendLine.Create(lineStart, lineEnd);
-                            currentBearishLine.Color = Color.Red;
+                            currentBearishLine.Color = Color.DarkBlue;
 
                             // Update the last high
                             lastBearishHigh = currBarHigh;
@@ -293,7 +293,7 @@ namespace PowerLanguage.Indicator
 
                     // Create the horizontal line
                     ITrendLineObject line = DrwTrendLine.Create(lineStart, lineEnd);
-                    line.Color = Color.Green;
+                    line.Color = Color.DarkBlue;
 
                     // Optionally add some debug output
                     if (Bars.Status == EBarState.Close)
@@ -329,7 +329,7 @@ namespace PowerLanguage.Indicator
 
                     // Create the horizontal line
                     ITrendLineObject line = DrwTrendLine.Create(lineStart, lineEnd);
-                    line.Color = Color.Red;
+                    line.Color = Color.DarkBlue;
 
                     // Optionally add some debug output
                     if (Bars.Status == EBarState.Close)
