@@ -226,7 +226,7 @@ namespace PowerLanguage.Indicator
                             }
                         }
                     }
-                    catch (Exception ex)
+                    catch
                     {
                         throw;
                     }
@@ -271,13 +271,13 @@ namespace PowerLanguage.Indicator
                             }
                         }
                     }
-                    catch (Exception ex)
+                    catch
                     {
                         throw;
                     }
                 }
             }
-            catch (Exception ex)
+            catch
             {
                 throw;
             }
