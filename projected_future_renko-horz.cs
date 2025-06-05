@@ -65,7 +65,6 @@ namespace PowerLanguage.Indicator
             // Skip historical calculation - only calculate for real-time data
             if (!Environment.IsRealTimeCalc)
             {
-                Output.WriteLine("Skipping historical calculation - indicator only works in real-time");
                 return;
             }
 
@@ -93,8 +92,6 @@ namespace PowerLanguage.Indicator
 
                 // Set flag to draw on first calculation
                 m_NeedToUpdate = true;
-
-                Output.WriteLine("Initialized with existing bar data");
             }
             else
             {
@@ -157,8 +154,6 @@ namespace PowerLanguage.Indicator
                     // Clear previous lines
                     ClearLines();
                     m_NeedToUpdate = true;
-
-                    Output.WriteLine("New bar detected - Last bar was " + (isUpBar ? "UP" : "DOWN"));
                 }
             }
 
@@ -194,8 +189,6 @@ namespace PowerLanguage.Indicator
                 if (m_LastBarWasUp)
                 {
                     // For up bars, project levels above the close
-                    Output.WriteLine("Drawing bullish projections for " + numLevels + " levels");
-
                     try
                     {
                         // Draw projections in the direction of the close
@@ -212,8 +205,6 @@ namespace PowerLanguage.Indicator
                             line.Color = BullishColor;
 
                             m_DirectionLines.Add(line);
-
-                            Output.WriteLine("Drew bullish projection level " + i + " at " + levelProjection);
                         }
 
                         // Draw opposite direction projections if enabled
@@ -232,23 +223,17 @@ namespace PowerLanguage.Indicator
                                 oppLine.Color = OppositeDirectionColor;
 
                                 m_OppositeDirectionLines.Add(oppLine);
-
-                                Output.WriteLine("Drew opposite direction projection level " + i + " at " + oppLevelProjection);
                             }
                         }
-
-                        Output.WriteLine("Bullish projections drawn successfully");
                     }
                     catch (Exception ex)
                     {
-                        Output.WriteLine("Error drawing bullish projections: " + ex.Message);
+                        throw;
                     }
                 }
                 else
                 {
                     // For down bars, project levels below the close
-                    Output.WriteLine("Drawing bearish projections for " + numLevels + " levels");
-
                     try
                     {
                         // Draw projections in the direction of the close
@@ -265,8 +250,6 @@ namespace PowerLanguage.Indicator
                             line.Color = BearishColor;
 
                             m_DirectionLines.Add(line);
-
-                            Output.WriteLine("Drew bearish projection level " + i + " at " + levelProjection);
                         }
 
                         // Draw opposite direction projections if enabled
@@ -285,22 +268,18 @@ namespace PowerLanguage.Indicator
                                 oppLine.Color = OppositeDirectionColor;
 
                                 m_OppositeDirectionLines.Add(oppLine);
-
-                                Output.WriteLine("Drew opposite direction projection level " + i + " at " + oppLevelProjection);
                             }
                         }
-
-                        Output.WriteLine("Bearish projections drawn successfully");
                     }
                     catch (Exception ex)
                     {
-                        Output.WriteLine("Error drawing bearish projections: " + ex.Message);
+                        throw;
                     }
                 }
             }
             catch (Exception ex)
             {
-                Output.WriteLine("Error in DrawHorizontalProjections method: " + ex.Message);
+                throw;
             }
         }
 
