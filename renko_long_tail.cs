@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using PowerLanguage.Function;
+using System.Collections.Generic;
 
 namespace PowerLanguage.Indicator
 {
@@ -21,6 +22,10 @@ namespace PowerLanguage.Indicator
         private double lastBullishLow = double.MaxValue;
         private double lastBearishHigh = double.MinValue;
 
+        // Variables to track horizontal lines
+        private ITrendLineObject currentBullishLine = null;
+        private ITrendLineObject currentBearishLine = null;
+
         public renko_long_tail(object _ctx) : base(_ctx)
         {
             // Default to showing all data (historical and live)
@@ -39,6 +44,34 @@ namespace PowerLanguage.Indicator
             currentBearishArrow = null;
             lastBullishLow = double.MaxValue;
             lastBearishHigh = double.MinValue;
+
+            // Clear any existing horizontal lines
+            ClearHorizontalLines();
+        }
+
+        // Method to clear horizontal lines
+        private void ClearHorizontalLines()
+        {
+            try
+            {
+                // Clear bullish line
+                if (currentBullishLine != null)
+                {
+                    currentBullishLine.Delete();
+                    currentBullishLine = null;
+                }
+
+                // Clear bearish line
+                if (currentBearishLine != null)
+                {
+                    currentBearishLine.Delete();
+                    currentBearishLine = null;
+                }
+            }
+            catch
+            {
+                // Ignore errors during cleanup
+            }
         }
 
         protected override void CalcBar()
@@ -95,6 +128,27 @@ namespace PowerLanguage.Indicator
                             // Make the arrow significantly larger for better visibility
                             currentBullishArrow.Size = 5;
 
+                            // Draw horizontal line one tick ABOVE the previous bar's close
+                            double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+                            double lineLevel = prevBarClose + tickSize;
+
+                            // Remove old line if it exists
+                            if (currentBullishLine != null)
+                            {
+                                currentBullishLine.Delete();
+                            }
+
+                            // Calculate start and end points for the trend line
+                            DateTime startTime = currBarTime;
+                            DateTime endTime = startTime.AddDays(365); // Extend a year into the future
+
+                            ChartPoint lineStart = new ChartPoint(startTime, lineLevel);
+                            ChartPoint lineEnd = new ChartPoint(endTime, lineLevel);
+
+                            // Create the horizontal line
+                            currentBullishLine = DrwTrendLine.Create(lineStart, lineEnd);
+                            currentBullishLine.Color = Color.Green;
+
                             // Update the last low
                             lastBullishLow = currBarLow;
 
@@ -109,6 +163,14 @@ namespace PowerLanguage.Indicator
                             currentBullishArrow.Delete();
                             currentBullishArrow = null;
                         }
+
+                        // Remove the horizontal line
+                        if (currentBullishLine != null)
+                        {
+                            currentBullishLine.Delete();
+                            currentBullishLine = null;
+                        }
+
                         lastBullishLow = double.MaxValue;
                     }
 
@@ -136,6 +198,27 @@ namespace PowerLanguage.Indicator
                             // Make the arrow significantly larger for better visibility
                             currentBearishArrow.Size = 5;
 
+                            // Draw horizontal line one tick BELOW the previous bar's close
+                            double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+                            double lineLevel = prevBarClose - tickSize;
+
+                            // Remove old line if it exists
+                            if (currentBearishLine != null)
+                            {
+                                currentBearishLine.Delete();
+                            }
+
+                            // Calculate start and end points for the trend line
+                            DateTime startTime = currBarTime;
+                            DateTime endTime = startTime.AddDays(365); // Extend a year into the future
+
+                            ChartPoint lineStart = new ChartPoint(startTime, lineLevel);
+                            ChartPoint lineEnd = new ChartPoint(endTime, lineLevel);
+
+                            // Create the horizontal line
+                            currentBearishLine = DrwTrendLine.Create(lineStart, lineEnd);
+                            currentBearishLine.Color = Color.Red;
+
                             // Update the last high
                             lastBearishHigh = currBarHigh;
 
@@ -150,6 +233,14 @@ namespace PowerLanguage.Indicator
                             currentBearishArrow.Delete();
                             currentBearishArrow = null;
                         }
+
+                        // Remove the horizontal line
+                        if (currentBearishLine != null)
+                        {
+                            currentBearishLine.Delete();
+                            currentBearishLine = null;
+                        }
+
                         lastBearishHigh = double.MinValue;
                     }
 
@@ -189,6 +280,21 @@ namespace PowerLanguage.Indicator
                     // Make the arrow significantly larger for better visibility
                     arrow.Size = 5;
 
+                    // Draw horizontal line one tick ABOVE the previous bar's close
+                    double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+                    double lineLevel = prevBarClose + tickSize;
+
+                    // Calculate start and end points for the trend line
+                    DateTime startTime = Bars.Time[0];
+                    DateTime endTime = startTime.AddDays(365); // Extend a year into the future
+
+                    ChartPoint lineStart = new ChartPoint(startTime, lineLevel);
+                    ChartPoint lineEnd = new ChartPoint(endTime, lineLevel);
+
+                    // Create the horizontal line
+                    ITrendLineObject line = DrwTrendLine.Create(lineStart, lineEnd);
+                    line.Color = Color.Green;
+
                     // Optionally add some debug output
                     if (Bars.Status == EBarState.Close)
                     {
@@ -209,6 +315,21 @@ namespace PowerLanguage.Indicator
                     arrow.Color = Color.Red;
                     // Make the arrow significantly larger for better visibility
                     arrow.Size = 5;
+
+                    // Draw horizontal line one tick BELOW the previous bar's close
+                    double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+                    double lineLevel = prevBarClose - tickSize;
+
+                    // Calculate start and end points for the trend line
+                    DateTime startTime = Bars.Time[0];
+                    DateTime endTime = startTime.AddDays(365); // Extend a year into the future
+
+                    ChartPoint lineStart = new ChartPoint(startTime, lineLevel);
+                    ChartPoint lineEnd = new ChartPoint(endTime, lineLevel);
+
+                    // Create the horizontal line
+                    ITrendLineObject line = DrwTrendLine.Create(lineStart, lineEnd);
+                    line.Color = Color.Red;
 
                     // Optionally add some debug output
                     if (Bars.Status == EBarState.Close)
