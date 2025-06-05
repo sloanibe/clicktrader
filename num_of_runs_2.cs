@@ -6,6 +6,7 @@ using PowerLanguage.Function;
 namespace PowerLanguage.Indicator
 {
     [SameAsSymbol(true)]
+    [RecoverDrawings(false)]
     public class num_of_runs_2 : IndicatorObject
     {
         [Input]
@@ -28,11 +29,13 @@ namespace PowerLanguage.Indicator
         private bool m_InRun;
         private bool m_CurrentRunIsUp;
         private int m_CurrentRunLength;
+        private int m_RunStartBarIndex;
+        private Dictionary<int, DateTime> m_RunStartTimes;
 
         public num_of_runs_2(object ctx) : base(ctx)
         {
             NumRuns = 7; // Default to 7 bars in a run
-            TargetDate = DateTime.Today; // Default to today
+            TargetDate = DateTime.Today.AddDays(-1); // Default to yesterday
             m_DebugMode = true; // Enable debug mode to help troubleshoot
         }
 
@@ -51,6 +54,8 @@ namespace PowerLanguage.Indicator
             // Initialize run tracking
             m_InRun = false;
             m_CurrentRunLength = 0;
+            m_RunStartBarIndex = -1;
+            m_RunStartTimes = new Dictionary<int, DateTime>();
 
             Output.Clear(); // Clear the output window
             Output.WriteLine("Create method completed.");
@@ -68,6 +73,8 @@ namespace PowerLanguage.Indicator
             // Initialize run tracking
             m_InRun = false;
             m_CurrentRunLength = 0;
+            m_RunStartBarIndex = -1;
+            m_RunStartTimes = new Dictionary<int, DateTime>();
 
             // Set the start and end times for the target date
             // Start at 6:30 AM on the target date
@@ -201,6 +208,10 @@ namespace PowerLanguage.Indicator
             m_InRun = true;
             m_CurrentRunIsUp = isUpBar;
             m_CurrentRunLength = 1;
+            m_RunStartBarIndex = Bars.CurrentBar;
+
+            // Store the start time of this run
+            m_RunStartTimes[m_RunStartBarIndex] = Bars.Time[0];
 
             if (m_DebugMode && (m_TotalBars <= 5 || m_TotalBars % 50 == 0))
             {
@@ -233,11 +244,53 @@ namespace PowerLanguage.Indicator
                 // Output information about the run
                 string direction = m_CurrentRunIsUp ? "UP" : "DOWN";
                 Output.WriteLine("Run #" + m_TotalRunCount.ToString() + " (" + direction + ") - Length: " + m_CurrentRunLength.ToString() + " bars");
+
+                // Draw an arrow at the beginning of the run
+                DrawRunArrow(m_RunStartBarIndex, m_CurrentRunIsUp);
             }
 
             // Reset the run tracking
             m_InRun = false;
             m_CurrentRunLength = 0;
+            m_RunStartBarIndex = -1;
+        }
+
+        private void DrawRunArrow(int barIndex, bool isUpRun)
+        {
+            if (!m_RunStartTimes.ContainsKey(barIndex))
+            {
+                Output.WriteLine("Error: Cannot find start time for bar index " + barIndex.ToString());
+                return;
+            }
+
+            DateTime startTime = m_RunStartTimes[barIndex];
+
+            // Create a chart point for the arrow
+            ChartPoint arrowPoint;
+            if (isUpRun)
+            {
+                // Place green up arrow below the low of the bar
+                double offset = 10 * Bars.Point;
+                arrowPoint = new ChartPoint(startTime, Bars.Low[Bars.CurrentBar - barIndex] - offset);
+
+                // Create a green up arrow
+                IArrowObject arrow = DrwArrow.Create(arrowPoint, false);
+                arrow.Color = Color.Green;
+                arrow.Size = 5;  // Make it larger for visibility
+            }
+            else
+            {
+                // Place red down arrow above the high of the bar
+                double offset = 10 * Bars.Point;
+                arrowPoint = new ChartPoint(startTime, Bars.High[Bars.CurrentBar - barIndex] + offset);
+
+                // Create a red down arrow
+                IArrowObject arrow = DrwArrow.Create(arrowPoint, true);
+                arrow.Color = Color.Red;
+                arrow.Size = 5;  // Make it larger for visibility
+            }
+
+            Output.WriteLine("Drew " + (isUpRun ? "UP" : "DOWN") + " arrow at bar index " + barIndex.ToString() + " (time: " + startTime.ToString() + ")");
         }
 
         private void OutputSummary()
