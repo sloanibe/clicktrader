@@ -163,13 +163,13 @@ namespace PowerLanguage.Indicator
                         newBullishArrow.Color = Color.Green;
                         // Make the arrow significantly larger for better visibility
                         newBullishArrow.Size = 5;
-
+                        
                         // If we have a previous arrow that hasn't touched price, delete it
                         if (currentBullishArrow != null && !bullishArrowTouchedPrice)
                         {
                             currentBullishArrow.Delete();
                         }
-
+                        
                         // Update the current arrow reference
                         currentBullishArrow = newBullishArrow;
                         bullishArrowTouchedPrice = false;
@@ -224,7 +224,7 @@ namespace PowerLanguage.Indicator
                             {
                                 currentBullishArrow.Color = Color.White;
                                 bullishArrowTouchedPrice = true; // Mark as touched so we don't delete it
-
+                                
                                 // We can remove the line once price has touched it and arrow is white
                                 if (currentBullishLine != null)
                                 {
@@ -234,6 +234,7 @@ namespace PowerLanguage.Indicator
                             }
                         }
                     }
+                        }
                     }
                     else
                     {
@@ -278,13 +279,13 @@ namespace PowerLanguage.Indicator
                         newBearishArrow.Color = Color.Red;
                         // Make the arrow significantly larger for better visibility
                         newBearishArrow.Size = 5;
-
+                        
                         // If we have a previous arrow that hasn't touched price, delete it
                         if (currentBearishArrow != null && !bearishArrowTouchedPrice)
                         {
                             currentBearishArrow.Delete();
                         }
-
+                        
                         // Update the current arrow reference
                         currentBearishArrow = newBearishArrow;
                         bearishArrowTouchedPrice = false;
@@ -339,7 +340,7 @@ namespace PowerLanguage.Indicator
                             {
                                 currentBearishArrow.Color = Color.White;
                                 bearishArrowTouchedPrice = true; // Mark as touched so we don't delete it
-
+                                
                                 // We can remove the line once price has touched it and arrow is white
                                 if (currentBearishLine != null)
                                 {
