@@ -82,6 +82,8 @@ namespace PowerLanguage.Indicator
             public double CVDSlope;
             public bool StrongBullTrend, StrongBearTrend;
             public double PrevBodyTop, PrevBodyBottom;
+            public double PullbackVolume, TrendVolume;  // For volume story
+            public double TailBarVolume;  // Current bar volume
         }
 
         private Dictionary<int, SignalData> m_SignalsByBar;
@@ -147,6 +149,11 @@ namespace PowerLanguage.Indicator
             if (m_SignalsByTime.ContainsKey(arg.point.Time))
             {
                 var signalData = m_SignalsByTime[arg.point.Time];
+                
+                // Draw popup on chart showing signal attributes
+                DrawSignalPopup(arg.point.Time, signalData);
+                
+                // Also export to CSV
                 ExportSignalDetails(arg.bar_number, signalData);
                 Output.WriteLine(string.Format("✓ Exported {0} signal at {1:yyyy-MM-dd HH:mm:ss}",
                     signalData.SignalType, arg.point.Time));
@@ -157,6 +164,55 @@ namespace PowerLanguage.Indicator
                 ExportBarAnalysis(arg.bar_number, arg.point.Time);
                 Output.WriteLine(string.Format("✓ Exported bar analysis (no signal) at {0:yyyy-MM-dd HH:mm:ss} (bar {1})",
                     arg.point.Time, arg.bar_number));
+            }
+        }
+        
+        private void DrawSignalPopup(DateTime signalTime, SignalData data)
+        {
+            try
+            {
+                // Find the price level for the popup (above bullish, below bearish)
+                double popupPrice = data.SignalType == "BullishTail" ? 
+                    data.High + (Bars.Info.MinMove / Bars.Info.PriceScale * 20) :
+                    data.Low - (Bars.Info.MinMove / Bars.Info.PriceScale * 20);
+                
+                // Convert slopes to degrees for human readability
+                // Slope in ticks/bar -> convert to degrees using arctan
+                double maxSlope = Math.Max(Math.Abs(data.FastMASlope), Math.Abs(data.SlowMASlope));
+                double slopeDegrees = Math.Atan(maxSlope) * (180.0 / Math.PI);
+                
+                // Determine which MA is driving the signal
+                string maSource = Math.Abs(data.FastMASlope) > Math.Abs(data.SlowMASlope) ? "10MA" : "20MA";
+                
+                // Determine trend direction
+                string trendDir = data.SignalType == "BullishTail" ? "↑ BULLISH" : "↓ BEARISH";
+                
+                // Calculate volume story
+                double pullbackToTrendRatio = data.TrendVolume > 0 ? data.PullbackVolume / data.TrendVolume : 0;
+                double tailToTrendRatio = data.TrendVolume > 0 ? data.TailBarVolume / data.TrendVolume : 0;
+                
+                // Create human-readable popup text with volume story
+                string popupText = string.Format(
+                    "{0}\n" +
+                    "{1} ({2:F0}°)\n" +
+                    "MAs: {3:F1}t apart | Trend: {4:F0}%\n" +
+                    "Vol Story: Pullback {5:F2}x → Tail {6:F2}x",
+                    trendDir,
+                    maSource,
+                    slopeDegrees,
+                    data.MASeparation,
+                    data.BullPct > data.BearPct ? data.BullPct : data.BearPct,
+                    pullbackToTrendRatio,
+                    tailToTrendRatio
+                );
+                
+                // Draw the popup text on the chart
+                var textObj = DrwText.Create(new ChartPoint(signalTime, popupPrice), popupText);
+                textObj.Color = data.SignalType == "BullishTail" ? Color.DarkBlue : Color.DarkRed;
+            }
+            catch (Exception)
+            {
+                // Silently fail on popup draw errors
             }
         }
 
@@ -750,6 +806,14 @@ namespace PowerLanguage.Indicator
             {
                 m_BullishTail.Set(0, Bars.Low[0] - (3 * tickSize));
 
+                // Calculate volume data for the story (if available)
+                double pullbackVol = 0, trendVol = 0;
+                if (Bars.CurrentBar >= 6)
+                {
+                    pullbackVol = (Bars.Volume[1] + Bars.Volume[2] + Bars.Volume[3]) / 3.0;
+                    trendVol = (Bars.Volume[4] + Bars.Volume[5] + Bars.Volume[6]) / 3.0;
+                }
+
                 // Store signal data
                 var signalData = new SignalData
                 {
@@ -772,7 +836,10 @@ namespace PowerLanguage.Indicator
                     StrongBullTrend = strongBullTrend,
                     StrongBearTrend = strongBearTrend,
                     PrevBodyTop = prevBodyTop,
-                    PrevBodyBottom = prevBodyBottom
+                    PrevBodyBottom = prevBodyBottom,
+                    PullbackVolume = pullbackVol,
+                    TrendVolume = trendVol,
+                    TailBarVolume = Bars.Volume[0]
                 };
 
                 m_SignalsByBar[Bars.CurrentBar] = signalData;
@@ -802,6 +869,14 @@ namespace PowerLanguage.Indicator
             {
                 m_BearishTail.Set(0, Bars.High[0] + (3 * tickSize));
 
+                // Calculate volume data for the story (if available)
+                double pullbackVol = 0, trendVol = 0;
+                if (Bars.CurrentBar >= 6)
+                {
+                    pullbackVol = (Bars.Volume[1] + Bars.Volume[2] + Bars.Volume[3]) / 3.0;
+                    trendVol = (Bars.Volume[4] + Bars.Volume[5] + Bars.Volume[6]) / 3.0;
+                }
+
                 // Store signal data
                 var signalData = new SignalData
                 {
@@ -824,7 +899,10 @@ namespace PowerLanguage.Indicator
                     StrongBullTrend = strongBullTrend,
                     StrongBearTrend = strongBearTrend,
                     PrevBodyTop = prevBodyTop,
-                    PrevBodyBottom = prevBodyBottom
+                    PrevBodyBottom = prevBodyBottom,
+                    PullbackVolume = pullbackVol,
+                    TrendVolume = trendVol,
+                    TailBarVolume = Bars.Volume[0]
                 };
 
                 m_SignalsByBar[Bars.CurrentBar] = signalData;
@@ -916,7 +994,6 @@ namespace PowerLanguage.Indicator
                 catch (Exception ex)
                 {
                     Output.WriteLine("Error exporting data: " + ex.Message);
-                }
                 }
             }
         }
