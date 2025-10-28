@@ -46,6 +46,21 @@ namespace PowerLanguage.Indicator
         public bool UseVolumePatternFilter { get; set; }
 
         [Input]
+        public double FastMAMinSlopeAngle { get; set; }  // Minimum slope angle in degrees for fast MA
+
+        [Input]
+        public double SlowMAMinSlopeAngle { get; set; }  // Minimum slope angle in degrees for slow MA
+
+        [Input]
+        public bool UseSlowMAAutoSignal { get; set; }  // Auto-select signals when bar reaches 20 MA with steep slope
+
+        [Input]
+        public double SlowMAAutoSlopeAngle { get; set; }  // Minimum slope angle for auto-signal (typically higher than normal)
+
+        [Input]
+        public double MinTailLengthTicks { get; set; }  // Minimum tail length in ticks for auto-signal
+
+        [Input]
         public bool ExportSignalData { get; set; }
 
         [Input]
@@ -112,6 +127,7 @@ namespace PowerLanguage.Indicator
         }
 
         private Dictionary<int, SignalValidation> m_ActiveSignals;  // Signals awaiting validation
+        private List<ITextObject> m_PopupTexts;  // Store popup text objects to keep them persistent
         private int m_TotalSignalsGenerated = 0;
         private int m_SuccessfulSignals = 0;
         private int m_FailedSignals = 0;
@@ -130,6 +146,11 @@ namespace PowerLanguage.Indicator
             CVDLookback = 10;
             UseCVDFilter = false;  // Disable CVD filtering for now
             UseVolumePatternFilter = false;  // Disable volume pattern filtering for now
+            FastMAMinSlopeAngle = 45;  // Default to 45 degrees for fast MA
+            SlowMAMinSlopeAngle = 30;  // Default to 30 degrees for slow MA
+            UseSlowMAAutoSignal = false;  // Disabled by default
+            SlowMAAutoSlopeAngle = 60;  // Require 60 degrees for auto-signal (very steep)
+            MinTailLengthTicks = 0.5;  // Require at least 0.5 ticks of tail (adjust as needed)
             ExportSignalData = false;
             ExportFilePath = @"C:\Users\mark\tail_signals_debug\signals.csv";
             ShowBarNumbers = true;  // Show bar numbers next to signals for reference
@@ -143,6 +164,7 @@ namespace PowerLanguage.Indicator
 
             // Initialize validation tracking
             m_ActiveSignals = new Dictionary<int, SignalValidation>();
+            m_PopupTexts = new List<ITextObject>();
             m_TotalSignalsGenerated = 0;
             m_SuccessfulSignals = 0;
             m_FailedSignals = 0;
@@ -168,9 +190,9 @@ namespace PowerLanguage.Indicator
             m_SlowMAPlot = AddPlot(new PlotAttributes("20MA", EPlotShapes.Line,
                 Color.Black, Color.Empty, 2, 0, true));
 
-            // Trend indicator - line at bottom of chart
-            m_TrendIndicator = AddPlot(new PlotAttributes("Trend", EPlotShapes.Line,
-                Color.Gray, Color.Empty, 1, 0, true));
+            // Trend indicator - disabled to prevent scaling issues
+            // m_TrendIndicator = AddPlot(new PlotAttributes("Trend", EPlotShapes.Line,
+            //     Color.Gray, Color.Empty, 1, 0, true));
         }
 
         protected override void StartCalc()
@@ -249,6 +271,9 @@ namespace PowerLanguage.Indicator
                 var textObj = DrwText.Create(new ChartPoint(signalTime, popupPrice), popupText);
                 textObj.Color = data.SignalType == "BullishTail" ? Color.Blue : Color.Red;
                 textObj.VStyle = ETextStyleV.Above;  // Position text above the point
+                
+                // Store the text object to keep it persistent
+                m_PopupTexts.Add(textObj);
             }
             catch (Exception)
             {
@@ -262,12 +287,17 @@ namespace PowerLanguage.Indicator
             {
                 // Create folder if it doesn't exist
                 if (!System.IO.Directory.Exists(ClickExportFolder))
+                {
                     System.IO.Directory.CreateDirectory(ClickExportFolder);
+                    Output.WriteLine("Created directory: " + ClickExportFolder);
+                }
 
                 // Create unique filename with timestamp
                 string filename = string.Format("signal_{0}_{1:yyyyMMdd_HHmmss}.csv",
                     data.SignalType, data.Time);
                 string filepath = System.IO.Path.Combine(ClickExportFolder, filename);
+                
+                Output.WriteLine("Attempting to export signal to: " + filepath);
 
                 // Build detailed CSV content
                 var lines = new List<string>();
@@ -325,7 +355,7 @@ namespace PowerLanguage.Indicator
 
                 System.IO.File.WriteAllLines(filepath, lines.ToArray());
 
-                Output.WriteLine("Exported signal details to: " + filename);
+                Output.WriteLine("SUCCESS: Exported signal details to: " + filepath);
             }
             catch (Exception ex)
             {
@@ -336,23 +366,57 @@ namespace PowerLanguage.Indicator
         private void ExportBarAnalysis(int barNumber, DateTime barTime)
         {
             int barsAgo = Bars.CurrentBar - barNumber;
+            
+            Output.WriteLine(string.Format("ExportBarAnalysis: barNumber={0}, currentBar={1}, barsAgo={2}", barNumber, Bars.CurrentBar, barsAgo));
 
             // Validate the bar
             if (!ValidateBarForAnalysis(barNumber, barsAgo))
+            {
+                Output.WriteLine("Validation failed - aborting analysis");
                 return;
+            }
 
             // Calculate metrics for this bar
             var metrics = CalculateBarMetrics(barsAgo);
             if (metrics == null)
+            {
+                Output.WriteLine("Metrics calculation failed - aborting analysis");
                 return;
+            }
+            
+            Output.WriteLine("Metrics calculated successfully - proceeding with analysis");
+
+            // Print detailed analysis to console
+            try
+            {
+                PrintBarAnalysisToConsole(barNumber, barTime, barsAgo, metrics);
+            }
+            catch (Exception ex)
+            {
+                Output.WriteLine("Exception in PrintBarAnalysisToConsole: " + ex.Message + " | " + ex.StackTrace);
+            }
 
             // Export to CSV
-            ExportBarMetricsToCSV(barNumber, barTime, barsAgo, metrics);
+            try
+            {
+                ExportBarMetricsToCSV(barNumber, barTime, barsAgo, metrics);
+            }
+            catch (Exception ex)
+            {
+                Output.WriteLine("Exception in ExportBarMetricsToCSV: " + ex.Message + " | " + ex.StackTrace);
+            }
 
             // Draw popup on chart
-            DrawBarAnalysisPopup(barsAgo, metrics.FastMA, metrics.SlowMA, metrics.FastMASlope, 
-                metrics.SlowMASlope, metrics.MASeparation, metrics.BullPct, metrics.VolumeRatio, 
-                metrics.RangeRatio, metrics.TickSize);
+            try
+            {
+                DrawBarAnalysisPopup(barsAgo, metrics.FastMA, metrics.SlowMA, metrics.FastMASlope, 
+                    metrics.SlowMASlope, metrics.MASeparation, metrics.BullPct, metrics.VolumeRatio, 
+                    metrics.RangeRatio, metrics.TickSize);
+            }
+            catch (Exception ex)
+            {
+                Output.WriteLine("Exception in DrawBarAnalysisPopup: " + ex.Message);
+            }
         }
 
         private bool ValidateBarForAnalysis(int barNumber, int barsAgo)
@@ -399,20 +463,56 @@ namespace PowerLanguage.Indicator
                 // Get MA values
                 try
                 {
-                    fastMA = m_FastMA[barsAgo];
-                    slowMA = m_SlowMA[barsAgo];
+                    // Check if we have enough history for this bar
+                    if (barsAgo < 0 || barsAgo >= Bars.CurrentBar)
+                    {
+                        Output.WriteLine(string.Format("Bar index out of range: barsAgo={0}, CurrentBar={1}", barsAgo, Bars.CurrentBar));
+                        return null;
+                    }
+                    
+                    // Try to get from indicator first (for recent bars)
+                    try
+                    {
+                        fastMA = m_FastMA[barsAgo];
+                        slowMA = m_SlowMA[barsAgo];
+                        Output.WriteLine(string.Format("Got MA values from indicator: FastMA={0:F2}, SlowMA={1:F2}", fastMA, slowMA));
+                    }
+                    catch (Exception ex)
+                    {
+                        // If indicator doesn't have history, log the error
+                        Output.WriteLine(string.Format("Failed to get MA from indicator at barsAgo={0}: {1}", barsAgo, ex.Message));
+                        Output.WriteLine(string.Format("Trying alternative access method..."));
+                        
+                        // Try alternative access
+                        try
+                        {
+                            fastMA = m_FastMA.Value;
+                            slowMA = m_SlowMA.Value;
+                            Output.WriteLine(string.Format("Got current MA values: FastMA={0:F2}, SlowMA={1:F2}", fastMA, slowMA));
+                        }
+                        catch (Exception ex2)
+                        {
+                            Output.WriteLine(string.Format("Alternative access also failed: {0}", ex2.Message));
+                            throw;
+                        }
+                    }
 
                     if (barsAgo + SlopeLookback >= Bars.CurrentBar)
                     {
-                        Output.WriteLine("Not enough bars for slope calculation");
+                        Output.WriteLine(string.Format("Not enough bars for slope calculation: need {0} bars ahead, only have {1}", SlopeLookback, Bars.CurrentBar - barsAgo));
                         return null;
                     }
 
-                    fastMASlope = (m_FastMA[barsAgo] - m_FastMA[barsAgo + SlopeLookback]) / SlopeLookback;
-                    slowMASlope = (m_SlowMA[barsAgo] - m_SlowMA[barsAgo + SlopeLookback]) / SlopeLookback;
+                    // Calculate slopes manually
+                    double fastMAFuture = CalculateEMA(barsAgo + SlopeLookback, FastMALength);
+                    double slowMAFuture = CalculateEMA(barsAgo + SlopeLookback, SlowMALength);
+                    
+                    fastMASlope = (fastMA - fastMAFuture) / SlopeLookback;
+                    slowMASlope = (slowMA - slowMAFuture) / SlopeLookback;
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    Output.WriteLine("Exception getting MA values: " + ex.Message);
                     return null;
                 }
 
@@ -482,15 +582,87 @@ namespace PowerLanguage.Indicator
             }
         }
 
+        private void PrintBarAnalysisToConsole(int barNumber, DateTime barTime, int barsAgo, BarMetrics metrics)
+        {
+            try
+            {
+                double tickSize = metrics.TickSize;
+                double fastMAMinSlope = Math.Tan(FastMAMinSlopeAngle * Math.PI / 180.0) * tickSize;
+                double slowMAMinSlope = Math.Tan(SlowMAMinSlopeAngle * Math.PI / 180.0) * tickSize;
+                double minSeparation = MinMASeparationTicks * tickSize;
+
+                Output.WriteLine("");
+                Output.WriteLine("=== BAR ANALYSIS: " + barTime.ToString("HH:mm:ss") + " (Bar " + barNumber + ") ===");
+                Output.WriteLine("");
+                Output.WriteLine("PRICE DATA:");
+                Output.WriteLine(string.Format("  Open={0:F2}, High={1:F2}, Low={2:F2}, Close={3:F2}", 
+                    Bars.Open[barsAgo], Bars.High[barsAgo], Bars.Low[barsAgo], Bars.Close[barsAgo]));
+                Output.WriteLine("");
+                Output.WriteLine("MOVING AVERAGES:");
+                Output.WriteLine(string.Format("  FastMA(10)={0:F2}, SlowMA(20)={1:F2}", metrics.FastMA, metrics.SlowMA));
+                Output.WriteLine(string.Format("  MA Separation: {0:F2} ticks (min required: {1:F2})", 
+                    metrics.MASeparation / tickSize, MinMASeparationTicks));
+                Output.WriteLine(string.Format("  FastMA Slope: {0:F4} ticks/bar (min: {1:F4}) - {2}", 
+                    metrics.FastMASlope / tickSize, fastMAMinSlope / tickSize, 
+                    Math.Abs(metrics.FastMASlope) >= Math.Abs(fastMAMinSlope) ? "✓ OK" : "✗ FAIL"));
+                Output.WriteLine(string.Format("  SlowMA Slope: {0:F4} ticks/bar (min: {1:F4}) - {2}", 
+                    metrics.SlowMASlope / tickSize, slowMAMinSlope / tickSize,
+                    Math.Abs(metrics.SlowMASlope) >= Math.Abs(slowMAMinSlope) ? "✓ OK" : "✗ FAIL"));
+                Output.WriteLine("");
+                Output.WriteLine("DIRECTIONAL BIAS:");
+                Output.WriteLine(string.Format("  Bullish: {0:F1}% (min: {1}%)", metrics.BullPct, MinDirectionalPct));
+                Output.WriteLine(string.Format("  Bearish: {0:F1}% (min: {1}%)", metrics.BearPct, MinDirectionalPct));
+                Output.WriteLine("");
+                Output.WriteLine("VOLUME & RANGE:");
+                Output.WriteLine(string.Format("  Volume Ratio: {0:F2}x (min: {1}x) - {2}", 
+                    metrics.VolumeRatio, MinVolumeMultiplier, 
+                    metrics.VolumeRatio >= MinVolumeMultiplier ? "✓ OK" : "✗ FAIL"));
+                Output.WriteLine(string.Format("  Range Ratio: {0:F2}x (min: {1}x) - {2}", 
+                    metrics.RangeRatio, MinRangeMultiplier,
+                    metrics.RangeRatio >= MinRangeMultiplier ? "✓ OK" : "✗ FAIL"));
+                Output.WriteLine("");
+                Output.WriteLine("TREND STATUS:");
+                Output.WriteLine(string.Format("  Strong Bull Trend: {0}", metrics.StrongBullTrend ? "YES" : "NO"));
+                Output.WriteLine(string.Format("  Strong Bear Trend: {0}", metrics.StrongBearTrend ? "YES" : "NO"));
+                Output.WriteLine("");
+                Output.WriteLine("CONCLUSION:");
+                if (!metrics.StrongBullTrend && !metrics.StrongBearTrend)
+                {
+                    Output.WriteLine("  ✗ NO SIGNAL - Neither bullish nor bearish trend conditions met");
+                }
+                else if (metrics.StrongBullTrend)
+                {
+                    Output.WriteLine("  ✓ BULLISH SIGNAL CONDITIONS MET");
+                }
+                else if (metrics.StrongBearTrend)
+                {
+                    Output.WriteLine("  ✓ BEARISH SIGNAL CONDITIONS MET");
+                }
+                Output.WriteLine("=====================================");
+                Output.WriteLine("");
+            }
+            catch (Exception ex)
+            {
+                Output.WriteLine("Error printing bar analysis: " + ex.Message);
+            }
+        }
+
         private void ExportBarMetricsToCSV(int barNumber, DateTime barTime, int barsAgo, BarMetrics metrics)
         {
             try
             {
+                // Verify and create directory
                 if (!System.IO.Directory.Exists(ClickExportFolder))
+                {
                     System.IO.Directory.CreateDirectory(ClickExportFolder);
+                    Output.WriteLine("Created directory: " + ClickExportFolder);
+                }
 
+                // Use HHmmss instead of HH:mm:ss to avoid invalid filename characters
                 string filename = string.Format("bar_analysis_{0:yyyyMMdd_HHmmss}.csv", barTime);
                 string filepath = System.IO.Path.Combine(ClickExportFolder, filename);
+                
+                Output.WriteLine("Attempting to export to: " + filepath);
 
                 var lines = new List<string>();
                 lines.Add("BAR ANALYSIS");
@@ -528,7 +700,7 @@ namespace PowerLanguage.Indicator
                 lines.Add(string.Format("CVDSlope,{0:F2}", metrics.CVDSlope));
 
                 System.IO.File.WriteAllLines(filepath, lines.ToArray());
-                Output.WriteLine("SUCCESS: Exported bar analysis to: " + filename);
+                Output.WriteLine("SUCCESS: Exported bar analysis to: " + filepath);
             }
             catch (Exception ex)
             {
@@ -736,6 +908,30 @@ namespace PowerLanguage.Indicator
             Output.WriteLine("========================");
         }
 
+        // Check if bar qualifies for auto-signal: tail extends beyond previous body + steep 20 MA slope
+        private bool CheckSlowMAAutoSignal(bool tailExtendsBeyondPrevBody, double slowMASlope, double slowMAAutoMinSlope, bool isBullish)
+        {
+            if (!UseSlowMAAutoSignal)
+                return false;
+
+            // Tail must extend beyond previous body
+            if (!tailExtendsBeyondPrevBody)
+                return false;
+
+            // 20 MA slope must be steep enough
+            if (isBullish && slowMASlope < slowMAAutoMinSlope)
+                return false;
+            if (!isBullish && slowMASlope > -slowMAAutoMinSlope)
+                return false;
+
+            // All conditions met - signal triggered!
+            // Debug output disabled to reduce console noise
+            // string signalType = isBullish ? "Bullish" : "Bearish";
+            // Output.WriteLine(string.Format("*** {0} AUTO-SIGNAL TRIGGERED at {1:HH:mm:ss}: Slope={2:F2}, MA={3:F2} ***", 
+            //     signalType, Bars.Time[0], slowMASlope, Bars.Close[0]));
+            return true;
+        }
+
         // Helper method to check if we should block a new signal due to clustering
         private bool ShouldBlockSignalForClustering()
         {
@@ -759,6 +955,12 @@ namespace PowerLanguage.Indicator
             // Validate all active signals against current bar price action
             ValidateActiveSignals();
 
+            // Output statistics every 1000 bars
+            if (Bars.CurrentBar % 1000 == 0)
+            {
+                OutputSignalStatistics();
+            }
+
             // Increment bars since last signal
             if (m_HasLastSignal)
                 m_BarssSinceLastSignal++;
@@ -775,9 +977,11 @@ namespace PowerLanguage.Indicator
             double fastMASlope = (m_FastMA[0] - m_FastMA[SlopeLookback]) / SlopeLookback;
             double slowMASlope = (m_SlowMA[0] - m_SlowMA[SlopeLookback]) / SlopeLookback;
 
-            // Require strong slope - 2.5 ticks per bar minimum (steeper than 45 degrees)
-            // This ensures we only trade in clearly trending markets
-            double minStrongSlope = tickSize * 2.5;
+            // Convert angle parameters to slope values
+            // slope = tan(angle in radians) * tickSize
+            double fastMAMinSlope = Math.Tan(FastMAMinSlopeAngle * Math.PI / 180.0) * tickSize;
+            double slowMAMinSlope = Math.Tan(SlowMAMinSlopeAngle * Math.PI / 180.0) * tickSize;
+            double slowMAAutoMinSlope = Math.Tan(SlowMAAutoSlopeAngle * Math.PI / 180.0) * tickSize;
 
             // Check MA separation
             double maSeparation = Math.Abs(fastMA - slowMA);
@@ -881,8 +1085,8 @@ namespace PowerLanguage.Indicator
                                   Math.Abs(Bars.High[0] - slowMA) <= nearThreshold;
 
             // For bullish setup: tail bounces off MA that has strong upward slope
-            bool fastMAQualifies = tailNearFastMA && fastMASlope >= minStrongSlope;
-            bool slowMAQualifies = tailNearSlowMA && slowMASlope >= minStrongSlope * 0.6; // Slightly lower threshold for 20 MA
+            bool fastMAQualifies = tailNearFastMA && fastMASlope >= fastMAMinSlope;
+            bool slowMAQualifies = tailNearSlowMA && slowMASlope >= slowMAMinSlope; // Use configured slow MA slope
 
             bool strongBullTrend = (fastMAQualifies || slowMAQualifies) &&
                                    fastMA > slowMA &&  // MAs in correct order
@@ -894,8 +1098,8 @@ namespace PowerLanguage.Indicator
                                    (!UseVolumePatternFilter || volumePatternOK);  // Volume pattern check
 
             // For bearish setup: tail bounces off MA that has strong downward slope
-            bool fastMAQualifiesBear = tailNearFastMA && fastMASlope <= -minStrongSlope;
-            bool slowMAQualifiesBear = tailNearSlowMA && slowMASlope <= -minStrongSlope * 0.6;
+            bool fastMAQualifiesBear = tailNearFastMA && fastMASlope <= -fastMAMinSlope;
+            bool slowMAQualifiesBear = tailNearSlowMA && slowMASlope <= -slowMAMinSlope;
 
             bool strongBearTrend = (fastMAQualifiesBear || slowMAQualifiesBear) &&
                                    fastMA < slowMA &&  // MAs in correct order
@@ -910,34 +1114,35 @@ namespace PowerLanguage.Indicator
             m_FastMAPlot.Set(0, fastMA);
             m_SlowMAPlot.Set(0, slowMA);
 
-            // Show trend state as a line
-            // You can manually color this green/red in MultiCharts format settings
-            if (strongBullTrend)
-            {
-                m_TrendIndicator.Set(0, 1);  // Positive = bullish
-            }
-            else if (strongBearTrend)
-            {
-                m_TrendIndicator.Set(0, -1);  // Negative = bearish
-            }
-            else
-            {
-                m_TrendIndicator.Set(0, 0);  // Zero = neutral
-            }
+            // Trend indicator disabled - was causing scaling issues
+            // if (strongBullTrend)
+            // {
+            //     m_TrendIndicator.Set(0, 1);  // Positive = bullish
+            // }
+            // else if (strongBearTrend)
+            // {
+            //     m_TrendIndicator.Set(0, -1);  // Negative = bearish
+            // }
+            // else
+            // {
+            //     m_TrendIndicator.Set(0, 0);  // Zero = neutral
+            // }
 
             // BULLISH SETUP: Strong uptrend + blue bar + tail extends to/below previous body
             bool isBullishBar = Bars.Close[0] > Bars.Open[0];
             bool tailExtendsBelowPrevBody = Bars.Low[0] <= prevBodyBottom;
 
             // Debug: Check for potential signals that are being rejected
-            if (isBullishBar && tailExtendsBelowPrevBody && !strongBullTrend)
-            {
-                // Debug output disabled to reduce console noise
-                // Output.WriteLine(string.Format("Bullish tail rejected at {0:HH:mm:ss}: FastMAQual={1}, SlowMAQual={2}, MASep={3:F1}, DirPct={4:F0}, Vol={5:F2}, Range={6:F2}, VolPattern={7}",
-                //     Bars.Time[0], fastMAQualifies, slowMAQualifies, maSeparation/tickSize, bullPct, volumeRatio, rangeRatio, volumePatternOK));
-            }
+            // if (isBullishBar && tailExtendsBelowPrevBody && !strongBullTrend)
+            // {
+            //     Output.WriteLine(string.Format("Bullish tail rejected at {0:HH:mm:ss}: FastMAQual={1}, SlowMAQual={2}, MASep={3:F1}, DirPct={4:F0}%, Vol={5:F2}, Range={6:F2}, VolPattern={7}, FastSlope={8:F2}, SlowSlope={9:F2}",
+            //         Bars.Time[0], fastMAQualifies, slowMAQualifies, maSeparation/tickSize, bullPct, volumeRatio, rangeRatio, volumePatternOK, fastMASlope, slowMASlope));
+            // }
 
-            if (strongBullTrend && isBullishBar && tailExtendsBelowPrevBody && !ShouldBlockSignalForClustering())
+            // Check auto-signal: tail extends below previous body + steep 20 MA
+            bool bullishAutoSignal = CheckSlowMAAutoSignal(tailExtendsBelowPrevBody, slowMASlope, slowMAAutoMinSlope, true);
+
+            if ((strongBullTrend || bullishAutoSignal) && isBullishBar && tailExtendsBelowPrevBody && !ShouldBlockSignalForClustering())
             {
                 // Don't draw the circle yet - wait for validation
                 // m_BullishTail.Set(0, Bars.Low[0] - (3 * tickSize));
@@ -947,6 +1152,10 @@ namespace PowerLanguage.Indicator
                 m_LastSignalLow = Bars.Low[0];
                 m_HasLastSignal = true;
                 m_BarssSinceLastSignal = 0;
+                
+                // Debug output disabled
+                // if (bullishAutoSignal)
+                //     Output.WriteLine(string.Format("*** Bullish AUTO-SIGNAL REGISTERED at {0:HH:mm:ss} bar {1} ***", Bars.Time[0], Bars.CurrentBar));
 
                 // Calculate volume data for the story (if available)
                 double pullbackVol = 0, trendVol = 0;
@@ -1019,14 +1228,16 @@ namespace PowerLanguage.Indicator
             bool tailExtendsAbovePrevBody = Bars.High[0] >= prevBodyTop;
 
             // Debug: Check for potential signals that are being rejected
-            if (isBearishBar && tailExtendsAbovePrevBody && !strongBearTrend)
-            {
-                // Debug output disabled to reduce console noise
-                // Output.WriteLine(string.Format("Bearish tail rejected at {0:HH:mm:ss}: FastMAQual={1}, SlowMAQual={2}, MASep={3:F1}, DirPct={4:F0}, Vol={5:F2}, Range={6:F2}, VolPattern={7}",
-                //     Bars.Time[0], fastMAQualifiesBear, slowMAQualifiesBear, maSeparation/tickSize, bearPct, volumeRatio, rangeRatio, volumePatternOK));
-            }
+            // if (isBearishBar && tailExtendsAbovePrevBody && !strongBearTrend)
+            // {
+            //     Output.WriteLine(string.Format("Bearish tail rejected at {0:HH:mm:ss}: FastMAQual={1}, SlowMAQual={2}, MASep={3:F1}, DirPct={4:F0}%, Vol={5:F2}, Range={6:F2}, VolPattern={7}, FastSlope={8:F2}, SlowSlope={9:F2}",
+            //         Bars.Time[0], fastMAQualifiesBear, slowMAQualifiesBear, maSeparation/tickSize, bearPct, volumeRatio, rangeRatio, volumePatternOK, fastMASlope, slowMASlope));
+            // }
 
-            if (strongBearTrend && isBearishBar && tailExtendsAbovePrevBody && !ShouldBlockSignalForClustering())
+            // Check auto-signal: tail extends above previous body + steep 20 MA
+            bool bearishAutoSignal = CheckSlowMAAutoSignal(tailExtendsAbovePrevBody, slowMASlope, slowMAAutoMinSlope, false);
+
+            if ((strongBearTrend || bearishAutoSignal) && isBearishBar && tailExtendsAbovePrevBody && !ShouldBlockSignalForClustering())
             {
                 // Don't draw the circle yet - wait for validation
                 // m_BearishTail.Set(0, Bars.High[0] + (3 * tickSize));
@@ -1036,6 +1247,10 @@ namespace PowerLanguage.Indicator
                 m_LastSignalLow = Bars.Low[0];
                 m_HasLastSignal = true;
                 m_BarssSinceLastSignal = 0;
+                
+                // Debug output disabled
+                // if (bearishAutoSignal)
+                //     Output.WriteLine(string.Format("*** Bearish AUTO-SIGNAL REGISTERED at {0:HH:mm:ss} bar {1} ***", Bars.Time[0], Bars.CurrentBar));
 
                 // Calculate volume data for the story (if available)
                 double pullbackVol = 0, trendVol = 0;
@@ -1113,75 +1328,106 @@ namespace PowerLanguage.Indicator
 
                 if (currentTime >= startTime && currentTime < endTime)
                 {
-                try
-                {
-                    // Write header on first export
-                    if (!m_ExportHeaderWritten)
+                    try
                     {
-                        string header = "BarNumber,SignalType,DateTime,Open,High,Low,Close,FastMA,SlowMA,MASlope,MASeparation,DirectionalPct,VolumeRatio,RangeRatio,CVDSlope,BarColor";
-                        System.IO.File.WriteAllText(ExportFilePath, header + "\r\n");
-                        m_ExportHeaderWritten = true;
-                        m_LastReportedDate = DateTime.MinValue;
-                        m_DayCounter = 0;
-                    }
+                        // Write header on first export
+                        if (!m_ExportHeaderWritten)
+                        {
+                            string header = "BarNumber,SignalType,DateTime,Open,High,Low,Close,FastMA,SlowMA,MASlope,MASeparation,DirectionalPct,VolumeRatio,RangeRatio,CVDSlope,BarColor";
+                            System.IO.File.WriteAllText(ExportFilePath, header + "\r\n");
+                            m_ExportHeaderWritten = true;
+                            m_LastReportedDate = DateTime.MinValue;
+                            m_DayCounter = 0;
+                        }
 
-                    // Report progress when date changes - show day number on chart only
-                    DateTime currentDate = Bars.Time[0].Date;
-                    if (currentDate != m_LastReportedDate)
+                        // Report progress when date changes - show day number on chart only
+                        DateTime currentDate = Bars.Time[0].Date;
+                        if (currentDate != m_LastReportedDate)
+                        {
+                            m_DayCounter++;
+
+                            // Draw day number on chart
+                            DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0] + 50), "Day " + m_DayCounter.ToString());
+
+                            m_LastReportedDate = currentDate;
+                        }
+
+                        string signalType = "None";
+                        if (strongBullTrend && isBullishBar && tailExtendsBelowPrevBody)
+                            signalType = "BullishTail";
+                        else if (strongBearTrend && isBearishBar && tailExtendsAbovePrevBody)
+                            signalType = "BearishTail";
+                        else if (strongBullTrend)
+                            signalType = "StrongBull";
+                        else if (strongBearTrend)
+                            signalType = "StrongBear";
+
+                        // Determine bar color based on close vs open
+                        string barColor = "Doji";
+                        double barOpen = Bars.Open[0];
+                        double barClose = Bars.Close[0];
+
+                        if (barClose > barOpen)
+                            barColor = "Bull";
+                        else if (barClose < barOpen)
+                            barColor = "Bear";
+
+                        string line = string.Format("{0},{1},{2:yyyy-MM-dd HH:mm:ss},{3:F2},{4:F2},{5:F2},{6:F2},{7:F2},{8:F2},{9:F1},{10:F2},{11:F2},{12:F2},{13:F2},{14:F2},{15}",
+                            Bars.CurrentBar,
+                            signalType,
+                            Bars.Time[0],
+                            Bars.Open[0],
+                            Bars.High[0],
+                            Bars.Low[0],
+                            Bars.Close[0],
+                            fastMA,
+                            slowMA,
+                            fastMASlope / tickSize,
+                            maSeparation / tickSize,
+                            bullPct > bearPct ? bullPct : bearPct,
+                            volumeRatio,
+                            rangeRatio,
+                            cvdSlope,
+                            barColor);
+
+                        System.IO.File.AppendAllText(ExportFilePath, line + "\r\n");
+                    }
+                    catch (Exception ex)
                     {
-                        m_DayCounter++;
-
-                        // Draw day number on chart
-                        DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0] + 50), "Day " + m_DayCounter.ToString());
-
-                        m_LastReportedDate = currentDate;
+                        Output.WriteLine("Error exporting data: " + ex.Message);
                     }
-
-                    string signalType = "None";
-                    if (strongBullTrend && isBullishBar && tailExtendsBelowPrevBody)
-                        signalType = "BullishTail";
-                    else if (strongBearTrend && isBearishBar && tailExtendsAbovePrevBody)
-                        signalType = "BearishTail";
-                    else if (strongBullTrend)
-                        signalType = "StrongBull";
-                    else if (strongBearTrend)
-                        signalType = "StrongBear";
-
-                    // Determine bar color based on close vs open
-                    string barColor = "Doji";
-                    double barOpen = Bars.Open[0];
-                    double barClose = Bars.Close[0];
-
-                    if (barClose > barOpen)
-                        barColor = "Bull";
-                    else if (barClose < barOpen)
-                        barColor = "Bear";
-
-                    string line = string.Format("{0},{1},{2:yyyy-MM-dd HH:mm:ss},{3:F2},{4:F2},{5:F2},{6:F2},{7:F2},{8:F2},{9:F1},{10:F2},{11:F2},{12:F2},{13:F2},{14:F2},{15}",
-                        Bars.CurrentBar,
-                        signalType,
-                        Bars.Time[0],
-                        Bars.Open[0],
-                        Bars.High[0],
-                        Bars.Low[0],
-                        Bars.Close[0],
-                        fastMA,
-                        slowMA,
-                        fastMASlope / tickSize,
-                        maSeparation / tickSize,
-                        bullPct > bearPct ? bullPct : bearPct,
-                        volumeRatio,
-                        rangeRatio,
-                        cvdSlope,
-                        barColor);
-
-                    System.IO.File.AppendAllText(ExportFilePath, line + "\r\n");
                 }
-                catch (Exception ex)
+            }
+        }
+
+        // Helper method to calculate SMA (Simple Moving Average) for a historical bar
+        private double CalculateEMA(int barsAgo, int period)
+        {
+            try
+            {
+                if (barsAgo < 0 || barsAgo >= Bars.CurrentBar)
+                    return 0;
+
+                // Calculate simple moving average using close prices
+                double sum = 0;
+                int count = 0;
+
+                // Look back from the bar
+                for (int i = 0; i < period && (barsAgo + i) < Bars.CurrentBar; i++)
                 {
-                    Output.WriteLine("Error exporting data: " + ex.Message);
+                    sum += Bars.Close[barsAgo + i];
+                    count++;
                 }
-                }
+
+                if (count == 0)
+                    return Bars.Close[barsAgo];
+
+                return sum / count;
+            }
+            catch (Exception ex)
+            {
+                Output.WriteLine("Error in CalculateEMA: " + ex.Message);
+                return Bars.Close[barsAgo];  // Fallback to current close
             }
         }
     }
