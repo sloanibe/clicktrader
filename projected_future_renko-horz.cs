@@ -29,7 +29,6 @@
             [Input]
             public Color OppositeDirectionColor { get; set; }
 
-            private IPlotObject m_Plot;
             private List<ITrendLineObject> m_DirectionLines;
             private List<ITrendLineObject> m_OppositeDirectionLines;
             private double m_LastClosePrice;
@@ -41,18 +40,16 @@
 
             public projected_future_renko_horz(object ctx) : base(ctx)
             {
-                Level1 = 15; // Default to 15 ticks
-                NumberOfLevels = 2; // Default to 2 levels
-                BullishColor = Color.Green; // Default to green for bullish
-                BearishColor = Color.Red; // Default to red for bearish
-                ShowOppositeDirectionLevels = true; // Enable opposite direction projections by default
-                OppositeDirectionColor = Color.Yellow; // Default to yellow for opposite direction
+                Level1 = 4; // Default to 4 ticks (MES)
+                NumberOfLevels = 1;
+                BullishColor = Color.Green;
+                BearishColor = Color.Red;
+                ShowOppositeDirectionLevels = true;
+                OppositeDirectionColor = Color.Yellow;
             }
 
             protected override void Create()
             {
-                // Create an invisible plot that doesn't affect the chart
-                m_Plot = AddPlot(new PlotAttributes("Projection", EPlotShapes.Line, Color.Transparent));
                 m_DirectionLines = new List<ITrendLineObject>();
                 m_OppositeDirectionLines = new List<ITrendLineObject>();
                 m_NeedToUpdate = false;
@@ -62,59 +59,53 @@
             {
                 ClearLines();
 
-                // Skip historical calculation - only calculate for real-time data
-                if (!Environment.IsRealTimeCalc)
+                // Contract-Aware Predetection Logic:
+                string symbolName = Bars.Info.Name.ToUpper();
+                if (Level1 == 4 || Level1 == 1 || Level1 == 0) 
                 {
-                    return;
+                    if (symbolName.Contains("MNQ")) Level1 = 20;   // 20 Ticks
+                    else if (symbolName.Contains("MYM")) Level1 = 7; // 7 Ticks
+                    else if (symbolName.Contains("MES")) Level1 = 4; // 4 Ticks
                 }
 
-                // Initialize with the most recent bar data
-                if (Bars.CurrentBar > 1) // Check if we have at least 2 bars
-                {
-                    // Get the last completed bar
-                    double currentClose = Bars.Close[0];
-                    double previousClose = Bars.Close[1];
+                if (Level1 <= 0) Level1 = 4;
 
-                    // For Renko bars, we need to calculate the open based on the box size
-                    double currentOpen = Bars.Open[0];
-
-                    // Determine bar direction (up or down)
-                    bool isUpBar = currentClose > previousClose;
-
-                    // Calculate the box size for Renko bars
-                    m_BoxSize = Math.Abs(currentClose - previousClose);
-
-                    // Store the values
-                    m_LastClosePrice = currentClose;
-                    m_LastOpenPrice = currentOpen;
-                    m_LastCloseTime = Bars.Time[0];
-                    m_LastBarWasUp = isUpBar;
-
-                    // Set flag to draw on first calculation
-                    m_NeedToUpdate = true;
-                }
-                else
-                {
-                    // Not enough bars yet
-                    m_NeedToUpdate = false;
-                    m_LastClosePrice = 0;
-                    m_LastOpenPrice = 0;
-                    m_BoxSize = 0;
-                }
             }
 
-            // Track the current bar index to detect new bars
             private int m_LastBarIndex = -1;
+            private bool m_IsFirstRealTimeTick = true;
+
 
             protected override void CalcBar()
             {
-                // Keep indicator active with a constant value that won't affect the chart
-                m_Plot.Set(0);
-
-                // Skip historical calculation - only calculate for real-time data
+                // Track historical bars to ensure we have the exact previous bar data ready
                 if (!Environment.IsRealTimeCalc)
                 {
+                    if (Bars.Status == EBarState.Close)
+                    {
+                        m_LastClosePrice = Bars.Close[0];
+                        m_LastOpenPrice = Bars.Open[0];
+                        m_LastCloseTime = Bars.Time[0];
+                        
+                        if (Bars.CurrentBar > 1) 
+                        {
+                            m_LastBarWasUp = Bars.Close[0] > Bars.Close[1];
+                        } 
+                        else 
+                        {
+                            m_LastBarWasUp = Bars.Close[0] >= Bars.Open[0];
+                        }
+                        
+                        m_LastBarIndex = Bars.CurrentBar;
+                    }
                     return;
+                }
+
+                // Force the projection to be drawn immediately on the first real-time tick
+                if (m_IsFirstRealTimeTick)
+                {
+                    m_NeedToUpdate = true;
+                    m_IsFirstRealTimeTick = false;
                 }
 
                 // Only process on bar close
@@ -182,9 +173,9 @@
                     // Use the current bar time as the start
                     DateTime startTime = Bars.Time[0];
 
-                    // For the end time, use a very large offset that will extend far beyond the visible chart
-                    // This ensures the line always extends to the right edge of the chart
-                    DateTime endTime = startTime.AddDays(365);  // Extend a year into the future
+                    // Use a short 5-minute offset for the anchor point, and use ExtRight 
+                    // to extend it forever without breaking the chart auto-scaling.
+                    DateTime endTime = startTime.AddMinutes(5); 
 
                     if (m_LastBarWasUp)
                     {
@@ -194,7 +185,7 @@
                             // Draw projections in the direction of the close
                             for (int i = 1; i <= numLevels; i++)
                             {
-                                // Calculate the projection level (Level1 * i)
+                                // Calculate the projection level (Level1 * i ticks)
                                 double levelProjection = m_LastClosePrice + (Level1 * i * tickSize);
 
                                 // Draw the projection line
@@ -203,6 +194,7 @@
 
                                 ITrendLineObject line = DrwTrendLine.Create(levelStart, levelEnd);
                                 line.Color = BullishColor;
+                                line.ExtRight = true; // Key: This prevents the line from being used in scaling math
 
                                 m_DirectionLines.Add(line);
                             }
@@ -212,7 +204,7 @@
                             {
                                 for (int i = 1; i <= numLevels; i++)
                                 {
-                                    // Calculate the opposite projection level (Level1 * i below the open)
+                                    // Calculate the opposite projection level (Level1 * i ticks below the open)
                                     double oppLevelProjection = m_LastOpenPrice - (Level1 * i * tickSize);
 
                                     // Draw the opposite projection line
@@ -221,6 +213,7 @@
 
                                     ITrendLineObject oppLine = DrwTrendLine.Create(oppLevelStart, oppLevelEnd);
                                     oppLine.Color = OppositeDirectionColor;
+                                    oppLine.ExtRight = true;
 
                                     m_OppositeDirectionLines.Add(oppLine);
                                 }
@@ -239,7 +232,7 @@
                             // Draw projections in the direction of the close
                             for (int i = 1; i <= numLevels; i++)
                             {
-                                // Calculate the projection level (Level1 * i)
+                                // Calculate the projection level (Level1 * i ticks)
                                 double levelProjection = m_LastClosePrice - (Level1 * i * tickSize);
 
                                 // Draw the projection line
@@ -248,6 +241,7 @@
 
                                 ITrendLineObject line = DrwTrendLine.Create(levelStart, levelEnd);
                                 line.Color = BearishColor;
+                                line.ExtRight = true; // Key: This prevents the line from being used in scaling math
 
                                 m_DirectionLines.Add(line);
                             }
@@ -257,7 +251,7 @@
                             {
                                 for (int i = 1; i <= numLevels; i++)
                                 {
-                                    // Calculate the opposite projection level (Level1 * i above the open)
+                                    // Calculate the opposite projection level (Level1 * i ticks above the open)
                                     double oppLevelProjection = m_LastOpenPrice + (Level1 * i * tickSize);
 
                                     // Draw the opposite projection line
@@ -266,6 +260,7 @@
 
                                     ITrendLineObject oppLine = DrwTrendLine.Create(oppLevelStart, oppLevelEnd);
                                     oppLine.Color = OppositeDirectionColor;
+                                    oppLine.ExtRight = true;
 
                                     m_OppositeDirectionLines.Add(oppLine);
                                 }
