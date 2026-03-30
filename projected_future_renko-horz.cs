@@ -31,6 +31,7 @@
 
             private List<ITrendLineObject> m_DirectionLines;
             private List<ITrendLineObject> m_OppositeDirectionLines;
+            private List<ITextObject> m_StatusLabels;
             private double m_LastClosePrice;
             private double m_LastOpenPrice;
             private DateTime m_LastCloseTime;
@@ -40,7 +41,7 @@
 
             public projected_future_renko_horz(object ctx) : base(ctx)
             {
-                Level1 = 4; // Default to 4 ticks (MES)
+                Level1 = 0; // Default to 'Auto-Detect' (0)
                 NumberOfLevels = 1;
                 BullishColor = Color.Green;
                 BearishColor = Color.Red;
@@ -58,18 +59,6 @@
             protected override void StartCalc()
             {
                 ClearLines();
-
-                // Contract-Aware Predetection Logic:
-                string symbolName = Bars.Info.Name.ToUpper();
-                if (Level1 == 4 || Level1 == 1 || Level1 == 0) 
-                {
-                    if (symbolName.Contains("MNQ")) Level1 = 20;   // 20 Ticks
-                    else if (symbolName.Contains("MYM")) Level1 = 7; // 7 Ticks
-                    else if (symbolName.Contains("MES")) Level1 = 4; // 4 Ticks
-                }
-
-                if (Level1 <= 0) Level1 = 4;
-
             }
 
             private int m_LastBarIndex = -1;
@@ -271,6 +260,9 @@
                             throw;
                         }
                     }
+
+                    // Just echo to the Output window so the value is easily verified
+                    Output.WriteLine(string.Format("[RenkoProjection] Drawn => Level1 = {0} Ticks", Level1));
                 }
                 catch
                 {
@@ -315,6 +307,8 @@
                         }
                         m_OppositeDirectionLines.Clear();
                     }
+
+                    // (Status labels removed)
                 }
                 catch
                 {

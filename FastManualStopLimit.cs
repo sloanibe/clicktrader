@@ -193,7 +193,7 @@ namespace PowerLanguage.Strategy
             double totalTicks = (tickValue != 0) ? (totalProfitCurrency / tickValue) : 0;
 
             string sign = totalTicks >= 0 ? "+" : "";
-            string scoreText = string.Format("🚀 SESSION: {0}{1:F1} Ticks ({2}{3:C2})", 
+            string scoreText = string.Format("HUD: {0}{1:F1} Ticks ({2}{3:C2})", 
                 sign, totalTicks, sign, totalProfitCurrency);
 
             if (m_ScoreLabel == null)
