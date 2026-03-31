@@ -19,7 +19,7 @@ namespace PowerLanguage.Indicator
         public Tradegrid(object ctx) : base(ctx)
         {
             GridLinesCount = 60; // Extra coverage for wide scrolling
-            GridLineColor = Color.Black; 
+            GridLineColor = Color.FromArgb(64, 64, 64); // Subtle Light Black
         }
 
         protected override void Create() { m_GridLines = new List<ITrendLineObject>(); }
