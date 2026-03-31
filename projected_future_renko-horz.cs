@@ -141,7 +141,7 @@
                     {
                         double proj = m_LastClosePrice + (activePointShift * i);
                         var line = DrwTrendLine.Create(new ChartPoint(startTime, proj), new ChartPoint(endTime, proj));
-                        line.Color = BullishColor; line.ExtRight = true; line.Size = 2;
+                        line.Color = BullishColor; line.ExtRight = true; line.Size = 1; line.Style = ETLStyle.ToolSolid;
                         m_DirectionLines.Add(line);
                     }
 
@@ -152,7 +152,7 @@
                         {
                             double proj = m_LastOpenPrice - (activePointShift * i);
                             var line = DrwTrendLine.Create(new ChartPoint(startTime, proj), new ChartPoint(endTime, proj));
-                            line.Color = OppositeDirectionColor; line.ExtRight = true; line.Size = 2;
+                            line.Color = OppositeDirectionColor; line.ExtRight = true; line.Size = 1; line.Style = ETLStyle.ToolSolid;
                             m_OppositeDirectionLines.Add(line);
                         }
                     }
@@ -164,7 +164,7 @@
                     {
                         double proj = m_LastClosePrice - (activePointShift * i);
                         var line = DrwTrendLine.Create(new ChartPoint(startTime, proj), new ChartPoint(endTime, proj));
-                        line.Color = BearishColor; line.ExtRight = true; line.Size = 2;
+                        line.Color = BearishColor; line.ExtRight = true; line.Size = 1; line.Style = ETLStyle.ToolSolid;
                         m_DirectionLines.Add(line);
                     }
 
@@ -175,7 +175,7 @@
                         {
                             double proj = m_LastOpenPrice + (activePointShift * i);
                             var line = DrwTrendLine.Create(new ChartPoint(startTime, proj), new ChartPoint(endTime, proj));
-                            line.Color = OppositeDirectionColor; line.ExtRight = true; line.Size = 2;
+                            line.Color = OppositeDirectionColor; line.ExtRight = true; line.Size = 1; line.Style = ETLStyle.ToolSolid;
                             m_OppositeDirectionLines.Add(line);
                         }
                     }
