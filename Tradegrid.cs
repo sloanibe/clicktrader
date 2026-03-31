@@ -7,58 +7,62 @@ namespace PowerLanguage.Indicator
 {
     [RecoverDrawings(false)]
     [SameAsSymbol(true)]
-    [UpdateOnEveryTick(true)] // Allow live drawing
+    [UpdateOnEveryTick(true)] 
     public class Tradegrid : IndicatorObject
     {
         [Input] public int GridLinesCount { get; set; }
         [Input] public Color GridLineColor { get; set; }
 
-        private double m_FixedAnchor = 0;
-        private double m_FixedHeight = 0;
+        private double m_MasterAnchor = 0;
+        private double m_MasterHeight = 0;
         private List<ITrendLineObject> m_GridLines = new List<ITrendLineObject>();
 
         public Tradegrid(object ctx) : base(ctx)
         {
-            GridLinesCount = 200; 
-            GridLineColor = Color.FromArgb(64, 64, 64); // Professional Dark Gray
+            GridLinesCount = 300; // Complete chart coverage
+            GridLineColor = Color.FromArgb(64, 64, 64); // Dark Subtle Gray
         }
 
         protected override void Create() { m_GridLines = new List<ITrendLineObject>(); }
 
-        protected override void StartCalc() { m_FixedAnchor = 0; m_FixedHeight = 0; ClearGrid(); }
+        protected override void StartCalc() { m_MasterAnchor = 0; m_MasterHeight = 0; ClearGrid(); }
 
         protected override void CalcBar()
         {
             if (!Environment.IsRealTimeCalc) return;
 
-            // DYNAMIC-BUT-STABLE ANCHORING:
-            // Capture the VERY FIRST real-time bar's body.
-            // Once captured, we NEVER look at the price again.
-            if (m_FixedAnchor == 0)
+            // ABSOLUTE STATIC MASTER GRID:
+            // 1. Look at the FIRST COMPLETED BAR (Bars.Close[1] and Bars.Open[1]).
+            // 2. Measure the height (Body) and the anchor (Close).
+            // 3. Draw once and NEVER redraw again.
+            
+            if (m_MasterAnchor == 0 && Bars.CurrentBar > 1)
             {
-                m_FixedAnchor = Bars.Close[0];
-                m_FixedHeight = Math.Abs(Bars.Close[0] - Bars.Open[0]);
-                
-                if (m_FixedHeight > 0)
+                // Capture the Previous Completed Bar
+                m_MasterAnchor = Bars.Close[1]; 
+                m_MasterHeight = Math.Abs(Bars.Close[1] - Bars.Open[1]);
+
+                if (m_MasterHeight > 0)
                 {
-                    DrawFixedGrid(m_FixedAnchor, m_FixedHeight);
+                    DrawPermanentGrid(m_MasterAnchor, m_MasterHeight);
+                    Output.WriteLine("📊 GRID: Anchored at {0} with height {1}. Grid LOCKED.", m_MasterAnchor, m_MasterHeight);
                 }
             }
         }
 
-        private void DrawFixedGrid(double anchor, double height)
+        private void DrawPermanentGrid(double anchor, double height)
         {
             ClearGrid();
             
-            // Anchors for horizontal lines (Full chart width)
-            DateTime t1 = Bars.Time[Bars.CurrentBar - 1]; 
-            DateTime t2 = Bars.Time[0];
+            // Fixed horizontal anchors (entire chart)
+            DateTime tStart = Bars.Time[Bars.CurrentBar - 1]; 
+            DateTime tEnd = Bars.Time[0];
 
-            for (int i = -GridLinesCount / 2; i <= GridLinesCount / 2; i++)
+            for (int i = -GridLinesCount/2; i <= GridLinesCount/2; i++)
             {
                 double price = anchor + (height * i);
                 
-                var line = DrwTrendLine.Create(new ChartPoint(t1, price), new ChartPoint(t2, price));
+                var line = DrwTrendLine.Create(new ChartPoint(tStart, price), new ChartPoint(tEnd, price));
                 line.Color = GridLineColor;
                 line.Style = ETLStyle.ToolDashed;
                 line.Size = 1;
