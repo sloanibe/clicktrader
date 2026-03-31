@@ -61,7 +61,7 @@ namespace PowerLanguage.Strategy
         public RenkoBarTrading(object ctx) : base(ctx)
         {
             OrderQty = 1;
-            Level1 = 4; // Default to match indicator
+            Level1 = 20; // Default to 20 for MNQ
             ProfitTargetTicks = 0; // 0 = Auto-detect 1 Brick
             LimitOffsetTicks = 1;
             StopTailOffsetTicks = 2;
@@ -180,7 +180,7 @@ namespace PowerLanguage.Strategy
                 PowerLanguage.Indicator.TGridShared.ActiveEntries[Bars.Info.Name] = entryPrice;
                 PowerLanguage.Indicator.TGridShared.StepSizes[Bars.Info.Name] = targetDistance;
                 
-                Output.WriteLine("📊 SYSTEM: Trade Active. Entry: {0} | Target: {1}", entryPrice, m_ProfitTargetPrice);
+                Output.WriteLine("📊 SYSTEM: Trade Active. Entry: {0} | Target: {1} | Grid Step: {2}", entryPrice, m_ProfitTargetPrice, targetDistance);
             }
 
             // Maintain Exit Orders while in position
