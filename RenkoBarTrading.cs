@@ -375,17 +375,20 @@ namespace PowerLanguage.Strategy
             double targetDistance = ProfitTargetTicks > 0 ? (ProfitTargetTicks * tickSize) : Math.Abs(Bars.Close[1] - Bars.Open[1]);
             double stepSize = targetDistance > 0 ? targetDistance : (Level1 * tickSize);
 
+            DateTime t1 = Bars.CurrentBar > 1 ? Bars.Time[1] : Bars.Time[0].AddDays(-1);
+            DateTime t2 = Bars.Time[0];
+
             for (int i = 1; i <= GridLinesCount; i++)
             {
                 // Above
                 double upPrice = entryPrice + (stepSize * i);
-                var upL = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], upPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), upPrice));
+                var upL = DrwTrendLine.Create(new ChartPoint(t1, upPrice), new ChartPoint(t2, upPrice));
                 upL.Color = Color.Black; upL.Style = ETLStyle.ToolDashed; upL.Size = 1; upL.ExtLeft = upL.ExtRight = true;
                 m_GridLines.Add(upL);
 
                 // Below
                 double dnPrice = entryPrice - (stepSize * i);
-                var dnL = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], dnPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), dnPrice));
+                var dnL = DrwTrendLine.Create(new ChartPoint(t1, dnPrice), new ChartPoint(t2, dnPrice));
                 dnL.Color = Color.Black; dnL.Style = ETLStyle.ToolDashed; dnL.Size = 1; dnL.ExtLeft = dnL.ExtRight = true;
                 m_GridLines.Add(dnL);
             }
