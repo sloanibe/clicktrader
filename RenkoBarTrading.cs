@@ -154,7 +154,7 @@ namespace PowerLanguage.Strategy
                 if (entryPrice == 0) entryPrice = Bars.Close[0]; // Fallback for IOG timing
 
                 double targetDistance = ProfitTargetTicks > 0 ? (ProfitTargetTicks * tickSize) : Math.Abs(Bars.Close[1] - Bars.Open[1]);
-                if (targetDistance == 0) targetDistance = Level1 * tickSize; // Safety fallback
+                if (targetDistance <= 0) targetDistance = Level1 * tickSize; // Safety fallback to Level1 (20 ticks)
 
                 if (currentPosition > 0)
                 {
