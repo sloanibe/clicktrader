@@ -5,13 +5,6 @@ using PowerLanguage;
 
 namespace PowerLanguage.Indicator
 {
-    // Simplified Static Bridge
-    public static class TGridShared
-    {
-        public static Dictionary<string, double> ActiveEntries = new Dictionary<string, double>();
-        public static Dictionary<string, double> StepSizes = new Dictionary<string, double>();
-    }
-
     [RecoverDrawings(false)]
     [SameAsSymbol(true)]
     [UpdateOnEveryTick(true)]
@@ -39,19 +32,16 @@ namespace PowerLanguage.Indicator
         {
             if (!Environment.IsRealTimeCalc) return;
 
-            string sym = Bars.Info.Name;
-            double entry = 0;
-            double step = 0;
+            string symPrefix = Bars.Info.Name + "_";
+            
+            // Listen to the OFFICIAL MultiCharts Global Bridge
+            double entry = GlobalVariables.GetVariable(symPrefix + "Entry").DoubleValue;
+            double step = GlobalVariables.GetVariable(symPrefix + "Step").DoubleValue;
 
-            if (TGridShared.ActiveEntries.ContainsKey(sym)) entry = TGridShared.ActiveEntries[sym];
-            if (TGridShared.StepSizes.ContainsKey(sym)) step = TGridShared.StepSizes[sym];
-
-            // If no step is provided by the signal, use the Default (20 ticks)
             if (step <= 0) step = DefaultStepTicks * ((double)Bars.Info.MinMove / Bars.Info.PriceScale);
 
             if (entry > 0)
             {
-                // TRADE ACTIVE: Snap grid to the entry price
                 if (Math.Abs(entry - m_LastDrawnCenter) > 0.0001)
                 {
                     DrawGrid(entry, step);
@@ -60,7 +50,6 @@ namespace PowerLanguage.Indicator
             }
             else
             {
-                // NO TRADE: Clean the grid
                 if (m_LastDrawnCenter != 0)
                 {
                     ClearGrid();
