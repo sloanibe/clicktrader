@@ -7,77 +7,65 @@ namespace PowerLanguage.Indicator
 {
     [RecoverDrawings(false)]
     [SameAsSymbol(true)]
-    [UpdateOnEveryTick(true)]
+    [UpdateOnEveryTick(false)] // Static grid, only update on Bar Close
     public class Tradegrid : IndicatorObject
     {
         [Input] public int GridLinesCount { get; set; }
         [Input] public Color GridLineColor { get; set; }
 
-        private double m_LastDrawnClose = 0;
+        private double m_AnchorPrice = 0;
         private List<ITrendLineObject> m_GridLines = new List<ITrendLineObject>();
 
         public Tradegrid(object ctx) : base(ctx)
         {
-            GridLinesCount = 60; // Extra coverage for wide scrolling
-            GridLineColor = Color.FromArgb(64, 64, 64); // Subtle Light Black
+            GridLinesCount = 200; // Large coverage for the whole chart
+            GridLineColor = Color.FromArgb(64, 64, 64); // Subtle Gray/Black
         }
 
         protected override void Create() { m_GridLines = new List<ITrendLineObject>(); }
 
-        protected override void StartCalc() { m_LastDrawnClose = 0; ClearGrid(); }
+        protected override void StartCalc() { m_AnchorPrice = 0; ClearGrid(); }
 
         protected override void CalcBar()
         {
-            if (!Environment.IsRealTimeCalc) return;
+            // STATIC GRID LOGIC:
+            // 1. We anchor to the FIRST real Renko brick's body (Open/Close).
+            // 2. Once fixed, the grid NEVER moves, even as new bars are drawn.
+            // 3. Spacing matches the physical brick height.
 
-            // SIMPLIFIED APPROACH: Anchor to the MOST RECENT CLOSE on the chart
-            // This aligns the grid with the physical Renko bricks without Signal communication
-            double currentClose = Bars.Close[0];
-            
-            // Measure the physical height of the PREVIOUS COMPLETED BRICK
-            // This ensures the grid matches the chart's specific Renko/Range settings
-            double stepSize = Math.Abs(Bars.Close[1] - Bars.Open[1]);
-            
-            // Safety fallback if no bricks exist yet
-            if (stepSize <= 0) 
+            if (m_AnchorPrice == 0 && Bars.CurrentBar > 1)
             {
-                double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
-                stepSize = 20 * tickSize; // Default to 20 ticks for MNQ
-            }
-
-            // REDRAW: Only update the grid if the current bar's close has moved to a new level
-            if (Math.Abs(currentClose - m_LastDrawnClose) > 0.0001)
-            {
-                DrawGrid(currentClose, stepSize);
-                m_LastDrawnClose = currentClose;
+                // Align with the body height of the first available brick
+                m_AnchorPrice = Bars.Close[0];
+                double brickHeight = Math.Abs(Bars.Close[0] - Bars.Open[0]);
+                
+                if (brickHeight > 0)
+                {
+                    DrawStaticGrid(m_AnchorPrice, brickHeight);
+                }
             }
         }
 
-        private void DrawGrid(double centerPrice, double stepSize)
+        private void DrawStaticGrid(double anchor, double height)
         {
             ClearGrid();
             
-            // Anchors for horizontal lines
-            DateTime t1 = Bars.CurrentBar > 1 ? Bars.Time[1] : Bars.Time[0].AddDays(-1);
+            // Fixed horizontal anchors (start of chart to end of time)
+            DateTime t1 = Bars.Time[Bars.CurrentBar - 1]; 
             DateTime t2 = Bars.Time[0];
 
-            // Loop outward from the center close to fill the screen
-            for (int i = 0; i <= GridLinesCount / 2; i++)
+            for (int i = -GridLinesCount/2; i <= GridLinesCount/2; i++)
             {
-                // Above
-                double upPrice = centerPrice + (stepSize * i);
-                var upL = DrwTrendLine.Create(new ChartPoint(t1, upPrice), new ChartPoint(t2, upPrice));
-                upL.Color = GridLineColor; upL.Style = ETLStyle.ToolDashed; upL.Size = 1; upL.ExtLeft = upL.ExtRight = true;
-                m_GridLines.Add(upL);
-
-                // Below
-                if (i > 0)
-                {
-                    double dnPrice = centerPrice - (stepSize * i);
-                    var dnL = DrwTrendLine.Create(new ChartPoint(t1, dnPrice), new ChartPoint(t2, dnPrice));
-                    dnL.Color = GridLineColor; dnL.Style = ETLStyle.ToolDashed; dnL.Size = 1; dnL.ExtLeft = dnL.ExtRight = true;
-                    m_GridLines.Add(dnL);
-                }
+                double price = anchor + (height * i);
+                
+                var line = DrwTrendLine.Create(new ChartPoint(t1, price), new ChartPoint(t2, price));
+                line.Color = GridLineColor;
+                line.Style = ETLStyle.ToolDashed;
+                line.Size = 1;
+                line.ExtLeft = true;
+                line.ExtRight = true;
+                
+                m_GridLines.Add(line);
             }
         }
 
