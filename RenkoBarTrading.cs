@@ -52,6 +52,7 @@ namespace PowerLanguage.Strategy
         private bool m_OrderCreatedInMouseEvent = false;
         private bool m_CancelRequested = false;
         private double m_ClickPrice = 0;
+        private bool m_DebugGridDrawn = false;
         
         private ITrendLineObject m_PriceLine;
         private ITrendLineObject m_TargetLine;
@@ -101,6 +102,7 @@ namespace PowerLanguage.Strategy
             m_OrderCreatedInMouseEvent = false;
             m_CancelRequested = false;
             m_LastBarIndex = -1;
+            m_DebugGridDrawn = false;
             if (m_ScoreLabel != null) m_ScoreLabel.Delete();
             if (m_TargetLine != null) m_TargetLine.Delete();
             if (m_StopLine != null) m_StopLine.Delete();
@@ -132,6 +134,13 @@ namespace PowerLanguage.Strategy
             }
 
             if (!Environment.IsRealTimeCalc) return;
+
+            if (!m_DebugGridDrawn)
+            {
+                double initPrice = Bars.StatusLine.Ask > 0 ? Bars.StatusLine.Ask : Bars.Close[0];
+                DrawDebugGrid(initPrice);
+                m_DebugGridDrawn = true;
+            }
             
             tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize == 0) tickSize = 0.25; // Safety fallback for ES/MES
@@ -177,7 +186,7 @@ namespace PowerLanguage.Strategy
                 m_CancelRequested = false;
                 UpdateTargetLine();
                 UpdateStopLine();
-                if (ShowGrid) UpdateGridLines(entryPrice);
+                // DEBUG: Bypassing trade grid -> if (ShowGrid) UpdateGridLines(entryPrice);
                 Output.WriteLine("📊 SYSTEM: Trade Active. Entry: {0} | Target: {1}", entryPrice, m_ProfitTargetPrice);
             }
 
@@ -201,7 +210,7 @@ namespace PowerLanguage.Strategy
                 if (m_TargetLine != null) m_TargetLine.Delete();
                 if (m_PriceLine != null) m_PriceLine.Delete();
                 if (m_StopLine != null) m_StopLine.Delete();
-                ClearGrid();
+                // DEBUG: Bypassing clear -> ClearGrid();
                 Output.WriteLine("📊 SYSTEM: Trade Closed. All orders cleared.");
             }
 
@@ -366,32 +375,37 @@ namespace PowerLanguage.Strategy
 
         private void ClearGrid() { foreach (var line in m_GridLines) if (line != null) line.Delete(); m_GridLines.Clear(); }
 
-        private void UpdateGridLines(double entryPrice)
+        private void DrawDebugGrid(double centerPrice)
         {
             ClearGrid();
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize == 0) tickSize = 0.25;
+            double stepSize = 20 * tickSize; // Force strictly 20 ticks height
             
-            double targetDistance = ProfitTargetTicks > 0 ? (ProfitTargetTicks * tickSize) : Math.Abs(Bars.Close[1] - Bars.Open[1]);
-            double stepSize = targetDistance > 0 ? targetDistance : (Level1 * tickSize);
-
             DateTime t1 = Bars.CurrentBar > 1 ? Bars.Time[1] : Bars.Time[0].AddDays(-1);
             DateTime t2 = Bars.Time[0];
 
-            for (int i = 1; i <= GridLinesCount; i++)
+            for (int i = 0; i <= 50; i++)
             {
                 // Above
-                double upPrice = entryPrice + (stepSize * i);
+                double upPrice = centerPrice + (stepSize * i);
                 var upL = DrwTrendLine.Create(new ChartPoint(t1, upPrice), new ChartPoint(t2, upPrice));
-                upL.Color = Color.Black; upL.Style = ETLStyle.ToolDashed; upL.Size = 1; upL.ExtLeft = upL.ExtRight = true;
+                upL.Color = Color.Red; upL.Style = ETLStyle.ToolDashed; upL.Size = 1; upL.ExtLeft = upL.ExtRight = true;
                 m_GridLines.Add(upL);
 
                 // Below
-                double dnPrice = entryPrice - (stepSize * i);
-                var dnL = DrwTrendLine.Create(new ChartPoint(t1, dnPrice), new ChartPoint(t2, dnPrice));
-                dnL.Color = Color.Black; dnL.Style = ETLStyle.ToolDashed; dnL.Size = 1; dnL.ExtLeft = dnL.ExtRight = true;
-                m_GridLines.Add(dnL);
+                if (i > 0) {
+                    double dnPrice = centerPrice - (stepSize * i);
+                    var dnL = DrwTrendLine.Create(new ChartPoint(t1, dnPrice), new ChartPoint(t2, dnPrice));
+                    dnL.Color = Color.Red; dnL.Style = ETLStyle.ToolDashed; dnL.Size = 1; dnL.ExtLeft = dnL.ExtRight = true;
+                    m_GridLines.Add(dnL);
+                }
             }
+        }
+
+        private void UpdateGridLines(double entryPrice)
+        {
+            // Debugging override - not called!
         }
 
         private void UpdateTargetLine()
