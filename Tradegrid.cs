@@ -69,6 +69,8 @@ namespace PowerLanguage.Indicator
                 line.ExtLeft = true;
                 line.ExtRight = true;
                 
+                // FORCE TO BACK (Z-Order Hack): In MultiCharts, drawings belong to the 
+                // indicator's layer. Ensure the indicator is Applied 'Under' the price in chart settings.
                 m_GridLines.Add(line);
             }
         }
