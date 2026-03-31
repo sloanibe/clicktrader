@@ -20,7 +20,7 @@ namespace PowerLanguage.Indicator
         public Tradegrid(object ctx) : base(ctx)
         {
             GridLinesCount = 300; // Complete chart coverage
-            GridLineColor = Color.LightGray; // Pure Subtle Gray
+            GridLineColor = Color.Gainsboro; // Ultra-Subtle Ghosted Gray
         }
 
         protected override void Create() { m_GridLines = new List<ITrendLineObject>(); }
@@ -64,7 +64,7 @@ namespace PowerLanguage.Indicator
                 
                 var line = DrwTrendLine.Create(new ChartPoint(tStart, price), new ChartPoint(tEnd, price));
                 line.Color = GridLineColor;
-                line.Style = ETLStyle.ToolDashed;
+                line.Style = ETLStyle.ToolSolid;
                 line.Size = 1;
                 line.ExtLeft = true;
                 line.ExtRight = true;
