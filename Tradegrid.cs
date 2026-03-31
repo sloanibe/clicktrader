@@ -7,54 +7,54 @@ namespace PowerLanguage.Indicator
 {
     [RecoverDrawings(false)]
     [SameAsSymbol(true)]
-    [UpdateOnEveryTick(false)] // Static grid, only update on Bar Close
+    [UpdateOnEveryTick(true)] // Allow live drawing
     public class Tradegrid : IndicatorObject
     {
         [Input] public int GridLinesCount { get; set; }
         [Input] public Color GridLineColor { get; set; }
 
-        private double m_AnchorPrice = 0;
+        private double m_FixedAnchor = 0;
+        private double m_FixedHeight = 0;
         private List<ITrendLineObject> m_GridLines = new List<ITrendLineObject>();
 
         public Tradegrid(object ctx) : base(ctx)
         {
-            GridLinesCount = 200; // Large coverage for the whole chart
-            GridLineColor = Color.FromArgb(64, 64, 64); // Subtle Gray/Black
+            GridLinesCount = 200; 
+            GridLineColor = Color.FromArgb(64, 64, 64); // Professional Dark Gray
         }
 
         protected override void Create() { m_GridLines = new List<ITrendLineObject>(); }
 
-        protected override void StartCalc() { m_AnchorPrice = 0; ClearGrid(); }
+        protected override void StartCalc() { m_FixedAnchor = 0; m_FixedHeight = 0; ClearGrid(); }
 
         protected override void CalcBar()
         {
-            // STATIC GRID LOGIC:
-            // 1. We anchor to the FIRST real Renko brick's body (Open/Close).
-            // 2. Once fixed, the grid NEVER moves, even as new bars are drawn.
-            // 3. Spacing matches the physical brick height.
+            if (!Environment.IsRealTimeCalc) return;
 
-            if (m_AnchorPrice == 0 && Bars.CurrentBar > 1)
+            // DYNAMIC-BUT-STABLE ANCHORING:
+            // Capture the VERY FIRST real-time bar's body.
+            // Once captured, we NEVER look at the price again.
+            if (m_FixedAnchor == 0)
             {
-                // Align with the body height of the first available brick
-                m_AnchorPrice = Bars.Close[0];
-                double brickHeight = Math.Abs(Bars.Close[0] - Bars.Open[0]);
+                m_FixedAnchor = Bars.Close[0];
+                m_FixedHeight = Math.Abs(Bars.Close[0] - Bars.Open[0]);
                 
-                if (brickHeight > 0)
+                if (m_FixedHeight > 0)
                 {
-                    DrawStaticGrid(m_AnchorPrice, brickHeight);
+                    DrawFixedGrid(m_FixedAnchor, m_FixedHeight);
                 }
             }
         }
 
-        private void DrawStaticGrid(double anchor, double height)
+        private void DrawFixedGrid(double anchor, double height)
         {
             ClearGrid();
             
-            // Fixed horizontal anchors (start of chart to end of time)
+            // Anchors for horizontal lines (Full chart width)
             DateTime t1 = Bars.Time[Bars.CurrentBar - 1]; 
             DateTime t2 = Bars.Time[0];
 
-            for (int i = -GridLinesCount/2; i <= GridLinesCount/2; i++)
+            for (int i = -GridLinesCount / 2; i <= GridLinesCount / 2; i++)
             {
                 double price = anchor + (height * i);
                 
