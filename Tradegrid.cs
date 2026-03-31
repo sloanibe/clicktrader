@@ -6,8 +6,8 @@ using PowerLanguage.Function;
 
 namespace PowerLanguage.Indicator
 {
-    // Move State inside to satisfy MultiCharts compiler entry point
-    public static class TradeGridState
+    // Rename this state class to avoid any possible collision with Strategy namespace
+    public static class TGridShared
     {
         public static Dictionary<string, double> ActiveEntries = new Dictionary<string, double>();
         public static Dictionary<string, double> StepSizes = new Dictionary<string, double>();
@@ -16,7 +16,7 @@ namespace PowerLanguage.Indicator
     [RecoverDrawings(false)]
     [SameAsSymbol(true)]
     [UpdateOnEveryTick(true)]
-    public class trade_grid : IndicatorObject
+    public class Tradegrid : IndicatorObject
     {
         [Input] public int GridLinesCount { get; set; }
         [Input] public Color GridLineColor { get; set; }
@@ -24,7 +24,7 @@ namespace PowerLanguage.Indicator
         private double m_LastDrawnEntry = 0;
         private List<ITrendLineObject> m_GridLines = new List<ITrendLineObject>();
 
-        public trade_grid(object ctx) : base(ctx)
+        public Tradegrid(object ctx) : base(ctx)
         {
             GridLinesCount = 5;
             GridLineColor = Color.Red;
@@ -48,14 +48,14 @@ namespace PowerLanguage.Indicator
             string symbol = Bars.Info.Name;
             
             double activeEntry = 0;
-            if (TradeGridState.ActiveEntries.ContainsKey(symbol))
-                activeEntry = TradeGridState.ActiveEntries[symbol];
+            if (TGridShared.ActiveEntries.ContainsKey(symbol))
+                activeEntry = TGridShared.ActiveEntries[symbol];
                 
             double stepSize = 0;
-            if (TradeGridState.StepSizes.ContainsKey(symbol))
-                stepSize = TradeGridState.StepSizes[symbol];
+            if (TGridShared.StepSizes.ContainsKey(symbol))
+                stepSize = TGridShared.StepSizes[symbol];
 
-            if (activeEntry == 0 && m_LastDrawnEntry != 0)
+            if (activeEntry <= 0 && m_LastDrawnEntry != 0)
             {
                 ClearGrid();
                 m_LastDrawnEntry = 0;

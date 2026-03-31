@@ -141,8 +141,8 @@ namespace PowerLanguage.Strategy
                 UpdateStopLine();
                 
                 // Broadcast to Global Indicator
-                PowerLanguage.Indicator.TradeGridState.ActiveEntries[Bars.Info.Name] = entryPrice;
-                PowerLanguage.Indicator.TradeGridState.StepSizes[Bars.Info.Name] = targetDistance;
+                PowerLanguage.Indicator.TGridShared.ActiveEntries[Bars.Info.Name] = entryPrice;
+                PowerLanguage.Indicator.TGridShared.StepSizes[Bars.Info.Name] = targetDistance;
                 
                 Output.WriteLine("📊 RANGE SYSTEM: Trade Active. Entry: {0} | Target: {1}", entryPrice, m_ProfitTargetPrice);
             }
@@ -190,7 +190,7 @@ namespace PowerLanguage.Strategy
                 if (m_StopLine != null) m_StopLine.Delete();
                 
                 // Clear Global Indicator grid
-                PowerLanguage.Indicator.TradeGridState.ActiveEntries[Bars.Info.Name] = 0;
+                PowerLanguage.Indicator.TGridShared.ActiveEntries[Bars.Info.Name] = 0;
                 
                 Output.WriteLine("📊 RANGE SYSTEM: Trade Closed. All orders cleared.");
             }
@@ -273,7 +273,7 @@ namespace PowerLanguage.Strategy
             if (m_TargetLine != null) m_TargetLine.Delete(); 
             if (m_StopLine != null) m_StopLine.Delete(); 
             
-            PowerLanguage.Indicator.TradeGridState.ActiveEntries[Bars.Info.Name] = 0;
+            PowerLanguage.Indicator.TGridShared.ActiveEntries[Bars.Info.Name] = 0;
         }
     }
 }
