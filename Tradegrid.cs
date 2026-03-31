@@ -20,7 +20,7 @@ namespace PowerLanguage.Indicator
         public Tradegrid(object ctx) : base(ctx)
         {
             GridLinesCount = 300; // Complete chart coverage
-            GridLineColor = Color.FromArgb(64, 64, 64); // Dark Subtle Gray
+            GridLineColor = Color.LightGray; // Pure Subtle Gray
         }
 
         protected override void Create() { m_GridLines = new List<ITrendLineObject>(); }
