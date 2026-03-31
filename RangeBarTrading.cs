@@ -20,8 +20,6 @@ namespace PowerLanguage.Strategy
         [Input] public int StopTailOffsetTicks { get; set; }
         [Input] public int ProximityTicks { get; set; }
         [Input] public bool ShowHUD { get; set; }
-        [Input] public bool ShowGrid { get; set; }
-        [Input] public int GridLinesCount { get; set; }
 
         private IOrderPriced m_BuyStop;
         private IOrderPriced m_SellStop;
@@ -51,7 +49,6 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_PriceLine;
         private ITrendLineObject m_TargetLine;
         private ITrendLineObject m_StopLine;
-        private List<ITrendLineObject> m_GridLines = new List<ITrendLineObject>();
         private ITextObject m_HUDLabel;
 
         public RangeBarTrading(object ctx) : base(ctx)
@@ -63,8 +60,6 @@ namespace PowerLanguage.Strategy
             StopTailOffsetTicks = 2;
             ProximityTicks = 5;
             ShowHUD = true;
-            ShowGrid = true;
-            GridLinesCount = 5;
         }
 
         protected override void Create()
@@ -98,7 +93,6 @@ namespace PowerLanguage.Strategy
             if (m_PriceLine != null) m_PriceLine.Delete();
             if (m_TargetLine != null) m_TargetLine.Delete();
             if (m_StopLine != null) m_StopLine.Delete();
-            ClearGrid();
         }
 
         protected override void CalcBar()
@@ -145,7 +139,6 @@ namespace PowerLanguage.Strategy
                 if (m_PriceLine != null) m_PriceLine.Delete();
                 UpdateTargetLine();
                 UpdateStopLine();
-                if (ShowGrid) UpdateGridLines(entryPrice);
                 Output.WriteLine("📊 RANGE SYSTEM: Trade Active. Entry: {0} | Target: {1}", entryPrice, m_ProfitTargetPrice);
             }
 
@@ -190,7 +183,6 @@ namespace PowerLanguage.Strategy
                 if (m_TargetLine != null) m_TargetLine.Delete();
                 if (m_PriceLine != null) m_PriceLine.Delete();
                 if (m_StopLine != null) m_StopLine.Delete();
-                ClearGrid();
                 Output.WriteLine("📊 RANGE SYSTEM: Trade Closed. All orders cleared.");
             }
 
@@ -230,34 +222,6 @@ namespace PowerLanguage.Strategy
             else if (shift) { m_CancelRequested = true; if (StrategyInfo.MarketPosition != 0) m_FlattenRequested = true; }
         }
 
-        private void ClearGrid() { foreach (var line in m_GridLines) if (line != null) line.Delete(); m_GridLines.Clear(); }
-
-        private void UpdateGridLines(double entryPrice)
-        {
-            ClearGrid();
-            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
-            if (tickSize == 0) tickSize = 0.25;
-            
-            double targetDistance = ProfitTargetTicks > 0 ? (ProfitTargetTicks * tickSize) : Math.Abs(Bars.High[1] - Bars.Low[1]);
-            double stepSize = targetDistance > 0 ? targetDistance : (RangeSizeTicks * tickSize);
-
-            DateTime t1 = Bars.CurrentBar > 1 ? Bars.Time[1] : Bars.Time[0].AddDays(-1);
-            DateTime t2 = Bars.Time[0];
-
-            for (int i = 1; i <= GridLinesCount; i++)
-            {
-                double upPrice = entryPrice + (stepSize * i);
-                var upL = DrwTrendLine.Create(new ChartPoint(t1, upPrice), new ChartPoint(t2, upPrice));
-                upL.Color = Color.Black; upL.Style = ETLStyle.ToolDashed; upL.Size = 1; upL.ExtLeft = upL.ExtRight = true;
-                m_GridLines.Add(upL);
-
-                double dnPrice = entryPrice - (stepSize * i);
-                var dnL = DrwTrendLine.Create(new ChartPoint(t1, dnPrice), new ChartPoint(t2, dnPrice));
-                dnL.Color = Color.Black; dnL.Style = ETLStyle.ToolDashed; dnL.Size = 1; dnL.ExtLeft = dnL.ExtRight = true;
-                m_GridLines.Add(dnL);
-            }
-        }
-
         private void UpdateVisualMarker() {
             if (!m_BuyOrderActive && !m_SellOrderActive) { if (m_PriceLine != null) m_PriceLine.Delete(); return; }
             if (m_PriceLine != null) m_PriceLine.Delete();
@@ -294,6 +258,6 @@ namespace PowerLanguage.Strategy
             m_HUDLabel.Location = new ChartPoint(Bars.Time[0], Bars.High[0]);
         }
 
-        protected override void Destroy() { if (m_HUDLabel != null) m_HUDLabel.Delete(); if (m_PriceLine != null) m_PriceLine.Delete(); if (m_TargetLine != null) m_TargetLine.Delete(); if (m_StopLine != null) m_StopLine.Delete(); ClearGrid(); }
+        protected override void Destroy() { if (m_HUDLabel != null) m_HUDLabel.Delete(); if (m_PriceLine != null) m_PriceLine.Delete(); if (m_TargetLine != null) m_TargetLine.Delete(); if (m_StopLine != null) m_StopLine.Delete(); }
     }
 }
