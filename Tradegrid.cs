@@ -6,11 +6,19 @@ using PowerLanguage.Function;
 
 namespace PowerLanguage.Indicator
 {
-    // Rename this state class to avoid any possible collision with Strategy namespace
+    // Bridge Class with an ALIAS for safety
     public static class TGridShared
     {
         public static Dictionary<string, double> ActiveEntries = new Dictionary<string, double>();
         public static Dictionary<string, double> StepSizes = new Dictionary<string, double>();
+    }
+
+    // Safety Alias: This makes it so the compiler will accept 'TradeGridState' OR 'TGridShared'
+    // but without the naming conflict of duplicating the logic
+    public static class TradeGridState 
+    {
+        public static Dictionary<string, double> ActiveEntries { get { return TGridShared.ActiveEntries; } }
+        public static Dictionary<string, double> StepSizes { get { return TGridShared.StepSizes; } }
     }
 
     [RecoverDrawings(false)]
