@@ -6,15 +6,14 @@ using PowerLanguage.Function;
 
 namespace PowerLanguage.Indicator
 {
-    // Bridge Class with an ALIAS for safety
+    // Bridge Class
     public static class TGridShared
     {
         public static Dictionary<string, double> ActiveEntries = new Dictionary<string, double>();
         public static Dictionary<string, double> StepSizes = new Dictionary<string, double>();
     }
 
-    // Safety Alias: This makes it so the compiler will accept 'TradeGridState' OR 'TGridShared'
-    // but without the naming conflict of duplicating the logic
+    // Safety Alias
     public static class TradeGridState 
     {
         public static Dictionary<string, double> ActiveEntries { get { return TGridShared.ActiveEntries; } }
@@ -28,14 +27,16 @@ namespace PowerLanguage.Indicator
     {
         [Input] public int GridLinesCount { get; set; }
         [Input] public Color GridLineColor { get; set; }
+        [Input] public int DebugStepTicks { get; set; } // Default 20 for MNQ
 
-        private double m_LastDrawnEntry = 0;
+        private double m_LastDrawnCenter = 0;
         private List<ITrendLineObject> m_GridLines = new List<ITrendLineObject>();
 
         public Tradegrid(object ctx) : base(ctx)
         {
-            GridLinesCount = 5;
+            GridLinesCount = 100;
             GridLineColor = Color.Red;
+            DebugStepTicks = 20;
         }
 
         protected override void Create()
@@ -45,7 +46,7 @@ namespace PowerLanguage.Indicator
 
         protected override void StartCalc()
         {
-            m_LastDrawnEntry = 0;
+            m_LastDrawnCenter = 0;
             ClearGrid();
         }
 
@@ -63,15 +64,24 @@ namespace PowerLanguage.Indicator
             if (TGridShared.StepSizes.ContainsKey(symbol))
                 stepSize = TGridShared.StepSizes[symbol];
 
-            if (activeEntry <= 0 && m_LastDrawnEntry != 0)
+            // FORCED DEBUG MODE: If no active trade, draw a static 20-tick grid centered on the first real-time price
+            if (activeEntry <= 0)
             {
-                ClearGrid();
-                m_LastDrawnEntry = 0;
+                double centerPrice = Bars.Close[0];
+                double debugStep = DebugStepTicks * ((double)Bars.Info.MinMove / Bars.Info.PriceScale);
+                
+                // Only redraw if price has moved significantly or grid isn't there
+                if (m_LastDrawnCenter == 0) 
+                {
+                    DrawGrid(centerPrice, debugStep);
+                    m_LastDrawnCenter = centerPrice;
+                }
             }
-            else if (activeEntry > 0 && activeEntry != m_LastDrawnEntry && stepSize > 0)
+            else if (activeEntry > 0 && activeEntry != m_LastDrawnCenter && stepSize > 0)
             {
+                // TRADE MODE: Draw grid around the actual entry price
                 DrawGrid(activeEntry, stepSize);
-                m_LastDrawnEntry = activeEntry;
+                m_LastDrawnCenter = activeEntry;
             }
         }
 
@@ -79,20 +89,26 @@ namespace PowerLanguage.Indicator
         {
             ClearGrid();
             
+            // Fixed historical anchors for maximum MultiCharts compatibility
             DateTime t1 = Bars.CurrentBar > 1 ? Bars.Time[1] : Bars.Time[0].AddDays(-1);
             DateTime t2 = Bars.Time[0];
 
-            for (int i = 1; i <= GridLinesCount; i++)
+            for (int i = 0; i <= GridLinesCount / 2; i++)
             {
+                // Above
                 double upPrice = centerPrice + (stepSize * i);
                 var upL = DrwTrendLine.Create(new ChartPoint(t1, upPrice), new ChartPoint(t2, upPrice));
                 upL.Color = GridLineColor; upL.Style = ETLStyle.ToolDashed; upL.Size = 1; upL.ExtLeft = upL.ExtRight = true;
                 m_GridLines.Add(upL);
 
-                double dnPrice = centerPrice - (stepSize * i);
-                var dnL = DrwTrendLine.Create(new ChartPoint(t1, dnPrice), new ChartPoint(t2, dnPrice));
-                dnL.Color = GridLineColor; dnL.Style = ETLStyle.ToolDashed; dnL.Size = 1; dnL.ExtLeft = dnL.ExtRight = true;
-                m_GridLines.Add(dnL);
+                // Below
+                if (i > 0)
+                {
+                    double dnPrice = centerPrice - (stepSize * i);
+                    var dnL = DrwTrendLine.Create(new ChartPoint(t1, dnPrice), new ChartPoint(t2, dnPrice));
+                    dnL.Color = GridLineColor; dnL.Style = ETLStyle.ToolDashed; dnL.Size = 1; dnL.ExtLeft = dnL.ExtRight = true;
+                    m_GridLines.Add(dnL);
+                }
             }
         }
 
