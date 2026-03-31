@@ -24,8 +24,8 @@ namespace PowerLanguage.Strategy
         [Input] public bool ShowGrid { get; set; }
         [Input] public int GridLinesCount { get; set; }
 
-        private IOrderStopLimit m_BuyStopLimit;
-        private IOrderStopLimit m_SellStopLimit;
+        private IOrderPriced m_BuyStop;
+        private IOrderPriced m_SellStop;
         
         // Exits
         private IOrderPriced m_BuyExitStop;
@@ -75,8 +75,8 @@ namespace PowerLanguage.Strategy
 
         protected override void Create()
         {
-            m_BuyStopLimit = OrderCreator.StopLimit(new SOrderParameters(Contracts.Default, "ManualBuy", EOrderAction.Buy));
-            m_SellStopLimit = OrderCreator.StopLimit(new SOrderParameters(Contracts.Default, "ManualSell", EOrderAction.SellShort));
+            m_BuyStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ManualBuy", EOrderAction.Buy));
+            m_SellStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ManualSell", EOrderAction.SellShort));
             
             // Protective Stops
             m_BuyExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectLong", EOrderAction.Sell, OrderExit.FromAll));
@@ -230,8 +230,8 @@ namespace PowerLanguage.Strategy
 
             if (!m_CancelRequested && currentPosition == 0)
             {
-                if (m_BuyOrderActive && m_StopPrice > 0) m_BuyStopLimit.Send(m_StopPrice, m_LimitPrice, OrderQty);
-                else if (m_SellOrderActive && m_StopPrice > 0) m_SellStopLimit.Send(m_StopPrice, m_LimitPrice, OrderQty);
+                if (m_BuyOrderActive && m_StopPrice > 0) m_BuyStop.Send(m_StopPrice, OrderQty);
+                else if (m_SellOrderActive && m_StopPrice > 0) m_SellStop.Send(m_StopPrice, OrderQty);
             }
 
             if (ShowHUD) UpdateTickHUD();

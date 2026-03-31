@@ -23,8 +23,8 @@ namespace PowerLanguage.Strategy
         [Input] public bool ShowGrid { get; set; }
         [Input] public int GridLinesCount { get; set; }
 
-        private IOrderStopLimit m_BuyStopLimit;
-        private IOrderStopLimit m_SellStopLimit;
+        private IOrderPriced m_BuyStop;
+        private IOrderPriced m_SellStop;
         
         // Exits
         private IOrderPriced m_BuyExitStop;
@@ -69,8 +69,8 @@ namespace PowerLanguage.Strategy
 
         protected override void Create()
         {
-            m_BuyStopLimit = OrderCreator.StopLimit(new SOrderParameters(Contracts.Default, "RangeBuy", EOrderAction.Buy));
-            m_SellStopLimit = OrderCreator.StopLimit(new SOrderParameters(Contracts.Default, "RangeSell", EOrderAction.SellShort));
+            m_BuyStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "RangeBuy", EOrderAction.Buy));
+            m_SellStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "RangeSell", EOrderAction.SellShort));
             
             m_BuyExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectLong", EOrderAction.Sell, OrderExit.FromAll));
             m_SellExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectShort", EOrderAction.BuyToCover, OrderExit.FromAll));
@@ -157,7 +157,7 @@ namespace PowerLanguage.Strategy
                     double currentLow = Math.Min(Bars.Low[0], (Bars.StatusLine.Ask > 0 ? Bars.StatusLine.Ask : Bars.Close[0]));
                     m_StopPrice = Math.Round((currentLow + (RangeSizeTicks * tickSize)) / tickSize) * tickSize;
                     m_LimitPrice = m_StopPrice + (LimitOffsetTicks * tickSize);
-                    m_BuyStopLimit.Send(m_StopPrice, m_LimitPrice, OrderQty);
+                    m_BuyStop.Send(m_StopPrice, OrderQty);
                     UpdateVisualMarker();
                 }
                 else if (m_SellOrderActive)
@@ -165,7 +165,7 @@ namespace PowerLanguage.Strategy
                     double currentHigh = Math.Max(Bars.High[0], (Bars.StatusLine.Bid > 0 ? Bars.StatusLine.Bid : Bars.Close[0]));
                     m_StopPrice = Math.Round((currentHigh - (RangeSizeTicks * tickSize)) / tickSize) * tickSize;
                     m_LimitPrice = m_StopPrice - (LimitOffsetTicks * tickSize);
-                    m_SellStopLimit.Send(m_StopPrice, m_LimitPrice, OrderQty);
+                    m_SellStop.Send(m_StopPrice, OrderQty);
                     UpdateVisualMarker();
                 }
             }
