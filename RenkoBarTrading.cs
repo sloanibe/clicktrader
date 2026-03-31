@@ -15,6 +15,7 @@ namespace PowerLanguage.Strategy
     {
         [Input] public int OrderQty { get; set; }
         [Input] public int Level1 { get; set; } // Matches Indicator (Ticks offset)
+        [Input] public int ProfitTargetTicks { get; set; } // 0 = Auto-detect 1 Brick
         [Input] public int LimitOffsetTicks { get; set; }
         [Input] public int StopTailOffsetTicks { get; set; }
         [Input] public bool ShowPriceLine { get; set; }
@@ -62,6 +63,7 @@ namespace PowerLanguage.Strategy
         {
             OrderQty = 1;
             Level1 = 4; // Default to match indicator
+            ProfitTargetTicks = 0; // 0 = Auto-detect 1 Brick
             LimitOffsetTicks = 1;
             StopTailOffsetTicks = 2;
             ShowPriceLine = true;
@@ -108,7 +110,8 @@ namespace PowerLanguage.Strategy
         protected override void CalcBar()
         {
             int currentPosition = StrategyInfo.MarketPosition;
-            double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize == 0) tickSize = 0.25;
 
             // Sync with LAST COMPLETED BRICK (Standard Renko logic)
             if (Bars.Status == EBarState.Close)
@@ -130,7 +133,7 @@ namespace PowerLanguage.Strategy
 
             if (!Environment.IsRealTimeCalc) return;
             
-            tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+            tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize == 0) tickSize = 0.25; // Safety fallback for ES/MES
 
             if (m_FlattenRequested && currentPosition != 0)
@@ -152,17 +155,20 @@ namespace PowerLanguage.Strategy
                 double entryPrice = StrategyInfo.AvgEntryPrice;
                 if (entryPrice == 0) entryPrice = Bars.Close[0]; // Fallback for IOG timing
 
+                double targetDistance = ProfitTargetTicks > 0 ? (ProfitTargetTicks * tickSize) : Math.Abs(Bars.Close[1] - Bars.Open[1]);
+                if (targetDistance == 0) targetDistance = Level1 * tickSize; // Safety fallback
+
                 if (currentPosition > 0)
                 {
                     double lowestTail = Math.Min(Bars.Low[0], (Bars.StatusLine.Ask > 0 ? Bars.StatusLine.Ask : Bars.Close[0]));
                     m_ProtectiveStopPrice = lowestTail - (StopTailOffsetTicks * tickSize);
-                    m_ProfitTargetPrice = entryPrice + (Level1 * tickSize);
+                    m_ProfitTargetPrice = entryPrice + targetDistance;
                 }
                 else if (currentPosition < 0)
                 {
                     double highestTail = Math.Max(Bars.High[0], (Bars.StatusLine.Bid > 0 ? Bars.StatusLine.Bid : Bars.Close[0]));
                     m_ProtectiveStopPrice = highestTail + (StopTailOffsetTicks * tickSize);
-                    m_ProfitTargetPrice = entryPrice - (Level1 * tickSize);
+                    m_ProfitTargetPrice = entryPrice - targetDistance;
                 }
                 m_BuyOrderActive = m_SellOrderActive = false;
                 m_StopPrice = 0;
@@ -234,8 +240,9 @@ namespace PowerLanguage.Strategy
         private void UpdateTickHUD()
         {
             double totalProfitCurrency = StrategyInfo.ClosedEquity; 
-            double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
-            double tickValue = (Bars.Info.PriceScale != 0) ? (Bars.Info.MinMove / Bars.Info.PriceScale * Bars.Info.BigPointValue) : 0;
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize == 0) tickSize = 0.25;
+            double tickValue = (Bars.Info.PriceScale != 0) ? ((double)Bars.Info.MinMove / Bars.Info.PriceScale * Bars.Info.BigPointValue) : 0;
             double totalTicks = (tickValue != 0) ? (totalProfitCurrency / tickValue) : 0;
             string sign = totalTicks >= 0 ? "+" : "";
             string scoreText = string.Format("RENKO HUD: {0}{1:F1} Ticks ({2}{3:C2})", sign, totalTicks, sign, totalProfitCurrency);
@@ -257,7 +264,8 @@ namespace PowerLanguage.Strategy
 
             bool ctrl = (arg.keys & Keys.Control) == Keys.Control;
             bool shift = (arg.keys & Keys.Shift) == Keys.Shift;
-            double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize == 0) tickSize = 0.25;
 
             // HANDLE DRAGGING THE PROFIT TARGET
             if (m_DraggingTarget)
@@ -314,7 +322,8 @@ namespace PowerLanguage.Strategy
 
         private void ProcessManualOrderRequest(double clickPrice)
         {
-            double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize == 0) tickSize = 0.25;
 
             double bullishProjection = 0;
             double bearishProjection = 0;
@@ -360,20 +369,23 @@ namespace PowerLanguage.Strategy
         private void UpdateGridLines(double entryPrice)
         {
             ClearGrid();
-            double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
-            double stepSize = Level1 * tickSize;
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize == 0) tickSize = 0.25;
+            
+            double targetDistance = ProfitTargetTicks > 0 ? (ProfitTargetTicks * tickSize) : Math.Abs(Bars.Close[1] - Bars.Open[1]);
+            double stepSize = targetDistance > 0 ? targetDistance : (Level1 * tickSize);
 
             for (int i = 1; i <= GridLinesCount; i++)
             {
                 // Above
                 double upPrice = entryPrice + (stepSize * i);
-                var upL = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], upPrice), new ChartPoint(Bars.Time[0].AddDays(1), upPrice));
+                var upL = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], upPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), upPrice));
                 upL.Color = Color.Black; upL.Style = ETLStyle.ToolDashed; upL.Size = 1; upL.ExtLeft = upL.ExtRight = true;
                 m_GridLines.Add(upL);
 
                 // Below
                 double dnPrice = entryPrice - (stepSize * i);
-                var dnL = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], dnPrice), new ChartPoint(Bars.Time[0].AddDays(1), dnPrice));
+                var dnL = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], dnPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), dnPrice));
                 dnL.Color = Color.Black; dnL.Style = ETLStyle.ToolDashed; dnL.Size = 1; dnL.ExtLeft = dnL.ExtRight = true;
                 m_GridLines.Add(dnL);
             }
