@@ -16,7 +16,6 @@ namespace PowerLanguage.Strategy
         [Input] public int OrderQty { get; set; }
         [Input] public int Level1 { get; set; } // Matches Indicator (Ticks offset)
         [Input] public int LimitOffsetTicks { get; set; }
-        [Input] public int ProfitTargetTicks { get; set; } // Points to win (in ticks)
         [Input] public int StopTailOffsetTicks { get; set; }
         [Input] public bool ShowPriceLine { get; set; }
         [Input] public int ProximityTicks { get; set; }
@@ -63,7 +62,6 @@ namespace PowerLanguage.Strategy
         {
             OrderQty = 1;
             Level1 = 4; // Default to match indicator
-            ProfitTargetTicks = 20; // 5 points default
             LimitOffsetTicks = 1;
             StopTailOffsetTicks = 2;
             ShowPriceLine = true;
@@ -131,6 +129,9 @@ namespace PowerLanguage.Strategy
             }
 
             if (!Environment.IsRealTimeCalc) return;
+            
+            tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize == 0) tickSize = 0.25; // Safety fallback for ES/MES
 
             if (m_FlattenRequested && currentPosition != 0)
             {
@@ -149,17 +150,19 @@ namespace PowerLanguage.Strategy
             if (currentPosition != 0 && m_LastMarketPosition == 0)
             {
                 double entryPrice = StrategyInfo.AvgEntryPrice;
+                if (entryPrice == 0) entryPrice = Bars.Close[0]; // Fallback for IOG timing
+
                 if (currentPosition > 0)
                 {
-                    double lowestTail = Math.Min(Bars.Low[0], Bars.Low[1]);
+                    double lowestTail = Math.Min(Bars.Low[0], (Bars.StatusLine.Ask > 0 ? Bars.StatusLine.Ask : Bars.Close[0]));
                     m_ProtectiveStopPrice = lowestTail - (StopTailOffsetTicks * tickSize);
-                    m_ProfitTargetPrice = entryPrice + (ProfitTargetTicks * tickSize);
+                    m_ProfitTargetPrice = entryPrice + (Level1 * tickSize);
                 }
                 else if (currentPosition < 0)
                 {
-                    double highestTail = Math.Max(Bars.High[0], Bars.High[1]);
+                    double highestTail = Math.Max(Bars.High[0], (Bars.StatusLine.Bid > 0 ? Bars.StatusLine.Bid : Bars.Close[0]));
                     m_ProtectiveStopPrice = highestTail + (StopTailOffsetTicks * tickSize);
-                    m_ProfitTargetPrice = entryPrice - (ProfitTargetTicks * tickSize);
+                    m_ProfitTargetPrice = entryPrice - (Level1 * tickSize);
                 }
                 m_BuyOrderActive = m_SellOrderActive = false;
                 m_StopPrice = 0;
@@ -169,6 +172,7 @@ namespace PowerLanguage.Strategy
                 UpdateTargetLine();
                 UpdateStopLine();
                 if (ShowGrid) UpdateGridLines(entryPrice);
+                Output.WriteLine("📊 SYSTEM: Trade Active. Entry: {0} | Target: {1}", entryPrice, m_ProfitTargetPrice);
             }
 
             // Maintain Exit Orders while in position
@@ -363,14 +367,14 @@ namespace PowerLanguage.Strategy
             {
                 // Above
                 double upPrice = entryPrice + (stepSize * i);
-                var upL = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], upPrice), new ChartPoint(Bars.Time[0].AddMinutes(1), upPrice));
-                upL.Color = Color.DimGray; upL.Style = ETLStyle.ToolDashed; upL.Size = 1; upL.ExtLeft = upL.ExtRight = true;
+                var upL = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], upPrice), new ChartPoint(Bars.Time[0].AddDays(1), upPrice));
+                upL.Color = Color.Black; upL.Style = ETLStyle.ToolDashed; upL.Size = 1; upL.ExtLeft = upL.ExtRight = true;
                 m_GridLines.Add(upL);
 
                 // Below
                 double dnPrice = entryPrice - (stepSize * i);
-                var dnL = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], dnPrice), new ChartPoint(Bars.Time[0].AddMinutes(1), dnPrice));
-                dnL.Color = Color.DimGray; dnL.Style = ETLStyle.ToolDashed; dnL.Size = 1; dnL.ExtLeft = dnL.ExtRight = true;
+                var dnL = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], dnPrice), new ChartPoint(Bars.Time[0].AddDays(1), dnPrice));
+                dnL.Color = Color.Black; dnL.Style = ETLStyle.ToolDashed; dnL.Size = 1; dnL.ExtLeft = dnL.ExtRight = true;
                 m_GridLines.Add(dnL);
             }
         }

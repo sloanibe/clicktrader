@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Windows.Forms;
 using PowerLanguage;
 using PowerLanguage.Function;
+using System.Collections.Generic;
 
 namespace PowerLanguage.Strategy
 {
@@ -16,25 +17,40 @@ namespace PowerLanguage.Strategy
         [Input] public int RangeSizeTicks { get; set; }
         [Input] public int LimitOffsetTicks { get; set; }
         [Input] public int StopTailOffsetTicks { get; set; }
+        [Input] public int ProximityTicks { get; set; }
         [Input] public bool ShowHUD { get; set; }
+        [Input] public bool ShowGrid { get; set; }
+        [Input] public int GridLinesCount { get; set; }
 
         private IOrderStopLimit m_BuyStopLimit;
         private IOrderStopLimit m_SellStopLimit;
-        private IOrderPriced m_BuyExit;
-        private IOrderPriced m_SellExit;
+        
+        // Exits
+        private IOrderPriced m_BuyExitStop;
+        private IOrderPriced m_SellExitStop;
+        private IOrderPriced m_BuyExitLimit;
+        private IOrderPriced m_SellExitLimit;
+        
         private IOrderMarket m_CloseLongNextBar;
         private IOrderMarket m_CloseShortNextBar;
 
         private double m_StopPrice = 0;
         private double m_LimitPrice = 0;
         private double m_ProtectiveStopPrice = 0;
+        private double m_ProfitTargetPrice = 0;
+        
         private int m_LastMarketPosition = 0;
         private bool m_BuyOrderActive = false;
         private bool m_SellOrderActive = false;
         private bool m_CancelRequested = false;
         private bool m_FlattenRequested = false;
+        private bool m_DraggingTarget = false;
+        private bool m_DraggingStop = false;
         
         private ITrendLineObject m_PriceLine;
+        private ITrendLineObject m_TargetLine;
+        private ITrendLineObject m_StopLine;
+        private List<ITrendLineObject> m_GridLines = new List<ITrendLineObject>();
         private ITextObject m_HUDLabel;
 
         public RangeBarTrading(object ctx) : base(ctx)
@@ -43,7 +59,10 @@ namespace PowerLanguage.Strategy
             RangeSizeTicks = 7;
             LimitOffsetTicks = 1;
             StopTailOffsetTicks = 2;
+            ProximityTicks = 5;
             ShowHUD = true;
+            ShowGrid = true;
+            GridLinesCount = 5;
         }
 
         protected override void Create()
@@ -51,8 +70,11 @@ namespace PowerLanguage.Strategy
             m_BuyStopLimit = OrderCreator.StopLimit(new SOrderParameters(Contracts.Default, "RangeBuy", EOrderAction.Buy));
             m_SellStopLimit = OrderCreator.StopLimit(new SOrderParameters(Contracts.Default, "RangeSell", EOrderAction.SellShort));
             
-            m_BuyExit = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectLong", EOrderAction.Sell, OrderExit.FromAll));
-            m_SellExit = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectShort", EOrderAction.BuyToCover, OrderExit.FromAll));
+            m_BuyExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectLong", EOrderAction.Sell, OrderExit.FromAll));
+            m_SellExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectShort", EOrderAction.BuyToCover, OrderExit.FromAll));
+            
+            m_BuyExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitLong", EOrderAction.Sell, OrderExit.FromAll));
+            m_SellExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitShort", EOrderAction.BuyToCover, OrderExit.FromAll));
             
             m_CloseLongNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergCloseLong", EOrderAction.Sell, OrderExit.FromAll));
             m_CloseShortNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergCloseShort", EOrderAction.BuyToCover, OrderExit.FromAll));
@@ -64,10 +86,17 @@ namespace PowerLanguage.Strategy
             m_StopPrice = 0;
             m_LimitPrice = 0;
             m_ProtectiveStopPrice = 0;
+            m_ProfitTargetPrice = 0;
             m_LastMarketPosition = 0;
             m_CancelRequested = false;
             m_FlattenRequested = false;
+            m_DraggingTarget = false;
+            m_DraggingStop = false;
             if (m_HUDLabel != null) m_HUDLabel.Delete();
+            if (m_PriceLine != null) m_PriceLine.Delete();
+            if (m_TargetLine != null) m_TargetLine.Delete();
+            if (m_StopLine != null) m_StopLine.Delete();
+            ClearGrid();
         }
 
         protected override void CalcBar()
@@ -76,81 +105,90 @@ namespace PowerLanguage.Strategy
 
             int currentPosition = StrategyInfo.MarketPosition;
             double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize == 0) tickSize = 0.25; // Safety fallback
 
-            // 1. Handle Emergency Flatten
             if (m_FlattenRequested && currentPosition != 0)
             {
                 if (currentPosition > 0) m_CloseLongNextBar.Send(Math.Abs(currentPosition));
                 else m_CloseShortNextBar.Send(Math.Abs(currentPosition));
                 m_ProtectiveStopPrice = 0;
+                m_ProfitTargetPrice = 0;
             }
-            else if (m_FlattenRequested && currentPosition == 0)
-            {
-                m_FlattenRequested = false;
-            }
+            else if (m_FlattenRequested && currentPosition == 0) m_FlattenRequested = false;
 
-            // 2. Detect NEW Fill
+            // DETECT NEW FILL
             if (currentPosition != 0 && m_LastMarketPosition == 0)
             {
+                double entryPrice = StrategyInfo.AvgEntryPrice;
+                if (entryPrice == 0) entryPrice = Bars.Close[0]; // Fallback for IOG timing
+
                 if (currentPosition > 0)
                 {
-                    double lowestTail = Math.Min(Bars.Low[0], Bars.Low[1]);
+                    double lowestTail = Math.Min(Bars.Low[0], (Bars.StatusLine.Ask > 0 ? Bars.StatusLine.Ask : Bars.Close[0]));
                     m_ProtectiveStopPrice = lowestTail - (StopTailOffsetTicks * tickSize);
+                    m_ProfitTargetPrice = entryPrice + (RangeSizeTicks * tickSize);
                 }
                 else
                 {
-                    double highestTail = Math.Max(Bars.High[0], Bars.High[1]);
+                    double highestTail = Math.Max(Bars.High[0], (Bars.StatusLine.Bid > 0 ? Bars.StatusLine.Bid : Bars.Close[0]));
                     m_ProtectiveStopPrice = highestTail + (StopTailOffsetTicks * tickSize);
+                    m_ProfitTargetPrice = entryPrice - (RangeSizeTicks * tickSize);
                 }
                 
-                // Clear active entry states
                 m_BuyOrderActive = m_SellOrderActive = false;
                 m_StopPrice = 0;
                 if (m_PriceLine != null) m_PriceLine.Delete();
+                UpdateTargetLine();
+                UpdateStopLine();
+                if (ShowGrid) UpdateGridLines(entryPrice);
+                Output.WriteLine("📊 RANGE SYSTEM: Trade Active. Entry: {0} | Target: {1}", entryPrice, m_ProfitTargetPrice);
             }
 
-            // 3. Dynamic "Chasing" Logic for Range Completion
+            // Entry logic (only if not in trade)
             if (currentPosition == 0 && !m_CancelRequested)
             {
                 if (m_BuyOrderActive)
                 {
-                    // For Long: Tether to the developing bottom of the bar
                     double currentLow = Math.Min(Bars.Low[0], (Bars.StatusLine.Ask > 0 ? Bars.StatusLine.Ask : Bars.Close[0]));
                     m_StopPrice = Math.Round((currentLow + (RangeSizeTicks * tickSize)) / tickSize) * tickSize;
                     m_LimitPrice = m_StopPrice + (LimitOffsetTicks * tickSize);
-                    
                     m_BuyStopLimit.Send(m_StopPrice, m_LimitPrice, OrderQty);
                     UpdateVisualMarker();
                 }
                 else if (m_SellOrderActive)
                 {
-                    // For Short: Tether to the developing top of the bar
                     double currentHigh = Math.Max(Bars.High[0], (Bars.StatusLine.Bid > 0 ? Bars.StatusLine.Bid : Bars.Close[0]));
                     m_StopPrice = Math.Round((currentHigh - (RangeSizeTicks * tickSize)) / tickSize) * tickSize;
                     m_LimitPrice = m_StopPrice - (LimitOffsetTicks * tickSize);
-                    
                     m_SellStopLimit.Send(m_StopPrice, m_LimitPrice, OrderQty);
                     UpdateVisualMarker();
                 }
             }
 
-            // 4. Maintain Exit Orders
-            if (currentPosition > 0 && m_ProtectiveStopPrice > 0)
+            // Exits
+            if (currentPosition > 0)
             {
-                m_BuyExit.Send(m_ProtectiveStopPrice);
+                if (m_ProtectiveStopPrice > 0) m_BuyExitStop.Send(m_ProtectiveStopPrice);
+                if (m_ProfitTargetPrice > 0) m_BuyExitLimit.Send(m_ProfitTargetPrice);
             }
-            else if (currentPosition < 0 && m_ProtectiveStopPrice > 0)
+            else if (currentPosition < 0)
             {
-                m_SellExit.Send(m_ProtectiveStopPrice);
+                if (m_ProtectiveStopPrice > 0) m_SellExitStop.Send(m_ProtectiveStopPrice);
+                if (m_ProfitTargetPrice > 0) m_SellExitLimit.Send(m_ProfitTargetPrice);
             }
 
-            // 5. Position Closed
             if (currentPosition == 0 && m_LastMarketPosition != 0)
             {
                 m_ProtectiveStopPrice = 0;
+                m_ProfitTargetPrice = 0;
+                m_BuyOrderActive = m_SellOrderActive = false;
+                if (m_TargetLine != null) m_TargetLine.Delete();
+                if (m_PriceLine != null) m_PriceLine.Delete();
+                if (m_StopLine != null) m_StopLine.Delete();
+                ClearGrid();
+                Output.WriteLine("📊 RANGE SYSTEM: Trade Closed. All orders cleared.");
             }
 
-            // 6. Cancellation Cleanup
             if (m_CancelRequested)
             {
                 m_BuyOrderActive = m_SellOrderActive = false;
@@ -166,73 +204,83 @@ namespace PowerLanguage.Strategy
         protected override void OnMouseEvent(MouseClickArgs arg)
         {
             if (arg.buttons != MouseButtons.Left) return;
-
             bool ctrl = (arg.keys & Keys.Control) == Keys.Control;
             bool shift = (arg.keys & Keys.Shift) == Keys.Shift;
+            double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+
+            if (m_DraggingTarget) { m_ProfitTargetPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingTarget = false; UpdateTargetLine(); return; }
+            if (m_DraggingStop) { m_ProtectiveStopPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingStop = false; UpdateStopLine(); return; }
+
+            if (m_ProfitTargetPrice > 0 && Math.Abs(arg.point.Price - m_ProfitTargetPrice) <= (ProximityTicks * tickSize)) { m_DraggingTarget = true; UpdateTargetLine(); return; }
+            if (m_ProtectiveStopPrice > 0 && Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (ProximityTicks * tickSize)) { m_DraggingStop = true; UpdateStopLine(); return; }
 
             if (ctrl)
             {
                 double clickPrice = arg.point.Price;
                 double currentPrice = Bars.Close[0];
-
-                if (clickPrice > currentPrice)
-                {
-                    m_BuyOrderActive = true;
-                    m_SellOrderActive = false;
-                }
-                else
-                {
-                    m_SellOrderActive = true;
-                    m_BuyOrderActive = false;
-                }
+                if (clickPrice > currentPrice) { m_BuyOrderActive = true; m_SellOrderActive = false; }
+                else { m_SellOrderActive = true; m_BuyOrderActive = false; }
             }
-            else if (shift)
+            else if (shift) { m_CancelRequested = true; if (StrategyInfo.MarketPosition != 0) m_FlattenRequested = true; }
+        }
+
+        private void ClearGrid() { foreach (var line in m_GridLines) if (line != null) line.Delete(); m_GridLines.Clear(); }
+
+        private void UpdateGridLines(double entryPrice)
+        {
+            ClearGrid();
+            double tickSize = Bars.Info.MinMove / Bars.Info.PriceScale;
+            double stepSize = RangeSizeTicks * tickSize;
+            for (int i = 1; i <= GridLinesCount; i++)
             {
-                m_CancelRequested = true;
-                if (StrategyInfo.MarketPosition != 0) m_FlattenRequested = true;
+                double upPrice = entryPrice + (stepSize * i);
+                var upL = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], upPrice), new ChartPoint(Bars.Time[0].AddDays(1), upPrice));
+                upL.Color = Color.Black; upL.Style = ETLStyle.ToolDashed; upL.Size = 1; upL.ExtLeft = upL.ExtRight = true;
+                m_GridLines.Add(upL);
+
+                double dnPrice = entryPrice - (stepSize * i);
+                var dnL = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], dnPrice), new ChartPoint(Bars.Time[0].AddDays(1), dnPrice));
+                dnL.Color = Color.Black; dnL.Style = ETLStyle.ToolDashed; dnL.Size = 1; dnL.ExtLeft = dnL.ExtRight = true;
+                m_GridLines.Add(dnL);
             }
         }
 
         private void UpdateVisualMarker() {
-            if (!m_BuyOrderActive && !m_SellOrderActive) {
-                if (m_PriceLine != null) m_PriceLine.Delete();
-                return;
-            }
+            if (!m_BuyOrderActive && !m_SellOrderActive) { if (m_PriceLine != null) m_PriceLine.Delete(); return; }
             if (m_PriceLine != null) m_PriceLine.Delete();
-            
             m_PriceLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_StopPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_StopPrice));
             m_PriceLine.Color = m_BuyOrderActive ? Color.Cyan : Color.Magenta;
-            m_PriceLine.Style = ETLStyle.ToolDashed; // Dashed like the other signal
-            m_PriceLine.Size = 2; // Thicker for better visibility
-            m_PriceLine.ExtRight = true;
-            m_PriceLine.ExtLeft = true;
+            m_PriceLine.Style = ETLStyle.ToolDashed; m_PriceLine.Size = 2; m_PriceLine.ExtRight = m_PriceLine.ExtLeft = true;
         }
 
-        private void UpdateHUD()
-        {
+        private void UpdateTargetLine() {
+            if (m_TargetLine != null) m_TargetLine.Delete();
+            if (m_ProfitTargetPrice <= 0) return;
+            m_TargetLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_ProfitTargetPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_ProfitTargetPrice));
+            m_TargetLine.Color = m_DraggingTarget ? Color.White : Color.Gold;
+            m_TargetLine.Style = ETLStyle.ToolDashed; m_TargetLine.Size = 2; m_TargetLine.ExtRight = m_TargetLine.ExtLeft = true;
+        }
+
+        private void UpdateStopLine() {
+            if (m_StopLine != null) m_StopLine.Delete();
+            if (m_ProtectiveStopPrice <= 0) return;
+            m_StopLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_ProtectiveStopPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_ProtectiveStopPrice));
+            m_StopLine.Color = m_DraggingStop ? Color.White : Color.Red;
+            m_StopLine.Style = ETLStyle.ToolDashed; m_StopLine.Size = 2; m_StopLine.ExtRight = m_StopLine.ExtLeft = true;
+        }
+
+        private void UpdateHUD() {
             double pnl = StrategyInfo.ClosedEquity;
             string status = "IDLE";
             if (m_BuyOrderActive) status = "CHASING BUY";
             if (m_SellOrderActive) status = "CHASING SELL";
             if (StrategyInfo.MarketPosition != 0) status = "IN TRADE";
-
             string text = string.Format("RANGE TRADER | {0} | PnL: {1:C2}", status, pnl);
-            
-            if (m_HUDLabel == null)
-            {
-                m_HUDLabel = DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0]), text);
-                m_HUDLabel.Size = 14;
-            }
-
-            m_HUDLabel.Text = text;
+            if (m_HUDLabel == null) { m_HUDLabel = DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0]), text); m_HUDLabel.Size = 14; }
             m_HUDLabel.Color = pnl >= 0 ? Color.LimeGreen : Color.Tomato;
             m_HUDLabel.Location = new ChartPoint(Bars.Time[0], Bars.High[0]);
         }
 
-        protected override void Destroy()
-        {
-            if (m_HUDLabel != null) m_HUDLabel.Delete();
-            if (m_PriceLine != null) m_PriceLine.Delete();
-        }
+        protected override void Destroy() { if (m_HUDLabel != null) m_HUDLabel.Delete(); if (m_PriceLine != null) m_PriceLine.Delete(); if (m_TargetLine != null) m_TargetLine.Delete(); if (m_StopLine != null) m_StopLine.Delete(); ClearGrid(); }
     }
 }
