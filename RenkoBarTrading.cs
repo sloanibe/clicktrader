@@ -21,8 +21,6 @@ namespace PowerLanguage.Strategy
         [Input] public bool ShowPriceLine { get; set; }
         [Input] public int ProximityTicks { get; set; }
         [Input] public bool ShowHUD { get; set; }
-        [Input] public bool ShowGrid { get; set; }
-        [Input] public int GridLinesCount { get; set; }
 
         private IOrderPriced m_BuyStop;
         private IOrderPriced m_SellStop;
@@ -68,8 +66,6 @@ namespace PowerLanguage.Strategy
             ShowPriceLine = true;
             ProximityTicks = 5;
             ShowHUD = true;
-            ShowGrid = true;
-            GridLinesCount = 5;
         }
 
         protected override void Create()
@@ -176,11 +172,6 @@ namespace PowerLanguage.Strategy
                 UpdateTargetLine();
                 UpdateStopLine();
                 
-                // Broadcast using Official GlobalVariables Bridge
-                string prefix = Bars.Info.Name + "_";
-                GlobalVariables.SetVariable(prefix + "Entry", entryPrice);
-                GlobalVariables.SetVariable(prefix + "Step", targetDistance);
-                
                 Output.WriteLine("📊 SYSTEM: Trade Active. Entry: {0} | Target: {1} | Grid Step: {2}", entryPrice, m_ProfitTargetPrice, targetDistance);
             }
 
@@ -204,10 +195,6 @@ namespace PowerLanguage.Strategy
                 if (m_TargetLine != null) m_TargetLine.Delete();
                 if (m_PriceLine != null) m_PriceLine.Delete();
                 if (m_StopLine != null) m_StopLine.Delete();
-                
-                // Clear the official GlobalVariables Bridge
-                string prefix = Bars.Info.Name + "_";
-                GlobalVariables.SetVariable(prefix + "Entry", 0.0);
                 
                 Output.WriteLine("📊 SYSTEM: Trade Closed. All orders cleared.");
             }
@@ -402,10 +389,6 @@ namespace PowerLanguage.Strategy
         protected override void Destroy() { 
             if (m_TargetLine != null) m_TargetLine.Delete(); 
             if (m_StopLine != null) m_StopLine.Delete();
-            
-            // Cleanup Global Bridge
-            string prefix = Bars.Info.Name + "_";
-            GlobalVariables.SetVariable(prefix + "Entry", 0.0);
         }
     }
 }
