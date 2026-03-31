@@ -6,9 +6,9 @@ using PowerLanguage.Function;
 
 namespace PowerLanguage.Indicator
 {
+    // Move State inside to satisfy MultiCharts compiler entry point
     public static class TradeGridState
     {
-        // Shared memory mapped by Chart Symbol Name
         public static Dictionary<string, double> ActiveEntries = new Dictionary<string, double>();
         public static Dictionary<string, double> StepSizes = new Dictionary<string, double>();
     }
@@ -43,7 +43,7 @@ namespace PowerLanguage.Indicator
 
         protected override void CalcBar()
         {
-            if (!Environment.IsRealTimeCalc) return; // Only process during active trading phase
+            if (!Environment.IsRealTimeCalc) return;
 
             string symbol = Bars.Info.Name;
             
@@ -55,13 +55,11 @@ namespace PowerLanguage.Indicator
             if (TradeGridState.StepSizes.ContainsKey(symbol))
                 stepSize = TradeGridState.StepSizes[symbol];
 
-            // Trade closed, erase grid
             if (activeEntry == 0 && m_LastDrawnEntry != 0)
             {
                 ClearGrid();
                 m_LastDrawnEntry = 0;
             }
-            // Trade opened or updated, draw grid
             else if (activeEntry > 0 && activeEntry != m_LastDrawnEntry && stepSize > 0)
             {
                 DrawGrid(activeEntry, stepSize);
@@ -78,13 +76,11 @@ namespace PowerLanguage.Indicator
 
             for (int i = 1; i <= GridLinesCount; i++)
             {
-                // Above
                 double upPrice = centerPrice + (stepSize * i);
                 var upL = DrwTrendLine.Create(new ChartPoint(t1, upPrice), new ChartPoint(t2, upPrice));
                 upL.Color = GridLineColor; upL.Style = ETLStyle.ToolDashed; upL.Size = 1; upL.ExtLeft = upL.ExtRight = true;
                 m_GridLines.Add(upL);
 
-                // Below
                 double dnPrice = centerPrice - (stepSize * i);
                 var dnL = DrwTrendLine.Create(new ChartPoint(t1, dnPrice), new ChartPoint(t2, dnPrice));
                 dnL.Color = GridLineColor; dnL.Style = ETLStyle.ToolDashed; dnL.Size = 1; dnL.ExtLeft = dnL.ExtRight = true;
