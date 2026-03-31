@@ -14,7 +14,7 @@ namespace PowerLanguage.Strategy
     public class RenkoBarTrading : SignalObject
     {
         [Input] public int OrderQty { get; set; }
-        [Input] public int Level1 { get; set; } // Matches Indicator (Ticks offset)
+        [Input] public int Level1 { get; set; } // 0 = Auto-detect from chart
         [Input] public int ProfitTargetTicks { get; set; } // 0 = Auto-detect 1 Brick
         [Input] public int LimitOffsetTicks { get; set; }
         [Input] public int StopTailOffsetTicks { get; set; }
@@ -38,6 +38,7 @@ namespace PowerLanguage.Strategy
         private double m_LastOpenPrice = 0;
         private bool m_LastBarWasUp = true;
         private int m_LastBarIndex = -1;
+        private double m_AutoDetectedBrickSize = 0;
         
         private double m_StopPrice = 0;
         private double m_LimitPrice = 0;
@@ -59,7 +60,7 @@ namespace PowerLanguage.Strategy
         public RenkoBarTrading(object ctx) : base(ctx)
         {
             OrderQty = 1;
-            Level1 = 20; // Default to 20 for MNQ
+            Level1 = 0; // Default to Auto-Detect
             ProfitTargetTicks = 0; // 0 = Auto-detect 1 Brick
             LimitOffsetTicks = 1;
             StopTailOffsetTicks = 2;
@@ -114,6 +115,7 @@ namespace PowerLanguage.Strategy
                 m_LastOpenPrice = Bars.Open[0];
                 m_LastBarWasUp = (m_LastClosePrice > m_LastOpenPrice);
                 m_LastBarIndex = Bars.CurrentBar;
+                m_AutoDetectedBrickSize = Math.Abs(m_LastClosePrice - m_LastOpenPrice);
 
                 // RULE: Pending entry orders EXPIRE when a new bar closes.
                 if (currentPosition == 0 && (m_BuyOrderActive || m_SellOrderActive))
@@ -149,8 +151,10 @@ namespace PowerLanguage.Strategy
                 double entryPrice = StrategyInfo.AvgEntryPrice;
                 if (entryPrice == 0) entryPrice = Bars.Close[0]; // Fallback for IOG timing
 
-                double targetDistance = ProfitTargetTicks > 0 ? (ProfitTargetTicks * tickSize) : Math.Abs(Bars.Close[1] - Bars.Open[1]);
-                if (targetDistance <= 0) targetDistance = Level1 * tickSize; // Safety fallback to Level1 (20 ticks)
+                double activePointShift = (Level1 > 0) ? (Level1 * tickSize) : m_AutoDetectedBrickSize;
+                if (activePointShift <= 0) activePointShift = 20 * tickSize; // Safety fallback for MNQ
+
+                double targetDistance = (ProfitTargetTicks > 0) ? (ProfitTargetTicks * tickSize) : activePointShift;
 
                 if (currentPosition > 0)
                 {
@@ -172,7 +176,7 @@ namespace PowerLanguage.Strategy
                 UpdateTargetLine();
                 UpdateStopLine();
                 
-                Output.WriteLine("📊 SYSTEM: Trade Active. Entry: {0} | Target: {1} | Grid Step: {2}", entryPrice, m_ProfitTargetPrice, targetDistance);
+                Output.WriteLine("📊 SYSTEM: Trade Active. Entry: {0} | Target: {1} | Brick Shift: {2}", entryPrice, m_ProfitTargetPrice, activePointShift);
             }
 
             // Maintain Exit Orders while in position
@@ -322,13 +326,16 @@ namespace PowerLanguage.Strategy
             double bullishProjection = 0;
             double bearishProjection = 0;
 
+            double activePointShift = (Level1 > 0) ? (Level1 * tickSize) : m_AutoDetectedBrickSize;
+            if (activePointShift <= 0) activePointShift = 20 * tickSize;
+
             // Indicator Logic Clone:
             if (m_LastBarWasUp) {
-                bullishProjection = m_LastClosePrice + (Level1 * tickSize); // Continuation (UP)
-                bearishProjection = m_LastOpenPrice - (Level1 * tickSize); // Reversal (DOWN) - This matches the YELLOW LINE
+                bullishProjection = m_LastClosePrice + activePointShift; // Continuation (UP)
+                bearishProjection = m_LastOpenPrice - activePointShift; // Reversal (DOWN) - This matches the YELLOW LINE
             } else {
-                bearishProjection = m_LastClosePrice - (Level1 * tickSize); // Continuation (DOWN)
-                bullishProjection = m_LastOpenPrice + (Level1 * tickSize); // Reversal (UP) - This matches the YELLOW LINE
+                bearishProjection = m_LastClosePrice - activePointShift; // Continuation (DOWN)
+                bullishProjection = m_LastOpenPrice + activePointShift; // Reversal (UP) - This matches the YELLOW LINE
             }
 
             // Snap behavior: Using LAST CLOSE as the stable reference for "Above or Below"
