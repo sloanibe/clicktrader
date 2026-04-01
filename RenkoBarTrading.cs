@@ -25,11 +25,11 @@ namespace PowerLanguage.Strategy
         private IOrderPriced m_BuyStop;
         private IOrderPriced m_SellStop;
         
-        // Exits (Both use STOP orders now)
+        // Exits
         private IOrderPriced m_BuyExitStop;
         private IOrderPriced m_SellExitStop;
-        private IOrderPriced m_BuyExitProfitStop;
-        private IOrderPriced m_SellExitProfitStop;
+        private IOrderPriced m_BuyExitLimit;
+        private IOrderPriced m_SellExitLimit;
         
         private IOrderMarket m_CloseLongNextBar;
         private IOrderMarket m_CloseShortNextBar;
@@ -75,13 +75,13 @@ namespace PowerLanguage.Strategy
             m_BuyStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ManualBuy", EOrderAction.Buy));
             m_SellStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ManualSell", EOrderAction.SellShort));
             
-            // Protective Stops
+            // Protective Stop MUST remain a STOP order
             m_BuyExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectLong", EOrderAction.Sell, OrderExit.FromAll));
             m_SellExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectShort", EOrderAction.BuyToCover, OrderExit.FromAll));
             
-            // Profit Targets (Stop orders per user request)
-            m_BuyExitProfitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProfitLong", EOrderAction.Sell, OrderExit.FromAll));
-            m_SellExitProfitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProfitShort", EOrderAction.BuyToCover, OrderExit.FromAll));
+            // Profit Target MUST remain a LIMIT order (even if we label it 'Stop' in name, the type must be Limit)
+            m_BuyExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitLong", EOrderAction.Sell, OrderExit.FromAll));
+            m_SellExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitShort", EOrderAction.BuyToCover, OrderExit.FromAll));
             
             m_CloseLongNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergCloseLong", EOrderAction.Sell, OrderExit.FromAll));
             m_CloseShortNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergCloseShort", EOrderAction.BuyToCover, OrderExit.FromAll));
@@ -110,6 +110,7 @@ namespace PowerLanguage.Strategy
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize == 0) tickSize = 0.25;
 
+            // Sync with bar closes
             if (Bars.Status == EBarState.Close)
             {
                 m_LastClosePrice = Bars.Close[0];
@@ -126,6 +127,7 @@ namespace PowerLanguage.Strategy
 
             if (!Environment.IsRealTimeCalc) return;
 
+            // Flatten logic
             if (m_FlattenRequested && currentPosition != 0) {
                 int qty = Math.Abs(currentPosition);
                 if (currentPosition > 0) m_CloseLongNextBar.Send(qty);
@@ -133,6 +135,7 @@ namespace PowerLanguage.Strategy
                 m_ProtectiveStopPrice = m_ProfitTargetPrice = 0;
             } else if (m_FlattenRequested && currentPosition == 0) { m_FlattenRequested = false; }
 
+            // Fill detection
             if (currentPosition != 0 && m_LastMarketPosition == 0)
             {
                 double entry = StrategyInfo.AvgEntryPrice > 0 ? StrategyInfo.AvgEntryPrice : Bars.Close[0];
@@ -150,12 +153,13 @@ namespace PowerLanguage.Strategy
                 UpdateTargetLine(); UpdateStopLine(); UpdateDollarHUD(entry, m_ProfitTargetPrice, m_ProtectiveStopPrice);
             }
 
+            // Order Execution (RESTORED LIMIT TYPE FOR TARGET)
             if (currentPosition > 0) {
                 if (m_ProtectiveStopPrice > 0) m_BuyExitStop.Send(m_ProtectiveStopPrice);
-                if (m_ProfitTargetPrice > 0) m_BuyExitProfitStop.Send(m_ProfitTargetPrice);
+                if (m_ProfitTargetPrice > 0) m_BuyExitLimit.Send(m_ProfitTargetPrice);
             } else if (currentPosition < 0) {
                 if (m_ProtectiveStopPrice > 0) m_SellExitStop.Send(m_ProtectiveStopPrice);
-                if (m_ProfitTargetPrice > 0) m_SellExitProfitStop.Send(m_ProfitTargetPrice);
+                if (m_ProfitTargetPrice > 0) m_SellExitLimit.Send(m_ProfitTargetPrice);
             }
 
             if (currentPosition == 0 && m_LastMarketPosition != 0) { m_ProtectiveStopPrice = m_ProfitTargetPrice = 0; ClearTradingDrawings(); }
@@ -234,21 +238,8 @@ namespace PowerLanguage.Strategy
             if (tickSize == 0) tickSize = 0.25;
             double activeShift = (Level1 > 0) ? (Level1 * tickSize) : m_AutoDetectedBrickSize;
             if (activeShift <= 0) activeShift = 20 * tickSize;
-
-            // SYNC MATH WITH INDICATOR:
-            if (m_LastBarWasUp) {
-                // Continuation (UP) or Reversal (DOWN) - Match the Green/Yellow lines
-                if (clickPrice > m_LastClosePrice) m_StopPrice = m_LastClosePrice + activeShift; 
-                else m_StopPrice = m_LastOpenPrice - activeShift;
-            } else {
-                // Continuation (DOWN) or Reversal (UP)
-                if (clickPrice < m_LastClosePrice) m_StopPrice = m_LastClosePrice - activeShift;
-                else m_StopPrice = m_LastOpenPrice + activeShift;
-            }
-
-            m_BuyOrderActive = (clickPrice > m_LastClosePrice);
-            m_SellOrderActive = !m_BuyOrderActive;
-            
+            if (clickPrice > m_LastClosePrice) { m_StopPrice = m_LastClosePrice + activeShift; m_BuyOrderActive = true; m_SellOrderActive = false; }
+            else { m_StopPrice = m_LastOpenPrice - activeShift; m_SellOrderActive = true; m_BuyOrderActive = false; }
             UpdateVisualMarker();
         }
 
