@@ -103,7 +103,7 @@ namespace PowerLanguage.Strategy
         {
             int MP = StrategyInfo.MarketPosition;
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
-            if (tickSize == 0) tickSize = 0.25; // Safe Fallback for MNQ/MES
+            if (tickSize == 0) tickSize = 0.25;
 
             // HISTORICAL/CLOSE LOGIC: Ensure these are always up-to-date even before real-time
             if (Bars.Status == EBarState.Close)
@@ -114,7 +114,7 @@ namespace PowerLanguage.Strategy
                 m_LastBarIndex = Bars.CurrentBar;
                 m_AutoDetectedBrickSize = Math.Abs(m_LastClosePrice - m_LastOpenPrice);
 
-                if (MP == 0) { 
+                if (MP == 0 && (m_BuyOrderActive || m_SellOrderActive)) { 
                     m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0;
                     if (m_PriceLine != null) m_PriceLine.Delete();
                 }
@@ -157,8 +157,19 @@ namespace PowerLanguage.Strategy
             if (MP == 0 && m_LastMarketPosition != 0) { m_ProtectiveStopPrice = m_ProfitTargetPrice = 0; ClearTradingDrawings(); }
             m_LastMarketPosition = MP;
 
+            // HOTKEY HANDLING
             if (m_OrderCreatedInMouseEvent && m_ClickPrice > 0) { ProcessManualOrderRequest(m_ClickPrice); m_OrderCreatedInMouseEvent = false; m_ClickPrice = 0; }
-            if (!m_CancelRequested && MP == 0) {
+            
+            // CANCEL LOGIC
+            if (m_CancelRequested) {
+                m_BuyOrderActive = m_SellOrderActive = false;
+                m_StopPrice = 0;
+                if (m_PriceLine != null) m_PriceLine.Delete();
+                m_CancelRequested = false;
+            }
+
+            // ENTRY ORDER EMISSION
+            if (MP == 0) {
                 if (m_BuyOrderActive && m_StopPrice > 0) m_BuyStop.Send(m_StopPrice, OrderQty);
                 if (m_SellOrderActive && m_StopPrice > 0) m_SellStop.Send(m_StopPrice, OrderQty);
             }
@@ -170,7 +181,7 @@ namespace PowerLanguage.Strategy
             if (m_LabelHUD != null) m_LabelHUD.Delete();
             double tickVal = (Bars.Info.PriceScale != 0) ? ((double)Bars.Info.MinMove / Bars.Info.PriceScale * Bars.Info.BigPointValue) : 0;
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
-            if (tickSize == 0) tickSize = 0.25; // Safe Fallback for MNQ/MES
+            if (tickSize == 0) tickSize = 0.25; 
             double riskUSD = (Math.Abs(stop - entry) / tickSize) * tickVal * OrderQty;
             string text = string.Format("${0:F2}", riskUSD);
             m_LabelHUD = DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0]), text);
@@ -198,13 +209,22 @@ namespace PowerLanguage.Strategy
         {
             if (arg.buttons != MouseButtons.Left) return;
             bool ctrl = (arg.keys & Keys.Control) == Keys.Control;
+            bool shift = (arg.keys & Keys.Shift) == Keys.Shift;
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
-            if (tickSize == 0) tickSize = 0.25; // Safe Fallback for MNQ/MES
+            if (tickSize == 0) tickSize = 0.25;
+
+            // DRAG LOGIC
             if (m_DraggingTarget) { m_ProfitTargetPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingTarget = false; return; }
             if (m_DraggingStop) { m_ProtectiveStopPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingStop = false; return; }
             if (m_ProfitTargetPrice > 0 && Math.Abs(arg.point.Price - m_ProfitTargetPrice) <= (5 * tickSize)) { m_DraggingTarget = true; return; }
             if (m_ProtectiveStopPrice > 0 && Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (5 * tickSize)) { m_DraggingStop = true; return; }
-            if (ctrl) { m_ClickPrice = arg.point.Price; m_OrderCreatedInMouseEvent = true; }
+            
+            // ORDER LOGIC
+            if (shift) {
+                m_CancelRequested = true;
+            } else if (ctrl) {
+                m_ClickPrice = arg.point.Price; m_OrderCreatedInMouseEvent = true; 
+            }
         }
 
         private bool m_DraggingTarget = false;
@@ -213,31 +233,15 @@ namespace PowerLanguage.Strategy
         private void ProcessManualOrderRequest(double clickPrice)
         {
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
-            if (tickSize == 0) tickSize = 0.25; // Safe Fallback for MNQ/MES
-            
-            // ENSURE WE ALWAYS HAVE A VALID BRICK SIZE
+            if (tickSize == 0) tickSize = 0.25; 
             double activeShift = (Level1 > 0) ? (Level1 * tickSize) : m_AutoDetectedBrickSize;
             if (activeShift <= 0) activeShift = 20 * tickSize;
-
-            // EXACT SYNC WITH INDICATOR PROJECTION MATH:
-            // Continuation = Close +/- Shift
-            // Reversal = Open +/- Shift
             if (m_LastBarWasUp) {
-                if (clickPrice >= m_LastClosePrice) {
-                    m_StopPrice = m_LastClosePrice + activeShift; // CONT (GREEN)
-                    m_BuyOrderActive = true; m_SellOrderActive = false;
-                } else {
-                    m_StopPrice = m_LastOpenPrice - activeShift; // REV (YELLOW)
-                    m_SellOrderActive = true; m_BuyOrderActive = false;
-                }
+                if (clickPrice >= m_LastClosePrice) { m_StopPrice = m_LastClosePrice + activeShift; m_BuyOrderActive = true; m_SellOrderActive = false; }
+                else { m_StopPrice = m_LastOpenPrice - activeShift; m_SellOrderActive = true; m_BuyOrderActive = false; }
             } else {
-                if (clickPrice <= m_LastClosePrice) {
-                    m_StopPrice = m_LastClosePrice - activeShift; // CONT (RED)
-                    m_SellOrderActive = true; m_BuyOrderActive = false;
-                } else {
-                    m_StopPrice = m_LastOpenPrice + activeShift; // REV (YELLOW)
-                    m_BuyOrderActive = true; m_SellOrderActive = false;
-                }
+                if (clickPrice <= m_LastClosePrice) { m_StopPrice = m_LastClosePrice - activeShift; m_SellOrderActive = true; m_BuyOrderActive = false; }
+                else { m_StopPrice = m_LastOpenPrice + activeShift; m_BuyOrderActive = true; m_SellOrderActive = false; }
             }
             UpdateVisualMarker();
         }
