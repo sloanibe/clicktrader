@@ -43,6 +43,8 @@ namespace PowerLanguage.Strategy
         private double m_StopPrice = 0;
         private double m_ProtectiveStopPrice = 0;
         private double m_ProfitTargetPrice = 0;
+        private double m_BreakEvenTriggerPrice = 0;
+        private bool m_BreakEvenArmed = false;
         
         private int m_LastMarketPosition = 0;
         private bool m_BuyOrderActive = false;
@@ -73,10 +75,13 @@ namespace PowerLanguage.Strategy
         {
             m_BuyStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ManualBuy", EOrderAction.Buy));
             m_SellStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ManualSell", EOrderAction.SellShort));
+            
             m_BuyExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectLong", EOrderAction.Sell, OrderExit.FromAll));
             m_SellExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectShort", EOrderAction.BuyToCover, OrderExit.FromAll));
+            
             m_BuyExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitLong", EOrderAction.Sell, OrderExit.FromAll));
             m_SellExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitShort", EOrderAction.BuyToCover, OrderExit.FromAll));
+            
             m_CloseLongNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergCloseLong", EOrderAction.Sell, OrderExit.FromAll));
             m_CloseShortNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergCloseShort", EOrderAction.BuyToCover, OrderExit.FromAll));
         }
@@ -101,12 +106,12 @@ namespace PowerLanguage.Strategy
 
         protected override void CalcBar()
         {
-            int MP = StrategyInfo.MarketPosition;
+            int currentPosition = StrategyInfo.MarketPosition;
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize == 0) tickSize = 0.25;
 
-            // HISTORICAL/CLOSE LOGIC: Ensure these are always up-to-date even before real-time
-            if (Bars.Status == EBarState.Close)
+            // FIX: CAPTURE INITIAL STATE IMMEDIATELY (Prevents first-bar drift)
+            if (Bars.Status == EBarState.Close || m_AutoDetectedBrickSize <= 0)
             {
                 m_LastClosePrice = Bars.Close[0]; 
                 m_LastOpenPrice = Bars.Open[0];
@@ -114,48 +119,64 @@ namespace PowerLanguage.Strategy
                 m_LastBarIndex = Bars.CurrentBar;
                 m_AutoDetectedBrickSize = Math.Abs(m_LastClosePrice - m_LastOpenPrice);
 
-                if (MP == 0 && (m_BuyOrderActive || m_SellOrderActive)) { 
+                if (currentPosition == 0 && (m_BuyOrderActive || m_SellOrderActive)) { 
                     m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0;
                     if (m_PriceLine != null) m_PriceLine.Delete();
                 }
             }
 
-            // FOR REAL-TIME CALC: Ensure we pick up the bridge from history immediately
-            if (m_AutoDetectedBrickSize <= 0 && Bars.CurrentBar > 0) {
-                m_LastClosePrice = Bars.Close[0]; 
-                m_LastOpenPrice = Bars.Open[0];
-                m_LastBarWasUp = (m_LastClosePrice > m_LastOpenPrice);
-                m_AutoDetectedBrickSize = Math.Abs(m_LastClosePrice - m_LastOpenPrice);
-            }
-
             if (!Environment.IsRealTimeCalc) return;
 
             // DETECT FILL
-            if (MP != 0 && m_LastMarketPosition == 0)
+            if (currentPosition != 0 && m_LastMarketPosition == 0)
             {
                 double entry = StrategyInfo.AvgEntryPrice > 0 ? StrategyInfo.AvgEntryPrice : Bars.Close[0];
-                if (MP > 0) m_ProtectiveStopPrice = Math.Min(Bars.Low[0], Bars.Close[0]) - (StopTailOffsetTicks * tickSize);
+                if (currentPosition > 0) m_ProtectiveStopPrice = Math.Min(Bars.Low[0], Bars.Close[0]) - (StopTailOffsetTicks * tickSize);
                 else m_ProtectiveStopPrice = Math.Max(Bars.High[0], Bars.Close[0]) + (StopTailOffsetTicks * tickSize);
                 double stopDist = Math.Abs(entry - m_ProtectiveStopPrice);
                 double targetDist = (ProfitTargetTicks > 0) ? (ProfitTargetTicks * tickSize) : stopDist;
-                if (MP > 0) m_ProfitTargetPrice = entry + targetDist;
+                if (currentPosition > 0) m_ProfitTargetPrice = entry + targetDist;
                 else m_ProfitTargetPrice = entry - targetDist;
+                
+                // Break Even Trigger Calculation
+                double brickSize = (Level1 > 0) ? (Level1 * tickSize) : m_AutoDetectedBrickSize;
+                if (brickSize <= 0) brickSize = 20 * tickSize; // Fallback
+                if (currentPosition > 0) m_BreakEvenTriggerPrice = entry + brickSize;
+                else m_BreakEvenTriggerPrice = entry - brickSize;
+                m_BreakEvenArmed = false;
+
                 m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0; if (m_PriceLine != null) m_PriceLine.Delete();
                 UpdateTargetLine(); UpdateStopLine(); UpdateDollarHUD(entry, m_ProfitTargetPrice, m_ProtectiveStopPrice);
             }
 
+            // MONITOR BREAK EVEN
+            if (currentPosition != 0 && !m_BreakEvenArmed)
+            {
+                if ((currentPosition > 0 && Bars.High[0] >= m_BreakEvenTriggerPrice) || 
+                    (currentPosition < 0 && Bars.Low[0] <= m_BreakEvenTriggerPrice))
+                {
+                    m_ProtectiveStopPrice = StrategyInfo.AvgEntryPrice;
+                    m_BreakEvenArmed = true;
+                    UpdateStopLine();
+                }
+            }
+
             // ORDER EXECUTION LOOP
-            if (MP > 0) {
+            if (currentPosition > 0) {
                 if (m_ProtectiveStopPrice > 0) m_BuyExitStop.Send(m_ProtectiveStopPrice);
                 if (m_ProfitTargetPrice > 0) m_BuyExitLimit.Send(m_ProfitTargetPrice);
-            } else if (MP < 0) {
+            } else if (currentPosition < 0) {
                 if (m_ProtectiveStopPrice > 0) m_SellExitStop.Send(m_ProtectiveStopPrice);
                 if (m_ProfitTargetPrice > 0) m_SellExitLimit.Send(m_ProfitTargetPrice);
             }
 
-            if (MP != 0) { UpdateTargetLine(); UpdateStopLine(); UpdateDollarHUD(StrategyInfo.AvgEntryPrice, m_ProfitTargetPrice, m_ProtectiveStopPrice); }
-            if (MP == 0 && m_LastMarketPosition != 0) { m_ProtectiveStopPrice = m_ProfitTargetPrice = 0; ClearTradingDrawings(); }
-            m_LastMarketPosition = MP;
+            if (currentPosition != 0) { UpdateTargetLine(); UpdateStopLine(); UpdateDollarHUD(StrategyInfo.AvgEntryPrice, m_ProfitTargetPrice, m_ProtectiveStopPrice); }
+            if (currentPosition == 0 && m_LastMarketPosition != 0) { 
+                m_ProtectiveStopPrice = m_ProfitTargetPrice = m_BreakEvenTriggerPrice = 0; 
+                m_BreakEvenArmed = false;
+                ClearTradingDrawings(); 
+            }
+            m_LastMarketPosition = currentPosition;
 
             // HOTKEY HANDLING
             if (m_OrderCreatedInMouseEvent && m_ClickPrice > 0) { ProcessManualOrderRequest(m_ClickPrice); m_OrderCreatedInMouseEvent = false; m_ClickPrice = 0; }
@@ -168,8 +189,15 @@ namespace PowerLanguage.Strategy
                 m_CancelRequested = false;
             }
 
+            // FLATTEN/CANCEL LOGIC
+            if (m_FlattenRequested) {
+                if (currentPosition > 0) m_CloseLongNextBar.Send();
+                else if (currentPosition < 0) m_CloseShortNextBar.Send();
+                m_FlattenRequested = false;
+            }
+
             // ENTRY ORDER EMISSION
-            if (MP == 0) {
+            if (currentPosition == 0) {
                 if (m_BuyOrderActive && m_StopPrice > 0) m_BuyStop.Send(m_StopPrice, OrderQty);
                 if (m_SellOrderActive && m_StopPrice > 0) m_SellStop.Send(m_StopPrice, OrderQty);
             }
@@ -194,7 +222,7 @@ namespace PowerLanguage.Strategy
             if (m_TargetLine != null) m_TargetLine.Delete();
             if (m_ProfitTargetPrice <= 0) return;
             m_TargetLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_ProfitTargetPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_ProfitTargetPrice));
-            m_TargetLine.Color = Color.Gold; m_TargetLine.Style = ETLStyle.ToolDashed; m_TargetLine.Size = 2; m_TargetLine.ExtRight = true;
+            m_TargetLine.Color = m_DraggingTarget ? Color.White : Color.Gold; m_TargetLine.Style = ETLStyle.ToolDashed; m_TargetLine.Size = 2; m_TargetLine.ExtRight = true;
         }
 
         private void UpdateStopLine()
@@ -202,7 +230,7 @@ namespace PowerLanguage.Strategy
             if (m_StopLine != null) m_StopLine.Delete();
             if (m_ProtectiveStopPrice <= 0) return;
             m_StopLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_ProtectiveStopPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_ProtectiveStopPrice));
-            m_StopLine.Color = Color.Red; m_StopLine.Style = ETLStyle.ToolDashed; m_StopLine.Size = 2; m_StopLine.ExtRight = true;
+            m_StopLine.Color = m_DraggingStop ? Color.White : Color.Red; m_StopLine.Style = ETLStyle.ToolDashed; m_StopLine.Size = 2; m_StopLine.ExtRight = true;
         }
 
         protected override void OnMouseEvent(MouseClickArgs arg)
@@ -216,12 +244,13 @@ namespace PowerLanguage.Strategy
             // DRAG LOGIC
             if (m_DraggingTarget) { m_ProfitTargetPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingTarget = false; return; }
             if (m_DraggingStop) { m_ProtectiveStopPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingStop = false; return; }
-            if (m_ProfitTargetPrice > 0 && Math.Abs(arg.point.Price - m_ProfitTargetPrice) <= (5 * tickSize)) { m_DraggingTarget = true; return; }
-            if (m_ProtectiveStopPrice > 0 && Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (5 * tickSize)) { m_DraggingStop = true; return; }
+            if (m_ProfitTargetPrice > 0 && Math.Abs(arg.point.Price - m_ProfitTargetPrice) <= (ProximityTicks * tickSize)) { m_DraggingTarget = true; return; }
+            if (m_ProtectiveStopPrice > 0 && Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (ProximityTicks * tickSize)) { m_DraggingStop = true; return; }
             
             // ORDER LOGIC
             if (shift) {
-                m_CancelRequested = true;
+                if (StrategyInfo.MarketPosition != 0) m_FlattenRequested = true;
+                m_CancelRequested = true; // Still cancel pending even if flattening
             } else if (ctrl) {
                 m_ClickPrice = arg.point.Price; m_OrderCreatedInMouseEvent = true; 
             }
