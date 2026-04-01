@@ -136,9 +136,7 @@ namespace PowerLanguage.Strategy
             if (currentPosition != 0 && m_LastMarketPosition == 0)
             {
                 double entry = StrategyInfo.AvgEntryPrice > 0 ? StrategyInfo.AvgEntryPrice : Bars.Close[0];
-                double activeShift = (Level1 > 0) ? (Level1 * tickSize) : m_AutoDetectedBrickSize;
-                if (activeShift <= 0) activeShift = 20 * tickSize;
-
+                
                 if (currentPosition > 0) m_ProtectiveStopPrice = Math.Min(Bars.Low[0], Bars.Close[0]) - (StopTailOffsetTicks * tickSize);
                 else m_ProtectiveStopPrice = Math.Max(Bars.High[0], Bars.Close[0]) + (StopTailOffsetTicks * tickSize);
 
@@ -181,6 +179,7 @@ namespace PowerLanguage.Strategy
             string text = string.Format("PROFIT: +{0:C2}\nRISK: -{1:C2}", profitUSD, riskUSD);
             m_LabelHUD = DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0] + (10 * tickSize)), text);
             m_LabelHUD.Color = Color.White; m_LabelHUD.Size = 12;
+            m_LabelHUD.Location = new ChartPoint(Bars.Time[0], Bars.High[0] + (10 * tickSize));
         }
 
         private void UpdateTargetLine()
@@ -235,8 +234,21 @@ namespace PowerLanguage.Strategy
             if (tickSize == 0) tickSize = 0.25;
             double activeShift = (Level1 > 0) ? (Level1 * tickSize) : m_AutoDetectedBrickSize;
             if (activeShift <= 0) activeShift = 20 * tickSize;
-            if (clickPrice > m_LastClosePrice) { m_StopPrice = m_LastClosePrice + activeShift; m_BuyOrderActive = true; m_SellOrderActive = false; }
-            else { m_StopPrice = m_LastOpenPrice - activeShift; m_SellOrderActive = true; m_BuyOrderActive = false; }
+
+            // SYNC MATH WITH INDICATOR:
+            if (m_LastBarWasUp) {
+                // Continuation (UP) or Reversal (DOWN) - Match the Green/Yellow lines
+                if (clickPrice > m_LastClosePrice) m_StopPrice = m_LastClosePrice + activeShift; 
+                else m_StopPrice = m_LastOpenPrice - activeShift;
+            } else {
+                // Continuation (DOWN) or Reversal (UP)
+                if (clickPrice < m_LastClosePrice) m_StopPrice = m_LastClosePrice - activeShift;
+                else m_StopPrice = m_LastOpenPrice + activeShift;
+            }
+
+            m_BuyOrderActive = (clickPrice > m_LastClosePrice);
+            m_SellOrderActive = !m_BuyOrderActive;
+            
             UpdateVisualMarker();
         }
 
