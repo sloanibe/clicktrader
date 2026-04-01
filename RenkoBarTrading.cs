@@ -133,6 +133,19 @@ namespace PowerLanguage.Strategy
                 UpdateStopLine(); UpdateDollarHUD(entry, m_ProtectiveStopPrice);
             }
 
+            // TREND TRAILING STOP
+            if (Bars.Status == EBarState.Close && currentPosition != 0 && m_AutoDetectedBrickSize > 0)
+            {
+                double reversalDist = 2 * m_AutoDetectedBrickSize;
+                if (currentPosition > 0) {
+                    double trailStop = Bars.Close[0] - reversalDist;
+                    if (trailStop > m_ProtectiveStopPrice) { m_ProtectiveStopPrice = trailStop; UpdateStopLine(); }
+                } else if (currentPosition < 0) {
+                    double trailStop = Bars.Close[0] + reversalDist;
+                    if (m_ProtectiveStopPrice == 0 || trailStop < m_ProtectiveStopPrice) { m_ProtectiveStopPrice = trailStop; UpdateStopLine(); }
+                }
+            }
+
             // MONITOR BREAK EVEN
             if (currentPosition != 0 && !m_BreakEvenArmed)
             {
@@ -190,7 +203,7 @@ namespace PowerLanguage.Strategy
             if (m_StopLine != null) m_StopLine.Delete();
             if (m_ProtectiveStopPrice <= 0) return;
             m_StopLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_ProtectiveStopPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_ProtectiveStopPrice));
-            m_StopLine.Color = m_DraggingStop ? Color.White : Color.Red; m_StopLine.Style = ETLStyle.ToolDashed; m_StopLine.Size = 2; m_StopLine.ExtRight = true;
+            m_StopLine.Color = Color.Red; m_StopLine.Style = ETLStyle.ToolDashed; m_StopLine.Size = 2; m_StopLine.ExtRight = true;
         }
 
         protected override void OnMouseEvent(MouseClickArgs arg)
@@ -198,15 +211,9 @@ namespace PowerLanguage.Strategy
             if (arg.buttons != MouseButtons.Left) return;
             bool ctrl = (arg.keys & Keys.Control) == Keys.Control;
             bool shift = (arg.keys & Keys.Shift) == Keys.Shift;
-            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
-            if (tickSize == 0) tickSize = 0.25;
-            if (m_DraggingStop) { m_ProtectiveStopPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingStop = false; return; }
-            if (m_ProtectiveStopPrice > 0 && Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (ProximityTicks * tickSize)) { m_DraggingStop = true; return; }
             if (shift) { if (StrategyInfo.MarketPosition != 0) m_FlattenRequested = true; m_CancelRequested = true; } 
             else if (ctrl) { m_ClickPrice = arg.point.Price; m_OrderCreatedInMouseEvent = true; }
         }
-
-        private bool m_DraggingStop = false;
 
         private void ProcessManualOrderRequest(double clickPrice)
         {
