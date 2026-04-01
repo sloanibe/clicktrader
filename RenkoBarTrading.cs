@@ -41,7 +41,6 @@ namespace PowerLanguage.Strategy
         private double m_AutoDetectedBrickSize = 0;
         
         private double m_StopPrice = 0;
-        private double m_LimitPrice = 0;
         private double m_ProtectiveStopPrice = 0;
         private double m_ProfitTargetPrice = 0;
         
@@ -56,13 +55,13 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_PriceLine;
         private ITrendLineObject m_TargetLine;
         private ITrendLineObject m_StopLine;
-        private ITextObject m_LabelHUD; // Consolidated HUD for Dollar Values
+        private ITextObject m_LabelHUD;
 
         public RenkoBarTrading(object ctx) : base(ctx)
         {
             OrderQty = 1;
-            Level1 = 0; // Default to Auto-Detect
-            ProfitTargetTicks = 0; // 0 = Mirror Stop Distance (1:1 Risk/Reward)
+            Level1 = 0;
+            ProfitTargetTicks = 0;
             LimitOffsetTicks = 1;
             StopTailOffsetTicks = 2;
             ShowPriceLine = true;
@@ -75,11 +74,9 @@ namespace PowerLanguage.Strategy
             m_BuyStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ManualBuy", EOrderAction.Buy));
             m_SellStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ManualSell", EOrderAction.SellShort));
             
-            // Protective Stop MUST remain a STOP order
             m_BuyExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectLong", EOrderAction.Sell, OrderExit.FromAll));
             m_SellExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectShort", EOrderAction.BuyToCover, OrderExit.FromAll));
             
-            // Profit Target MUST remain a LIMIT order
             m_BuyExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitLong", EOrderAction.Sell, OrderExit.FromAll));
             m_SellExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitShort", EOrderAction.BuyToCover, OrderExit.FromAll));
             
@@ -90,7 +87,7 @@ namespace PowerLanguage.Strategy
         protected override void StartCalc()
         {
             m_BuyOrderActive = m_SellOrderActive = false;
-            m_StopPrice = m_LimitPrice = m_ProtectiveStopPrice = m_ProfitTargetPrice = 0;
+            m_StopPrice = m_ProtectiveStopPrice = m_ProfitTargetPrice = 0;
             m_LastMarketPosition = 0;
             m_OrderCreatedInMouseEvent = m_FlattenRequested = m_CancelRequested = false;
             m_LastBarIndex = -1;
@@ -110,7 +107,6 @@ namespace PowerLanguage.Strategy
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize == 0) tickSize = 0.25;
 
-            // Sync with bar closes (CRITICAL: Auto-Detect logic lives here)
             if (Bars.Status == EBarState.Close)
             {
                 m_LastClosePrice = Bars.Close[0];
@@ -119,8 +115,10 @@ namespace PowerLanguage.Strategy
                 m_LastBarIndex = Bars.CurrentBar;
                 m_AutoDetectedBrickSize = Math.Abs(m_LastClosePrice - m_LastOpenPrice);
 
+                // Auto-expire pending entry orders on bar close
                 if (currentPosition == 0 && (m_BuyOrderActive || m_SellOrderActive)) {
-                    m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0;
+                    m_BuyOrderActive = m_SellOrderActive = false; 
+                    m_StopPrice = 0;
                     if (m_PriceLine != null) m_PriceLine.Delete();
                 }
             }
@@ -150,10 +148,13 @@ namespace PowerLanguage.Strategy
                 else m_ProfitTargetPrice = entry - targetDist;
 
                 m_BuyOrderActive = m_SellOrderActive = false;
+                m_StopPrice = 0; // Clear the entry line price
+                if (m_PriceLine != null) m_PriceLine.Delete();
+
                 UpdateTargetLine(); UpdateStopLine(); UpdateDollarHUD(entry, m_ProfitTargetPrice, m_ProtectiveStopPrice);
             }
 
-            // Order Execution
+            // Continuous execution loop
             if (currentPosition > 0) {
                 if (m_ProtectiveStopPrice > 0) m_BuyExitStop.Send(m_ProtectiveStopPrice);
                 if (m_ProfitTargetPrice > 0) m_BuyExitLimit.Send(m_ProfitTargetPrice);
@@ -165,12 +166,20 @@ namespace PowerLanguage.Strategy
             if (currentPosition == 0 && m_LastMarketPosition != 0) { m_ProtectiveStopPrice = m_ProfitTargetPrice = 0; ClearTradingDrawings(); }
             m_LastMarketPosition = currentPosition;
 
-            if (m_OrderCreatedInMouseEvent && m_ClickPrice > 0) { ProcessManualOrderRequest(m_ClickPrice); m_OrderCreatedInMouseEvent = false; m_ClickPrice = 0; }
+            // Critical hotkey order processing
+            if (m_OrderCreatedInMouseEvent && m_ClickPrice > 0) { 
+                ProcessManualOrderRequest(m_ClickPrice); 
+                m_OrderCreatedInMouseEvent = m_CancelRequested = false; // RESET STATE
+                m_ClickPrice = 0; 
+            }
+
+            // Entry order emission
             if (!m_CancelRequested && currentPosition == 0) {
                 if (m_BuyOrderActive && m_StopPrice > 0) m_BuyStop.Send(m_StopPrice, OrderQty);
-                else if (m_SellOrderActive && m_StopPrice > 0) m_StopPrice = m_StopPrice; // Placeholder for logic
                 if (m_SellOrderActive && m_StopPrice > 0) m_SellStop.Send(m_StopPrice, OrderQty);
             }
+            
+            if (m_CancelRequested) { m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0; if (m_PriceLine != null) m_PriceLine.Delete(); m_CancelRequested = false; }
         }
 
         private void UpdateDollarHUD(double entry, double target, double stop)
@@ -229,38 +238,27 @@ namespace PowerLanguage.Strategy
             if (m_ProfitTargetPrice > 0 && Math.Abs(arg.point.Price - m_ProfitTargetPrice) <= (ProximityTicks * tickSize)) { m_DraggingTarget = true; UpdateTargetLine(); return; }
             if (m_ProtectiveStopPrice > 0 && Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (ProximityTicks * tickSize)) { m_DraggingStop = true; UpdateStopLine(); return; }
             
-            if (ctrl) { m_ClickPrice = arg.point.Price; m_OrderCreatedInMouseEvent = true; }
-            else if (shift) { m_CancelRequested = true; if (StrategyInfo.MarketPosition != 0) m_FlattenRequested = true; }
+            if (ctrl) {
+                double cp = arg.point.Price;
+                if ((m_BuyOrderActive || m_SellOrderActive) && Math.Abs(cp - m_StopPrice) <= (ProximityTicks * tickSize)) {
+                    m_CancelRequested = true;
+                } else {
+                    m_ClickPrice = cp; m_OrderCreatedInMouseEvent = true; 
+                }
+            } else if (shift) {
+                m_CancelRequested = true;
+                if (StrategyInfo.MarketPosition != 0) m_FlattenRequested = true;
+            }
         }
 
         private void ProcessManualOrderRequest(double clickPrice)
         {
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize == 0) tickSize = 0.25;
-
-            // RESOLUTION LOGIC: Prioritize manual input, otherwise use auto-detected brick size
-            double activeShift = 0;
-            if (Level1 > 0) {
-                activeShift = Level1 * tickSize;
-            } else {
-                // IMPORTANT: Ensure m_AutoDetectedBrickSize is up-to-date
-                activeShift = m_AutoDetectedBrickSize;
-            }
-            
-            if (activeShift <= 0) activeShift = 20 * tickSize; // Safety fallback
-
-            // EXACT SYNC WITH SMART INDICATOR MATH
-            if (m_LastBarWasUp) {
-                if (clickPrice > m_LastClosePrice) m_StopPrice = m_LastClosePrice + activeShift; 
-                else m_StopPrice = m_LastOpenPrice - activeShift;
-            } else {
-                if (clickPrice < m_LastClosePrice) m_StopPrice = m_LastClosePrice - activeShift;
-                else m_StopPrice = m_LastOpenPrice + activeShift;
-            }
-
-            m_BuyOrderActive = (clickPrice > m_LastClosePrice);
-            m_SellOrderActive = !m_BuyOrderActive;
-            
+            double activeShift = (Level1 > 0) ? (Level1 * tickSize) : m_AutoDetectedBrickSize;
+            if (activeShift <= 0) activeShift = 20 * tickSize;
+            if (clickPrice > m_LastClosePrice) { m_StopPrice = m_LastClosePrice + activeShift; m_BuyOrderActive = true; m_SellOrderActive = false; }
+            else { m_StopPrice = m_LastOpenPrice - activeShift; m_SellOrderActive = true; m_BuyOrderActive = false; }
             UpdateVisualMarker();
         }
 
