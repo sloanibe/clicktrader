@@ -102,7 +102,8 @@ namespace PowerLanguage.Strategy
         protected override void CalcBar()
         {
             int MP = StrategyInfo.MarketPosition;
-            double tickSize = Bars.Info.TickSize;
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize == 0) tickSize = 0.25; // Safe Fallback for MNQ/MES
 
             // HISTORICAL/CLOSE LOGIC: Ensure these are always up-to-date even before real-time
             if (Bars.Status == EBarState.Close)
@@ -168,7 +169,8 @@ namespace PowerLanguage.Strategy
             if (!ShowHUD) return;
             if (m_LabelHUD != null) m_LabelHUD.Delete();
             double tickVal = (Bars.Info.PriceScale != 0) ? ((double)Bars.Info.MinMove / Bars.Info.PriceScale * Bars.Info.BigPointValue) : 0;
-            double tickSize = Bars.Info.TickSize;
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize == 0) tickSize = 0.25; // Safe Fallback for MNQ/MES
             double riskUSD = (Math.Abs(stop - entry) / tickSize) * tickVal * OrderQty;
             string text = string.Format("${0:F2}", riskUSD);
             m_LabelHUD = DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0]), text);
@@ -196,7 +198,8 @@ namespace PowerLanguage.Strategy
         {
             if (arg.buttons != MouseButtons.Left) return;
             bool ctrl = (arg.keys & Keys.Control) == Keys.Control;
-            double tickSize = Bars.Info.TickSize;
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize == 0) tickSize = 0.25; // Safe Fallback for MNQ/MES
             if (m_DraggingTarget) { m_ProfitTargetPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingTarget = false; return; }
             if (m_DraggingStop) { m_ProtectiveStopPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingStop = false; return; }
             if (m_ProfitTargetPrice > 0 && Math.Abs(arg.point.Price - m_ProfitTargetPrice) <= (5 * tickSize)) { m_DraggingTarget = true; return; }
@@ -209,7 +212,8 @@ namespace PowerLanguage.Strategy
 
         private void ProcessManualOrderRequest(double clickPrice)
         {
-            double tickSize = Bars.Info.TickSize;
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize == 0) tickSize = 0.25; // Safe Fallback for MNQ/MES
             
             // ENSURE WE ALWAYS HAVE A VALID BRICK SIZE
             double activeShift = (Level1 > 0) ? (Level1 * tickSize) : m_AutoDetectedBrickSize;
