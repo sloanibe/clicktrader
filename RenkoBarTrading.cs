@@ -169,7 +169,8 @@ namespace PowerLanguage.Strategy
             
             // ANCHOR HUD TO BAR 0 (Real-time bar)
             m_LabelHUD = DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0] + (10 * tickSize)), text);
-            m_LabelHUD.Color = Color.White; m_LabelHUD.Size = 14; m_LabelHUD.SetLocation(new ChartPoint(Bars.Time[0], Bars.High[0] + (20 * tickSize)));
+            m_LabelHUD.Color = Color.White; m_LabelHUD.Size = 14; 
+            m_LabelHUD.Location = new ChartPoint(Bars.Time[0], Bars.High[0] + (20 * tickSize));
         }
 
         private void UpdateTargetLine()
