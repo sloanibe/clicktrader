@@ -19,6 +19,7 @@ namespace PowerLanguage.Strategy
         [Input] public bool ShowPriceLine { get; set; }
         [Input] public int ProximityTicks { get; set; }
         [Input] public bool ShowHUD { get; set; }
+        [Input] public bool UseBreakEven { get; set; }
 
         private IOrderPriced m_BuyStop;
         private IOrderPriced m_SellStop;
@@ -147,7 +148,7 @@ namespace PowerLanguage.Strategy
             }
 
             // MONITOR BREAK EVEN
-            if (currentPosition != 0 && !m_BreakEvenArmed)
+            if (UseBreakEven && currentPosition != 0 && !m_BreakEvenArmed)
             {
                 if ((currentPosition > 0 && Bars.High[0] >= m_BreakEvenTriggerPrice) || 
                     (currentPosition < 0 && Bars.Low[0] <= m_BreakEvenTriggerPrice))
