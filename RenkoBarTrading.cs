@@ -410,7 +410,6 @@ namespace PowerLanguage.Strategy
             m_TargetLabel = DrwText.Create(new ChartPoint(Bars.Time[0].AddMinutes(1), m_ProfitTargetPrice), labelText);
             m_TargetLabel.Color = Color.Gold;
             m_TargetLabel.Size = 10;
-            m_TargetLabel.BgColor = Color.FromArgb(40, 40, 40);
         }
 
         private void UpdateStopLine()
@@ -433,7 +432,6 @@ namespace PowerLanguage.Strategy
             m_StopLabel = DrwText.Create(new ChartPoint(Bars.Time[0].AddMinutes(1), m_ProtectiveStopPrice), labelText);
             m_StopLabel.Color = Color.Red;
             m_StopLabel.Size = 10;
-            m_StopLabel.BgColor = Color.FromArgb(40, 40, 40);
         }
 
         protected override void Destroy() { ClearTradingDrawings(); }
