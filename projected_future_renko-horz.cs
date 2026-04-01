@@ -181,7 +181,7 @@
                     }
                 }
 
-                Output.WriteLine("[RenkoProjection] Auto-Sync Active. Projected Distance: {0} points", activePointShift);
+
             }
 
             private void ClearLines()
