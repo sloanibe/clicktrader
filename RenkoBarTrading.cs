@@ -15,7 +15,7 @@ namespace PowerLanguage.Strategy
     {
         [Input] public int OrderQty { get; set; }
         [Input] public int Level1 { get; set; } // 0 = Auto-detect from chart
-        [Input] public int ProfitTargetTicks { get; set; } // 0 = Auto-detect (Mirror Stop Distance)
+        [Input] public int ProfitTargetTicks { get; set; } // 0 = Mirror Stop Distance (1:1 Risk/Reward)
         [Input] public int LimitOffsetTicks { get; set; }
         [Input] public int StopTailOffsetTicks { get; set; }
         [Input] public bool ShowPriceLine { get; set; }
@@ -55,6 +55,8 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_PriceLine;
         private ITrendLineObject m_TargetLine;
         private ITrendLineObject m_StopLine;
+        private ITextObject m_TargetLabel;
+        private ITextObject m_StopLabel;
         private ITextObject m_ScoreLabel;
 
         public RenkoBarTrading(object ctx) : base(ctx)
@@ -97,9 +99,16 @@ namespace PowerLanguage.Strategy
             m_OrderCreatedInMouseEvent = false;
             m_CancelRequested = false;
             m_LastBarIndex = -1;
+            ClearTradingDrawings();
+        }
+
+        private void ClearTradingDrawings()
+        {
             if (m_ScoreLabel != null) m_ScoreLabel.Delete();
             if (m_TargetLine != null) m_TargetLine.Delete();
             if (m_StopLine != null) m_StopLine.Delete();
+            if (m_TargetLabel != null) m_TargetLabel.Delete();
+            if (m_StopLabel != null) m_StopLabel.Delete();
         }
 
         protected override void CalcBar()
@@ -207,10 +216,7 @@ namespace PowerLanguage.Strategy
                 m_ProtectiveStopPrice = 0;
                 m_ProfitTargetPrice = 0;
                 m_BuyOrderActive = m_SellOrderActive = false;
-                if (m_TargetLine != null) m_TargetLine.Delete();
-                if (m_PriceLine != null) m_PriceLine.Delete();
-                if (m_StopLine != null) m_StopLine.Delete();
-                
+                ClearTradingDrawings();
                 Output.WriteLine("📊 SYSTEM: Trade Closed. All orders cleared.");
             }
 
@@ -246,6 +252,15 @@ namespace PowerLanguage.Strategy
             if (ShowHUD) UpdateTickHUD();
         }
 
+        private double CalculateDollarValue(double priceDistance)
+        {
+            double tickValue = (Bars.Info.PriceScale != 0) ? ((double)Bars.Info.MinMove / Bars.Info.PriceScale * Bars.Info.BigPointValue) : 0;
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize == 0) return 0;
+            double numTicks = priceDistance / tickSize;
+            return numTicks * tickValue * OrderQty;
+        }
+
         private void UpdateTickHUD()
         {
             double totalProfitCurrency = StrategyInfo.ClosedEquity; 
@@ -265,7 +280,6 @@ namespace PowerLanguage.Strategy
 
         private bool m_DraggingTarget = false;
         private bool m_DraggingStop = false;
-        private double m_MousePrice = 0;
 
         protected override void OnMouseEvent(MouseClickArgs arg)
         {
@@ -379,34 +393,49 @@ namespace PowerLanguage.Strategy
         private void UpdateTargetLine()
         {
             if (m_TargetLine != null) m_TargetLine.Delete();
+            if (m_TargetLabel != null) m_TargetLabel.Delete();
             if (m_ProfitTargetPrice <= 0) return;
 
             m_TargetLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_ProfitTargetPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_ProfitTargetPrice));
-            
-            // White while dragging, Gold when set
             m_TargetLine.Color = m_DraggingTarget ? Color.White : Color.Gold;
-            
             m_TargetLine.Style = ETLStyle.ToolDashed;
-            m_TargetLine.Size = 2; // Slightly thicker for easier clicking
+            m_TargetLine.Size = 2;
             m_TargetLine.ExtRight = true;
             m_TargetLine.ExtLeft = true;
+
+            // DRAW DOLLAR LABEL
+            double entryPrice = StrategyInfo.AvgEntryPrice > 0 ? StrategyInfo.AvgEntryPrice : Bars.Close[0];
+            double dollarVal = CalculateDollarValue(Math.Abs(m_ProfitTargetPrice - entryPrice));
+            string labelText = string.Format("PROFIT: +{0:C2}", dollarVal);
+            m_TargetLabel = DrwText.Create(new ChartPoint(Bars.Time[0].AddMinutes(1), m_ProfitTargetPrice), labelText);
+            m_TargetLabel.Color = Color.Gold;
+            m_TargetLabel.Size = 10;
+            m_TargetLabel.BgColor = Color.FromArgb(40, 40, 40);
         }
 
         private void UpdateStopLine()
         {
             if (m_StopLine != null) m_StopLine.Delete();
+            if (m_StopLabel != null) m_StopLabel.Delete();
             if (m_ProtectiveStopPrice <= 0) return;
+
             m_StopLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_ProtectiveStopPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_ProtectiveStopPrice));
             m_StopLine.Color = m_DraggingStop ? Color.White : Color.Red;
             m_StopLine.Style = ETLStyle.ToolDashed;
             m_StopLine.Size = 2;
             m_StopLine.ExtRight = true;
             m_StopLine.ExtLeft = true;
+
+            // DRAW DOLLAR LABEL
+            double entryPrice = StrategyInfo.AvgEntryPrice > 0 ? StrategyInfo.AvgEntryPrice : Bars.Close[0];
+            double dollarVal = CalculateDollarValue(Math.Abs(m_ProtectiveStopPrice - entryPrice));
+            string labelText = string.Format("RISK: -{0:C2}", dollarVal);
+            m_StopLabel = DrwText.Create(new ChartPoint(Bars.Time[0].AddMinutes(1), m_ProtectiveStopPrice), labelText);
+            m_StopLabel.Color = Color.Red;
+            m_StopLabel.Size = 10;
+            m_StopLabel.BgColor = Color.FromArgb(40, 40, 40);
         }
 
-        protected override void Destroy() { 
-            if (m_TargetLine != null) m_TargetLine.Delete(); 
-            if (m_StopLine != null) m_StopLine.Delete();
-        }
+        protected override void Destroy() { ClearTradingDrawings(); }
     }
 }
