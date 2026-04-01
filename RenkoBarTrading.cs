@@ -15,7 +15,7 @@ namespace PowerLanguage.Strategy
     {
         [Input] public int OrderQty { get; set; }
         [Input] public int Level1 { get; set; } // 0 = Auto-detect from chart
-        [Input] public int ProfitTargetTicks { get; set; } // 0 = Auto-detect 1 Brick
+        [Input] public int ProfitTargetTicks { get; set; } // 0 = Auto-detect (Mirror Stop Distance)
         [Input] public int LimitOffsetTicks { get; set; }
         [Input] public int StopTailOffsetTicks { get; set; }
         [Input] public bool ShowPriceLine { get; set; }
@@ -61,7 +61,7 @@ namespace PowerLanguage.Strategy
         {
             OrderQty = 1;
             Level1 = 0; // Default to Auto-Detect
-            ProfitTargetTicks = 0; // 0 = Auto-detect 1 Brick
+            ProfitTargetTicks = 0; // 0 = Mirror Stop Distance (1:1 Risk/Reward)
             LimitOffsetTicks = 1;
             StopTailOffsetTicks = 2;
             ShowPriceLine = true;
@@ -154,20 +154,31 @@ namespace PowerLanguage.Strategy
                 double activePointShift = (Level1 > 0) ? (Level1 * tickSize) : m_AutoDetectedBrickSize;
                 if (activePointShift <= 0) activePointShift = 20 * tickSize; // Safety fallback for MNQ
 
-                double targetDistance = (ProfitTargetTicks > 0) ? (ProfitTargetTicks * tickSize) : activePointShift;
-
+                // 1. Calculate the Protective Stop based on current tail + offset
                 if (currentPosition > 0)
                 {
                     double lowestTail = Math.Min(Bars.Low[0], (Bars.StatusLine.Ask > 0 ? Bars.StatusLine.Ask : Bars.Close[0]));
                     m_ProtectiveStopPrice = lowestTail - (StopTailOffsetTicks * tickSize);
-                    m_ProfitTargetPrice = entryPrice + targetDistance;
                 }
                 else if (currentPosition < 0)
                 {
                     double highestTail = Math.Max(Bars.High[0], (Bars.StatusLine.Bid > 0 ? Bars.StatusLine.Bid : Bars.Close[0]));
                     m_ProtectiveStopPrice = highestTail + (StopTailOffsetTicks * tickSize);
+                }
+
+                // 2. Mirror the distance for the Profit Target (1:1 Risk/Reward)
+                double stopDistance = Math.Abs(entryPrice - m_ProtectiveStopPrice);
+                double targetDistance = (ProfitTargetTicks > 0) ? (ProfitTargetTicks * tickSize) : stopDistance;
+
+                if (currentPosition > 0)
+                {
+                    m_ProfitTargetPrice = entryPrice + targetDistance;
+                }
+                else if (currentPosition < 0)
+                {
                     m_ProfitTargetPrice = entryPrice - targetDistance;
                 }
+
                 m_BuyOrderActive = m_SellOrderActive = false;
                 m_StopPrice = 0;
                 m_LimitPrice = 0;
@@ -176,7 +187,7 @@ namespace PowerLanguage.Strategy
                 UpdateTargetLine();
                 UpdateStopLine();
                 
-                Output.WriteLine("📊 SYSTEM: Trade Active. Entry: {0} | Target: {1} | Brick Shift: {2}", entryPrice, m_ProfitTargetPrice, activePointShift);
+                Output.WriteLine("📊 SYSTEM: Trade Active. Entry: {0} | Stop Dist: {1:F2} | Target Dist: {2:F2}", entryPrice, stopDistance, targetDistance);
             }
 
             // Maintain Exit Orders while in position
