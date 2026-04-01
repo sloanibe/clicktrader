@@ -73,13 +73,10 @@ namespace PowerLanguage.Strategy
         {
             m_BuyStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ManualBuy", EOrderAction.Buy));
             m_SellStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ManualSell", EOrderAction.SellShort));
-            
             m_BuyExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectLong", EOrderAction.Sell, OrderExit.FromAll));
             m_SellExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectShort", EOrderAction.BuyToCover, OrderExit.FromAll));
-            
             m_BuyExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitLong", EOrderAction.Sell, OrderExit.FromAll));
             m_SellExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitShort", EOrderAction.BuyToCover, OrderExit.FromAll));
-            
             m_CloseLongNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergCloseLong", EOrderAction.Sell, OrderExit.FromAll));
             m_CloseShortNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergCloseShort", EOrderAction.BuyToCover, OrderExit.FromAll));
         }
@@ -107,19 +104,13 @@ namespace PowerLanguage.Strategy
             int MP = StrategyInfo.MarketPosition;
             double tickSize = Bars.Info.TickSize;
 
-            // HISTORICAL/BAR CLOSE LOGIC
             if (Bars.Status == EBarState.Close)
             {
-                m_LastClosePrice = Bars.Close[0]; 
-                m_LastOpenPrice = Bars.Open[0];
+                m_LastClosePrice = Bars.Close[0]; m_LastOpenPrice = Bars.Open[0];
                 m_LastBarWasUp = (m_LastClosePrice > m_LastOpenPrice);
                 m_LastBarIndex = Bars.CurrentBar;
                 m_AutoDetectedBrickSize = Math.Abs(m_LastClosePrice - m_LastOpenPrice);
-
-                if (MP == 0) { 
-                    m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0;
-                    if (m_PriceLine != null) m_PriceLine.Delete();
-                }
+                if (MP == 0) { m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0; if (m_PriceLine != null) m_PriceLine.Delete(); }
             }
 
             if (!Environment.IsRealTimeCalc) return;
@@ -128,29 +119,18 @@ namespace PowerLanguage.Strategy
             if (MP != 0 && m_LastMarketPosition == 0)
             {
                 double entry = StrategyInfo.AvgEntryPrice > 0 ? StrategyInfo.AvgEntryPrice : Bars.Close[0];
-                
-                if (MP > 0) {
-                    double lowestTail = Math.Min(Bars.Low[0], Bars.Close[0]);
-                    m_ProtectiveStopPrice = lowestTail - (StopTailOffsetTicks * tickSize);
-                } else {
-                    double highestTail = Math.Max(Bars.High[0], Bars.Close[0]);
-                    m_ProtectiveStopPrice = highestTail + (StopTailOffsetTicks * tickSize);
-                }
-
+                if (MP > 0) m_ProtectiveStopPrice = Math.Min(Bars.Low[0], Bars.Close[0]) - (StopTailOffsetTicks * tickSize);
+                else m_ProtectiveStopPrice = Math.Max(Bars.High[0], Bars.Close[0]) + (StopTailOffsetTicks * tickSize);
                 double stopDist = Math.Abs(entry - m_ProtectiveStopPrice);
                 double targetDist = (ProfitTargetTicks > 0) ? (ProfitTargetTicks * tickSize) : stopDist;
-
                 if (MP > 0) m_ProfitTargetPrice = entry + targetDist;
                 else m_ProfitTargetPrice = entry - targetDist;
-
-                m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0;
-                if (m_PriceLine != null) m_PriceLine.Delete();
-                
-                // Draw initial state
-                UpdateTargetLine(); UpdateStopLine(); UpdateDollarHUD(entry, m_ProfitTargetPrice, m_ProtectiveStopPrice);
+                m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0; if (m_PriceLine != null) m_PriceLine.Delete();
+                UpdateTargetLine(); UpdateStopLine();
+                UpdateDollarHUD(entry, m_ProfitTargetPrice, m_ProtectiveStopPrice);
             }
 
-            // ORDER SUBMISSION (ONLY SEND IF PRICE IS VALID)
+            // ORDER EXECUTION LOOP
             if (MP > 0) {
                 if (m_ProtectiveStopPrice > 0) m_BuyExitStop.Send(m_ProtectiveStopPrice);
                 if (m_ProfitTargetPrice > 0) m_BuyExitLimit.Send(m_ProfitTargetPrice);
@@ -159,22 +139,16 @@ namespace PowerLanguage.Strategy
                 if (m_ProfitTargetPrice > 0) m_SellExitLimit.Send(m_ProfitTargetPrice);
             }
 
-            // REFRESH VISUALS IF MP CHANGED OR LINES ARE ACTIVE
-            if (MP != 0) {
-                UpdateTargetLine(); UpdateStopLine();
-                UpdateDollarHUD(StrategyInfo.AvgEntryPrice, m_ProfitTargetPrice, m_ProtectiveStopPrice);
-            }
-
+            if (MP != MP_LAST_CHECK) { UpdateTargetLine(); UpdateStopLine(); UpdateDollarHUD(StrategyInfo.AvgEntryPrice, m_ProfitTargetPrice, m_ProtectiveStopPrice); MP_LAST_CHECK = MP; }
             if (MP == 0 && m_LastMarketPosition != 0) { m_ProtectiveStopPrice = m_ProfitTargetPrice = 0; ClearTradingDrawings(); }
             m_LastMarketPosition = MP;
-
-            // HOTKEY HANDLING
             if (m_OrderCreatedInMouseEvent && m_ClickPrice > 0) { ProcessManualOrderRequest(m_ClickPrice); m_OrderCreatedInMouseEvent = false; m_ClickPrice = 0; }
             if (!m_CancelRequested && MP == 0) {
                 if (m_BuyOrderActive && m_StopPrice > 0) m_BuyStop.Send(m_StopPrice, OrderQty);
                 if (m_SellOrderActive && m_StopPrice > 0) m_SellStop.Send(m_StopPrice, OrderQty);
             }
         }
+        private int MP_LAST_CHECK = 0;
 
         private void UpdateDollarHUD(double entry, double target, double stop)
         {
@@ -182,12 +156,13 @@ namespace PowerLanguage.Strategy
             if (m_LabelHUD != null) m_LabelHUD.Delete();
             double tickVal = (Bars.Info.PriceScale != 0) ? ((double)Bars.Info.MinMove / Bars.Info.PriceScale * Bars.Info.BigPointValue) : 0;
             double tickSize = Bars.Info.TickSize;
-            double profitUSD = (Math.Abs(target - entry) / tickSize) * tickVal * OrderQty;
             double riskUSD = (Math.Abs(stop - entry) / tickSize) * tickVal * OrderQty;
-            string text = string.Format("PROFIT: +{0:C2}\nRISK: -{1:C2}", profitUSD, riskUSD);
+            
+            // MINIMALIST HUD: Red ($5.00)
+            string text = string.Format("${0:F2}", riskUSD);
             m_LabelHUD = DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0]), text);
-            m_LabelHUD.Color = Color.White; m_LabelHUD.Size = 14; 
-            m_LabelHUD.Location = new ChartPoint(Bars.Time[0], Bars.High[0] + (25 * tickSize));
+            m_LabelHUD.Color = Color.Red; m_LabelHUD.Size = 10; // Small font
+            m_LabelHUD.Location = new ChartPoint(Bars.Time[0], Bars.High[0] + (10 * tickSize));
         }
 
         private void UpdateTargetLine()
