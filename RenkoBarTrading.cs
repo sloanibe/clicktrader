@@ -18,8 +18,8 @@ namespace PowerLanguage.Strategy
         [Input] public int ProfitTargetTicks { get; set; } // 0 = Mirror Stop Distance (1:1 Risk/Reward)
         [Input] public int LimitOffsetTicks { get; set; }
         [Input] public int StopTailOffsetTicks { get; set; }
-        [Input] public bool ShowPriceLine { get; set; }
-        [Input] public int ProximityTicks { get; set; }
+
+
         [Input] public bool ShowHUD { get; set; }
 
         private IOrderPriced m_BuyStop;
@@ -54,9 +54,7 @@ namespace PowerLanguage.Strategy
         private bool m_CancelRequested = false;
         private double m_ClickPrice = 0;
         
-        private ITrendLineObject m_PriceLine;
-        private ITrendLineObject m_TargetLine;
-        private ITrendLineObject m_StopLine;
+
         private ITextObject m_LabelHUD;
 
         public RenkoBarTrading(object ctx) : base(ctx)
@@ -66,8 +64,8 @@ namespace PowerLanguage.Strategy
             ProfitTargetTicks = 0;
             LimitOffsetTicks = 1;
             StopTailOffsetTicks = 2;
-            ShowPriceLine = true;
-            ProximityTicks = 5;
+
+
             ShowHUD = true;
         }
 
@@ -98,10 +96,7 @@ namespace PowerLanguage.Strategy
 
         private void ClearTradingDrawings()
         {
-            if (m_TargetLine != null) m_TargetLine.Delete();
-            if (m_StopLine != null) m_StopLine.Delete();
             if (m_LabelHUD != null) m_LabelHUD.Delete();
-            if (m_PriceLine != null) m_PriceLine.Delete();
         }
 
         protected override void CalcBar()
@@ -121,7 +116,7 @@ namespace PowerLanguage.Strategy
 
                 if (currentPosition == 0 && (m_BuyOrderActive || m_SellOrderActive)) { 
                     m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0;
-                    if (m_PriceLine != null) m_PriceLine.Delete();
+
                 }
             }
 
@@ -145,8 +140,8 @@ namespace PowerLanguage.Strategy
                 else m_BreakEvenTriggerPrice = entry - brickSize;
                 m_BreakEvenArmed = false;
 
-                m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0; if (m_PriceLine != null) m_PriceLine.Delete();
-                UpdateTargetLine(); UpdateStopLine(); UpdateDollarHUD(entry, m_ProfitTargetPrice, m_ProtectiveStopPrice);
+                m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0;
+                UpdateDollarHUD(entry, m_ProfitTargetPrice, m_ProtectiveStopPrice);
             }
 
             // MONITOR BREAK EVEN
@@ -157,7 +152,6 @@ namespace PowerLanguage.Strategy
                 {
                     m_ProtectiveStopPrice = StrategyInfo.AvgEntryPrice;
                     m_BreakEvenArmed = true;
-                    UpdateStopLine();
                 }
             }
 
@@ -170,7 +164,7 @@ namespace PowerLanguage.Strategy
                 if (m_ProfitTargetPrice > 0) m_SellExitLimit.Send(m_ProfitTargetPrice);
             }
 
-            if (currentPosition != 0) { UpdateTargetLine(); UpdateStopLine(); UpdateDollarHUD(StrategyInfo.AvgEntryPrice, m_ProfitTargetPrice, m_ProtectiveStopPrice); }
+            if (currentPosition != 0) { UpdateDollarHUD(StrategyInfo.AvgEntryPrice, m_ProfitTargetPrice, m_ProtectiveStopPrice); }
             if (currentPosition == 0 && m_LastMarketPosition != 0) { 
                 m_ProtectiveStopPrice = m_ProfitTargetPrice = m_BreakEvenTriggerPrice = 0; 
                 m_BreakEvenArmed = false;
@@ -185,7 +179,7 @@ namespace PowerLanguage.Strategy
             if (m_CancelRequested) {
                 m_BuyOrderActive = m_SellOrderActive = false;
                 m_StopPrice = 0;
-                if (m_PriceLine != null) m_PriceLine.Delete();
+
                 m_CancelRequested = false;
             }
 
@@ -217,21 +211,7 @@ namespace PowerLanguage.Strategy
             m_LabelHUD.Location = new ChartPoint(Bars.Time[0], Bars.High[0] + (10 * tickSize));
         }
 
-        private void UpdateTargetLine()
-        {
-            if (m_TargetLine != null) m_TargetLine.Delete();
-            if (m_ProfitTargetPrice <= 0) return;
-            m_TargetLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_ProfitTargetPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_ProfitTargetPrice));
-            m_TargetLine.Color = m_DraggingTarget ? Color.White : Color.Gold; m_TargetLine.Style = ETLStyle.ToolDashed; m_TargetLine.Size = 2; m_TargetLine.ExtRight = true;
-        }
 
-        private void UpdateStopLine()
-        {
-            if (m_StopLine != null) m_StopLine.Delete();
-            if (m_ProtectiveStopPrice <= 0) return;
-            m_StopLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_ProtectiveStopPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_ProtectiveStopPrice));
-            m_StopLine.Color = m_DraggingStop ? Color.White : Color.Red; m_StopLine.Style = ETLStyle.ToolDashed; m_StopLine.Size = 2; m_StopLine.ExtRight = true;
-        }
 
         protected override void OnMouseEvent(MouseClickArgs arg)
         {
@@ -241,11 +221,7 @@ namespace PowerLanguage.Strategy
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize == 0) tickSize = 0.25;
 
-            // DRAG LOGIC
-            if (m_DraggingTarget) { m_ProfitTargetPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingTarget = false; return; }
-            if (m_DraggingStop) { m_ProtectiveStopPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingStop = false; return; }
-            if (m_ProfitTargetPrice > 0 && Math.Abs(arg.point.Price - m_ProfitTargetPrice) <= (ProximityTicks * tickSize)) { m_DraggingTarget = true; return; }
-            if (m_ProtectiveStopPrice > 0 && Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (ProximityTicks * tickSize)) { m_DraggingStop = true; return; }
+
             
             // ORDER LOGIC
             if (shift) {
@@ -256,8 +232,7 @@ namespace PowerLanguage.Strategy
             }
         }
 
-        private bool m_DraggingTarget = false;
-        private bool m_DraggingStop = false;
+
 
         private void ProcessManualOrderRequest(double clickPrice)
         {
@@ -272,16 +247,9 @@ namespace PowerLanguage.Strategy
                 if (clickPrice <= m_LastClosePrice) { m_StopPrice = m_LastClosePrice - activeShift; m_SellOrderActive = true; m_BuyOrderActive = false; }
                 else { m_StopPrice = m_LastOpenPrice + activeShift; m_BuyOrderActive = true; m_SellOrderActive = false; }
             }
-            UpdateVisualMarker();
         }
 
-        private void UpdateVisualMarker()
-        {
-            if (m_PriceLine != null) m_PriceLine.Delete();
-            if (m_StopPrice <= 0) return;
-            m_PriceLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_StopPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_StopPrice));
-            m_PriceLine.Color = m_BuyOrderActive ? Color.Cyan : Color.Magenta; m_PriceLine.Size = 2; m_PriceLine.Style = ETLStyle.ToolDashed; m_PriceLine.ExtRight = true;
-        }
+
 
         protected override void Destroy() { ClearTradingDrawings(); }
     }
