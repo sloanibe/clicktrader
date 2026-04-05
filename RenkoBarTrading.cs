@@ -19,7 +19,7 @@ namespace PowerLanguage.Strategy
         [Input] public bool ShowPriceLine { get; set; }
         [Input] public int ProximityTicks { get; set; }
         [Input] public bool ShowHUD { get; set; }
-        [Input] public bool UseBreakEven { get; set; }
+        [Input] public bool UseLimitLoss { get; set; }
 
         private IOrderPriced m_BuyStop;
         private IOrderPriced m_SellStop;
@@ -39,8 +39,9 @@ namespace PowerLanguage.Strategy
         
         private double m_StopPrice = 0;
         private double m_ProtectiveStopPrice = 0;
-        private double m_BreakEvenTriggerPrice = 0;
-        private bool m_BreakEvenArmed = false;
+        private double m_LimitLossTriggerPrice = 0;
+        private bool m_LimitLossArmed = false;
+        private bool m_TrailingActive = false;
         
         private int m_LastMarketPosition = 0;
         private bool m_BuyOrderActive = false;
@@ -62,6 +63,7 @@ namespace PowerLanguage.Strategy
             ShowPriceLine = true;
             ProximityTicks = 5;
             ShowHUD = true;
+            UseLimitLoss = false;
         }
 
         protected override void Create()
@@ -83,6 +85,7 @@ namespace PowerLanguage.Strategy
             m_LastMarketPosition = 0;
             m_OrderCreatedInMouseEvent = m_FlattenRequested = m_CancelRequested = false;
             m_LastBarIndex = -1;
+            m_TrailingActive = m_LimitLossArmed = false;
             ClearTradingDrawings();
         }
 
@@ -123,12 +126,13 @@ namespace PowerLanguage.Strategy
                 if (currentPosition > 0) m_ProtectiveStopPrice = Math.Min(Bars.Low[0], Bars.Close[0]) - (StopTailOffsetTicks * tickSize);
                 else m_ProtectiveStopPrice = Math.Max(Bars.High[0], Bars.Close[0]) + (StopTailOffsetTicks * tickSize);
                 
-                // Break Even Trigger Calculation
+                // Limit Loss Activation Threshold (1.5x Brick Size)
                 double brickSize = (Level1 > 0) ? (Level1 * tickSize) : m_AutoDetectedBrickSize;
                 if (brickSize <= 0) brickSize = 20 * tickSize; 
-                if (currentPosition > 0) m_BreakEvenTriggerPrice = entry + brickSize;
-                else m_BreakEvenTriggerPrice = entry - brickSize;
-                m_BreakEvenArmed = false;
+                double threshold = brickSize * 1.5; 
+                if (currentPosition > 0) m_LimitLossTriggerPrice = entry + threshold;
+                else m_LimitLossTriggerPrice = entry - threshold;
+                m_LimitLossArmed = false;
 
                 m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = 0; if (m_PriceLine != null) m_PriceLine.Delete();
                 UpdateStopLine(); UpdateDollarHUD(entry, m_ProtectiveStopPrice);
@@ -137,25 +141,37 @@ namespace PowerLanguage.Strategy
             // TREND TRAILING STOP
             if (Bars.Status == EBarState.Close && currentPosition != 0 && m_AutoDetectedBrickSize > 0)
             {
-                double reversalDist = 2 * m_AutoDetectedBrickSize;
-                if (currentPosition > 0) {
-                    double trailStop = Bars.Close[0] - reversalDist;
-                    if (trailStop > m_ProtectiveStopPrice) { m_ProtectiveStopPrice = trailStop; UpdateStopLine(); }
-                } else if (currentPosition < 0) {
-                    double trailStop = Bars.Close[0] + reversalDist;
-                    if (m_ProtectiveStopPrice == 0 || trailStop < m_ProtectiveStopPrice) { m_ProtectiveStopPrice = trailStop; UpdateStopLine(); }
+                double brickSize = (Level1 > 0) ? (Level1 * tickSize) : m_AutoDetectedBrickSize;
+                double profitBarrier = 2 * brickSize; // 2 Bricks of profit required to activate trail
+                double reversalDist = 2 * brickSize;  // 2 Bricks back for the stop
+                double entry = StrategyInfo.AvgEntryPrice;
+
+                // Check for Trail Activation
+                if (!m_TrailingActive) {
+                    if ((currentPosition > 0 && Bars.Close[0] >= entry + profitBarrier) || 
+                        (currentPosition < 0 && Bars.Close[0] <= entry - profitBarrier)) { m_TrailingActive = true; }
+                }
+
+                if (m_TrailingActive) {
+                    if (currentPosition > 0) {
+                        double trailStop = Bars.Close[0] - reversalDist;
+                        if (trailStop > m_ProtectiveStopPrice) { m_ProtectiveStopPrice = trailStop; UpdateStopLine(); }
+                    } else if (currentPosition < 0) {
+                        double trailStop = Bars.Close[0] + reversalDist;
+                        if (m_ProtectiveStopPrice == 0 || trailStop < m_ProtectiveStopPrice) { m_ProtectiveStopPrice = trailStop; UpdateStopLine(); }
+                    }
                 }
             }
 
-            // MONITOR BREAK EVEN
-            if (UseBreakEven && currentPosition != 0 && !m_BreakEvenArmed)
+            // MOMENTUM FAILURE REVERSAL (Limit Loss)
+            if (UseLimitLoss && currentPosition != 0)
             {
-                if ((currentPosition > 0 && Bars.High[0] >= m_BreakEvenTriggerPrice) || 
-                    (currentPosition < 0 && Bars.Low[0] <= m_BreakEvenTriggerPrice))
-                {
-                    m_ProtectiveStopPrice = StrategyInfo.AvgEntryPrice;
-                    m_BreakEvenArmed = true;
-                    UpdateStopLine();
+                if (!m_LimitLossArmed) {
+                    if ((currentPosition > 0 && Bars.High[0] >= m_LimitLossTriggerPrice) || 
+                        (currentPosition < 0 && Bars.Low[0] <= m_LimitLossTriggerPrice)) { m_LimitLossArmed = true; }
+                } else if (Bars.Status == EBarState.Close) {
+                    bool barIsUp = (Bars.Close[0] > Bars.Open[0]);
+                    if ((currentPosition > 0 && !barIsUp) || (currentPosition < 0 && barIsUp)) { m_FlattenRequested = true; }
                 }
             }
 
@@ -169,8 +185,8 @@ namespace PowerLanguage.Strategy
             if (currentPosition != 0) { UpdateDollarHUD(StrategyInfo.AvgEntryPrice, m_ProtectiveStopPrice); }
             
             if (currentPosition == 0 && m_LastMarketPosition != 0) { 
-                m_ProtectiveStopPrice = m_BreakEvenTriggerPrice = 0; 
-                m_BreakEvenArmed = false;
+                m_ProtectiveStopPrice = m_LimitLossTriggerPrice = 0; 
+                m_LimitLossArmed = m_TrailingActive = false;
                 ClearTradingDrawings(); 
             }
             m_LastMarketPosition = currentPosition;
