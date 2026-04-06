@@ -34,7 +34,8 @@ namespace PowerLanguage.Strategy
         private double m_EntryStop    = 0;
         private double m_ProtectStop  = 0;
         private double m_TargetPrice  = 0;
-        private int    m_ActivationBar = -1;
+        private int    m_ActivationBar = -1;  // Bar when stalking was armed (Ctrl-Click)
+        private int    m_SignalBar     = -1;  // Bar when tail was detected and stop was placed
         private EMarketPositionSide m_LastSide = EMarketPositionSide.Flat;
 
         private enum EStalkMode { None, Long, Short }
@@ -154,7 +155,11 @@ namespace PowerLanguage.Strategy
                     m_IsLong      = true;
                     m_EntryStop   = GetNextBrickPrice(true);
                     m_ProtectStop = Bars.Low[0] - (ProtectiveStopTicks * tick);
-                    if (!m_SignalActive) Output.WriteLine("[TailTrading] LONG hammer tail confirmed. Arming.");
+                    if (!m_SignalActive)
+                    {
+                        m_SignalBar = Bars.CurrentBar;
+                        Output.WriteLine("[TailTrading] LONG hammer tail confirmed. Arming on bar {0}.", m_SignalBar);
+                    }
                     m_SignalActive = true;
                     DrawTradeLevels(Bars.Time[0], m_EntryStop, m_ProtectStop, true);
                 }
@@ -167,25 +172,39 @@ namespace PowerLanguage.Strategy
                     m_IsLong      = false;
                     m_EntryStop   = GetNextBrickPrice(false);
                     m_ProtectStop = Bars.High[0] + (ProtectiveStopTicks * tick);
-                    if (!m_SignalActive) Output.WriteLine("[TailTrading] SHORT shooting star tail confirmed. Arming.");
+                    if (!m_SignalActive)
+                    {
+                        m_SignalBar = Bars.CurrentBar;
+                        Output.WriteLine("[TailTrading] SHORT shooting star confirmed. Arming on bar {0}.", m_SignalBar);
+                    }
                     m_SignalActive = true;
                     DrawTradeLevels(Bars.Time[0], m_EntryStop, m_ProtectStop, false);
                 }
             }
 
-            // ── 3. SAFETY CANCEL on counter-trend brick close ──
+            // ── 3. CANCEL CHECKS (while flat and armed) ──
             if (CurrentPosition.Side == EMarketPositionSide.Flat &&
                 m_SignalActive &&
-                Bars.Status == EBarState.Close &&
-                Bars.CurrentBar > m_ActivationBar)
+                Bars.Status == EBarState.Close)
             {
-                bool up   = Bars.Close[0] > Bars.Open[0];
-                bool down = Bars.Close[0] < Bars.Open[0];
-                if ((m_IsLong && down) || (!m_IsLong && up))
+                // 3a. One-bar validity: cancel if the tail bar has fully closed without a fill
+                if (Bars.CurrentBar > m_SignalBar)
                 {
                     m_SignalActive = false;
                     ClearTradeLevelDrawings();
-                    Output.WriteLine("[TailTrading] Cancelled: Counter-trend brick.");
+                    Output.WriteLine("[TailTrading] Cancelled: Tail bar closed without fill. Back to scanning.");
+                }
+                // 3b. Counter-trend brick safety cancel (only on same signal bar)
+                else if (Bars.CurrentBar > m_ActivationBar)
+                {
+                    bool up   = Bars.Close[0] > Bars.Open[0];
+                    bool down = Bars.Close[0] < Bars.Open[0];
+                    if ((m_IsLong && down) || (!m_IsLong && up))
+                    {
+                        m_SignalActive = false;
+                        ClearTradeLevelDrawings();
+                        Output.WriteLine("[TailTrading] Cancelled: Counter-trend brick closed.");
+                    }
                 }
             }
 
