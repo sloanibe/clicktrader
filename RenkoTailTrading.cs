@@ -133,28 +133,39 @@ namespace PowerLanguage.Strategy
                 m_EMAArray[idx] = (Bars.Close[0] - m_EMAArray[idx - 1]) * alpha + m_EMAArray[idx - 1];
             }
 
-            // ── 2. TAIL DETECTION (arm on proper tail piercing Open[1]) ──
+            // ── 2. TAIL DETECTION ──
+            // A 'proper tail' requires TWO confirmations:
+            //   1. Price PIERCES the previous bar's open (the deep poke)
+            //   2. The bar CLOSES BACK INSIDE that level (rejection confirmation)
+            // This prevents arming during normal trend moves where every bar
+            // naturally trades through the prior open.
             if (CurrentPosition.Side == EMarketPositionSide.Flat &&
                 m_StalkMode != EStalkMode.None &&
                 Bars.CurrentBar >= m_ActivationBar)
             {
                 double tick = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
 
-                if (m_StalkMode == EStalkMode.Long && Bars.Low[0] < Bars.Open[1])
+                // LONG tail: bar poked BELOW Open[1] AND closed ABOVE Open[1] (rejection of low)
+                if (m_StalkMode == EStalkMode.Long &&
+                    Bars.Low[0]  < Bars.Open[1] &&
+                    Bars.Close[0] > Bars.Open[1])
                 {
                     m_IsLong      = true;
                     m_EntryStop   = GetNextBrickPrice(true);
                     m_ProtectStop = Bars.Low[0] - (ProtectiveStopTicks * tick);
-                    if (!m_SignalActive) Output.WriteLine("[TailTrading] LONG TAIL — Arming.");
+                    if (!m_SignalActive) Output.WriteLine("[TailTrading] LONG TAIL confirmed (poke+rejection). Arming.");
                     m_SignalActive = true;
                     DrawTradeLevels(Bars.Time[0], m_EntryStop, m_ProtectStop, true);
                 }
-                else if (m_StalkMode == EStalkMode.Short && Bars.High[0] > Bars.Open[1])
+                // SHORT tail: bar poked ABOVE Open[1] AND closed BELOW Open[1] (rejection of high)
+                else if (m_StalkMode == EStalkMode.Short &&
+                         Bars.High[0]  > Bars.Open[1] &&
+                         Bars.Close[0] < Bars.Open[1])
                 {
                     m_IsLong      = false;
                     m_EntryStop   = GetNextBrickPrice(false);
                     m_ProtectStop = Bars.High[0] + (ProtectiveStopTicks * tick);
-                    if (!m_SignalActive) Output.WriteLine("[TailTrading] SHORT TAIL — Arming.");
+                    if (!m_SignalActive) Output.WriteLine("[TailTrading] SHORT TAIL confirmed (poke+rejection). Arming.");
                     m_SignalActive = true;
                     DrawTradeLevels(Bars.Time[0], m_EntryStop, m_ProtectStop, false);
                 }
