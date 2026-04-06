@@ -145,27 +145,29 @@ namespace PowerLanguage.Strategy
             {
                 double tick = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
 
-                // LONG tail: bar poked BELOW Open[1] AND closed ABOVE Open[1] (rejection of low)
+                // LONG tail: bar poked BELOW Open[1] AND closed BULLISH (rejection hammer)
+                // Compare close to bar's OWN open (Close > Open[0]), not the prior bar's open.
                 if (m_StalkMode == EStalkMode.Long &&
-                    Bars.Low[0]  < Bars.Open[1] &&
-                    Bars.Close[0] > Bars.Open[1])
+                    Bars.Low[0]   < Bars.Open[1] &&
+                    Bars.Close[0] > Bars.Open[0])
                 {
                     m_IsLong      = true;
                     m_EntryStop   = GetNextBrickPrice(true);
                     m_ProtectStop = Bars.Low[0] - (ProtectiveStopTicks * tick);
-                    if (!m_SignalActive) Output.WriteLine("[TailTrading] LONG TAIL confirmed (poke+rejection). Arming.");
+                    if (!m_SignalActive) Output.WriteLine("[TailTrading] LONG hammer tail confirmed. Arming.");
                     m_SignalActive = true;
                     DrawTradeLevels(Bars.Time[0], m_EntryStop, m_ProtectStop, true);
                 }
-                // SHORT tail: bar poked ABOVE Open[1] AND closed BELOW Open[1] (rejection of high)
+                // SHORT tail: bar poked ABOVE Open[1] AND closed BEARISH (rejection shooting star)
+                // Compare close to bar's OWN open (Close < Open[0]), not the prior bar's open.
                 else if (m_StalkMode == EStalkMode.Short &&
                          Bars.High[0]  > Bars.Open[1] &&
-                         Bars.Close[0] < Bars.Open[1])
+                         Bars.Close[0] < Bars.Open[0])
                 {
                     m_IsLong      = false;
                     m_EntryStop   = GetNextBrickPrice(false);
                     m_ProtectStop = Bars.High[0] + (ProtectiveStopTicks * tick);
-                    if (!m_SignalActive) Output.WriteLine("[TailTrading] SHORT TAIL confirmed (poke+rejection). Arming.");
+                    if (!m_SignalActive) Output.WriteLine("[TailTrading] SHORT shooting star tail confirmed. Arming.");
                     m_SignalActive = true;
                     DrawTradeLevels(Bars.Time[0], m_EntryStop, m_ProtectStop, false);
                 }
