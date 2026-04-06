@@ -11,57 +11,56 @@ namespace PowerLanguage.Strategy
     /// Renko Tail Trading Signal
     ///
     /// WORKFLOW:
-    ///   1. User sees a counter-trend tail forming on a Renko bar (bar popping against the trend).
+    ///   1. User sees a counter-trend tail forming on a Renko bar.
     ///   2. User Control-Clicks anywhere on the chart.
-    ///   3. Signal reads 10 EMA slope at click point → determines Long or Short regime.
-    ///   4. Calculates entry stop ONE BRICK beyond last closed brick's close:
-    ///        SHORT: Sell Stop = Bar[1].Close - brickSize
-    ///        LONG:  Buy  Stop = Bar[1].Close + brickSize
-    ///   5. Calculates protective stop from the TAIL of Bar[0] (the rejection bar):
-    ///        SHORT: Protective stop = Bar[0].High + 2 ticks (above tail of counter-trend bar)
-    ///        LONG:  Protective stop = Bar[0].Low  - 2 ticks (below tail of counter-trend bar)
-    ///   6. While flat:    re-sends entry stop every tick to keep it live.
-    ///      Once in trade: switches to re-sending protective stop every tick.
-    ///   7. Click again to re-evaluate and replace the order.
+    ///   3. Signal reads 10 EMA slope → determines Long or Short stalking direction.
+    ///   4. Waits for price to pierce the previous bar's Open (the "proper tail").
+    ///   5. On tail confirmation, arms entry stop ONE BRICK beyond last closed brick.
+    ///   6. Protective stop placed beyond the tail extreme + ProtectiveStopTicks.
+    ///   7. Shift-Click cancels everything and returns to STALKING OFF.
     /// </summary>
     [IOGMode(IOGMode.Enabled)]
     [MouseEvents(true)]
-    [RecoverDrawings(true)]
+    [RecoverDrawings(false)]
     public class RenkoTailTrading : SignalObject
     {
         // ─── INPUTS ───────────────────────────────────────────────────────────────
-        [Input] public int MAPeriod           { get; set; } // EMA period for regime detection
-        [Input] public int ProtectiveStopTicks { get; set; } // Extra ticks beyond tail for protective stop
+        [Input] public int MAPeriod           { get; set; }
+        [Input] public int ProtectiveStopTicks { get; set; }
 
-        // ─── PRIVATE STATE ────────────────────────────────────────────────────────
-        private bool   m_SignalActive   = false;
-        private bool   m_IsLong        = true;
-        private double m_EntryStop     = 0;   // Price where we want to enter
-        private double m_ProtectStop   = 0;   // Price where we exit if wrong
-        private double m_TargetPrice   = 0;   // Price where we take profit
+        // ─── STATE ────────────────────────────────────────────────────────────────
+        private bool   m_SignalActive  = false;
+        private bool   m_IsLong       = true;
+        private double m_EntryStop    = 0;
+        private double m_ProtectStop  = 0;
+        private double m_TargetPrice  = 0;
+        private int    m_ActivationBar = -1;
+        private EMarketPositionSide m_LastSide = EMarketPositionSide.Flat;
 
-        // ─── ENTRY ORDERS ─────────────────────────────────────────────────────────
+        private enum EStalkMode { None, Long, Short }
+        private EStalkMode m_StalkMode = EStalkMode.None;
+
+        // ─── ORDERS ───────────────────────────────────────────────────────────────
         private IOrderPriced m_BuyStopOrder;
         private IOrderPriced m_SellStopOrder;
-
-        // ─── EXIT (PROTECTIVE STOP) ORDERS ────────────────────────────────────────
         private IOrderPriced m_LongProtectStop;
         private IOrderPriced m_ShortProtectStop;
-
-        // ─── EXIT (PROFIT TARGET) ORDERS ──────────────────────────────────────────
         private IOrderPriced m_LongTargetLimit;
         private IOrderPriced m_ShortTargetLimit;
-
-        // ─── EMERGENCY FLATTEN ORDERS ─────────────────────────────────────────────
         private IOrderMarket m_CloseLong;
         private IOrderMarket m_CloseShort;
 
         // ─── DRAWINGS ─────────────────────────────────────────────────────────────
-        private ITrendLineObject m_EntryLine;
-        private ITrendLineObject m_ProtectLine;
+        // HUD objects — owned exclusively by RefreshHUD(), never touched elsewhere
+        private ITrendLineObject m_StalkLine;
         private ITextObject      m_StatusLabel;
 
-        // ─── EMA ARRAY (plain array — reliable at any depth) ──────────────────────
+        // Trade level objects — owned by DrawTradeLevels / ClearTradeLevelDrawings
+        private ITrendLineObject m_EntryLine;
+        private ITrendLineObject m_ProtectLine;
+        private ITrendLineObject m_TargetLine;
+
+        // ─── EMA ──────────────────────────────────────────────────────────────────
         private double[] m_EMAArray;
         private const int MaxBars = 100000;
 
@@ -69,7 +68,7 @@ namespace PowerLanguage.Strategy
         public RenkoTailTrading(object ctx) : base(ctx)
         {
             MAPeriod            = 10;
-            ProtectiveStopTicks = 2; // 2 ticks beyond the tail of the rejection bar
+            ProtectiveStopTicks = 2;
         }
 
         // ─── CREATE ───────────────────────────────────────────────────────────────
@@ -77,40 +76,55 @@ namespace PowerLanguage.Strategy
         {
             m_EMAArray = new double[MaxBars];
 
-            // Entry orders (get us into a position)
             m_BuyStopOrder  = OrderCreator.Stop(new SOrderParameters(
                 Contracts.Default, "RenkoTail_Long",  EOrderAction.Buy));
             m_SellStopOrder = OrderCreator.Stop(new SOrderParameters(
                 Contracts.Default, "RenkoTail_Short", EOrderAction.SellShort));
 
-            // Protective stop orders (get us out if wrong)
             m_LongProtectStop  = OrderCreator.Stop(new SOrderParameters(
                 Contracts.Default, "RenkoTail_LongProtect",  EOrderAction.Sell));
             m_ShortProtectStop = OrderCreator.Stop(new SOrderParameters(
                 Contracts.Default, "RenkoTail_ShortProtect", EOrderAction.BuyToCover));
 
-            // Profit target orders (Limit)
             m_LongTargetLimit  = OrderCreator.Limit(new SOrderParameters(
                 Contracts.Default, "RenkoTail_LongTarget",  EOrderAction.Sell));
             m_ShortTargetLimit = OrderCreator.Limit(new SOrderParameters(
                 Contracts.Default, "RenkoTail_ShortTarget", EOrderAction.BuyToCover));
 
-            // Flatten orders (Market)
             m_CloseLong  = OrderCreator.MarketNextBar(new SOrderParameters(
                 Contracts.Default, "RenkoTail_FlattenLong",  EOrderAction.Sell, OrderExit.FromAll));
             m_CloseShort = OrderCreator.MarketNextBar(new SOrderParameters(
                 Contracts.Default, "RenkoTail_FlattenShort", EOrderAction.BuyToCover, OrderExit.FromAll));
         }
 
-        protected override void StartCalc() { }
+        protected override void StartCalc()
+        {
+            // Reset HUD references on every recalculation.
+            // When ExecControl.Recalculate() fires, MultiCharts deletes all drawings
+            // internally but our C# references still point at the dead objects.
+            // Nulling here forces RefreshHUD() to cleanly recreate them.
+            m_StalkLine   = null;
+            m_StatusLabel = null;
+        }
 
         // ─── CALC BAR ─────────────────────────────────────────────────────────────
         protected override void CalcBar()
         {
-            // 1. Always maintain the EMA array
             int idx = Bars.CurrentBar - 1;
             if (idx >= MaxBars) return;
 
+            // ── 0. DETECT POSITION CLOSURE ──
+            if (m_LastSide != EMarketPositionSide.Flat && CurrentPosition.Side == EMarketPositionSide.Flat)
+            {
+                m_SignalActive  = false;
+                m_ActivationBar = Bars.CurrentBar;
+                m_TargetPrice   = 0;
+                ClearTradeLevelDrawings();
+                // StalkMode stays ON — persistent stalking auto-resumes
+            }
+            m_LastSide = CurrentPosition.Side;
+
+            // ── 1. EMA ──
             if (idx == 0)
                 m_EMAArray[0] = Bars.Close[0];
             else
@@ -119,44 +133,81 @@ namespace PowerLanguage.Strategy
                 m_EMAArray[idx] = (Bars.Close[0] - m_EMAArray[idx - 1]) * alpha + m_EMAArray[idx - 1];
             }
 
+            // ── 2. TAIL DETECTION (arm on proper tail piercing Open[1]) ──
+            if (CurrentPosition.Side == EMarketPositionSide.Flat &&
+                m_StalkMode != EStalkMode.None &&
+                Bars.CurrentBar >= m_ActivationBar)
+            {
+                double tick = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+
+                if (m_StalkMode == EStalkMode.Long && Bars.Low[0] < Bars.Open[1])
+                {
+                    m_IsLong      = true;
+                    m_EntryStop   = GetNextBrickPrice(true);
+                    m_ProtectStop = Bars.Low[0] - (ProtectiveStopTicks * tick);
+                    if (!m_SignalActive) Output.WriteLine("[TailTrading] LONG TAIL — Arming.");
+                    m_SignalActive = true;
+                    DrawTradeLevels(Bars.Time[0], m_EntryStop, m_ProtectStop, true);
+                }
+                else if (m_StalkMode == EStalkMode.Short && Bars.High[0] > Bars.Open[1])
+                {
+                    m_IsLong      = false;
+                    m_EntryStop   = GetNextBrickPrice(false);
+                    m_ProtectStop = Bars.High[0] + (ProtectiveStopTicks * tick);
+                    if (!m_SignalActive) Output.WriteLine("[TailTrading] SHORT TAIL — Arming.");
+                    m_SignalActive = true;
+                    DrawTradeLevels(Bars.Time[0], m_EntryStop, m_ProtectStop, false);
+                }
+            }
+
+            // ── 3. SAFETY CANCEL on counter-trend brick close ──
+            if (CurrentPosition.Side == EMarketPositionSide.Flat &&
+                m_SignalActive &&
+                Bars.Status == EBarState.Close &&
+                Bars.CurrentBar > m_ActivationBar)
+            {
+                bool up   = Bars.Close[0] > Bars.Open[0];
+                bool down = Bars.Close[0] < Bars.Open[0];
+                if ((m_IsLong && down) || (!m_IsLong && up))
+                {
+                    m_SignalActive = false;
+                    ClearTradeLevelDrawings();
+                    Output.WriteLine("[TailTrading] Cancelled: Counter-trend brick.");
+                }
+            }
+
+            // ── 4. REFRESH HUD — only on the live (last) bar to avoid ghost objects ──
+            if (Bars.LastBarOnChart)
+                RefreshHUD();
+
+            // ── 5. ORDER ROUTING ──
             if (!m_SignalActive) return;
 
-            // 2. Route to entry stop or protective stop depending on position state
             if (CurrentPosition.Side == EMarketPositionSide.Flat)
             {
-                m_TargetPrice = 0; // Reset target when flat
-
-                // Not yet in — keep the entry stop live every tick
-                if (m_IsLong)
-                    m_BuyStopOrder.Send(m_EntryStop);
-                else
-                    m_SellStopOrder.Send(m_EntryStop);
+                m_TargetPrice = 0;
+                if (m_IsLong) m_BuyStopOrder.Send(m_EntryStop);
+                else          m_SellStopOrder.Send(m_EntryStop);
             }
             else
             {
-                // In a position — Ensure target is set based on ACTUAL entry price
                 if (m_TargetPrice == 0)
                 {
+                    double entry = StrategyInfo.AvgEntryPrice;
+                    if (entry == 0) entry = Bars.Close[0];
                     double brickSize = GetBrickSize();
-                    double entryPrice = StrategyInfo.AvgEntryPrice;
-                    if (entryPrice == 0) entryPrice = Bars.Close[0]; // Fallback
-
-                    if (CurrentPosition.Side == EMarketPositionSide.Long)
-                        m_TargetPrice = entryPrice + brickSize;
-                    else
-                        m_TargetPrice = entryPrice - brickSize;
-                    
-                    // Update drawings to show the target
-                    DrawLevels(Bars.Time[0], m_EntryStop, m_ProtectStop, CurrentPosition.Side == EMarketPositionSide.Long);
+                    m_TargetPrice = CurrentPosition.Side == EMarketPositionSide.Long
+                        ? entry + brickSize : entry - brickSize;
+                    DrawTradeLevels(Bars.Time[0], m_EntryStop, m_ProtectStop,
+                        CurrentPosition.Side == EMarketPositionSide.Long);
                 }
 
-                // Keep both Protective Stop and Profit Target alive every tick
                 if (CurrentPosition.Side == EMarketPositionSide.Long)
                 {
                     m_LongProtectStop.Send(m_ProtectStop);
                     m_LongTargetLimit.Send(m_TargetPrice);
                 }
-                else if (CurrentPosition.Side == EMarketPositionSide.Short)
+                else
                 {
                     m_ShortProtectStop.Send(m_ProtectStop);
                     m_ShortTargetLimit.Send(m_TargetPrice);
@@ -164,199 +215,233 @@ namespace PowerLanguage.Strategy
             }
         }
 
-        protected override void Destroy()
+        // ─── HUD (single owner of m_StalkLine + m_StatusLabel) ───────────────────
+        /// <summary>
+        /// Called once per CalcBar tick. NEVER called from OnMouseEvent.
+        /// Creates objects on first call; thereafter only mutates existing ones.
+        /// This prevents MultiCharts thread-conflict crashes.
+        /// </summary>
+        private void RefreshHUD()
         {
-            ClearDrawings();
+            if (Bars.CurrentBar < 10) return;
+
+            double   price    = Bars.Close[0];
+            DateTime rightEnd = Bars.Time[0];
+
+            // Find the left anchor: first bar with a strictly older timestamp, then +8 bars
+            int lb = 1;
+            while (lb < Bars.CurrentBar - 1 && Bars.Time[lb] >= rightEnd)
+                lb++;
+            lb = Math.Min(lb + 8, Bars.CurrentBar - 1);
+            DateTime leftAnchor = Bars.Time[lb];
+
+            // Dashed line is ALWAYS drawn regardless of state
+            // (shows STALKING OFF when idle, STALKING ON when armed)
+            if (m_StalkLine == null)
+            {
+                m_StalkLine         = DrwTrendLine.Create(new ChartPoint(leftAnchor, price), new ChartPoint(rightEnd, price));
+                m_StalkLine.Color   = Color.DimGray;
+                m_StalkLine.Size    = 1;
+                m_StalkLine.Style   = ETLStyle.ToolDashed;
+                m_StalkLine.ExtLeft = true;
+            }
+            else
+            {
+                m_StalkLine.Begin = new ChartPoint(leftAnchor, price);
+                m_StalkLine.End   = new ChartPoint(rightEnd,   price);
+            }
+
+            // ── Status label (always present, only text/color changes) ──
+            if (m_StatusLabel == null)
+            {
+                m_StatusLabel        = DrwText.Create(new ChartPoint(leftAnchor, price), "STALKING OFF");
+                m_StatusLabel.HStyle = ETextStyleH.Right;
+                m_StatusLabel.VStyle = ETextStyleV.Above;
+                m_StatusLabel.Size   = 11;
+                m_StatusLabel.Color  = Color.DimGray;
+            }
+
+            m_StatusLabel.Location = new ChartPoint(leftAnchor, price);
+
+            if (m_SignalActive)
+            {
+                m_StatusLabel.Color = m_IsLong ? Color.DodgerBlue : Color.OrangeRed;
+                m_StatusLabel.Text  = string.Format("STALKING ON  |  {0} @ {1:F2}  SL {2:F2}",
+                    m_IsLong ? "BUY" : "SELL", m_EntryStop, m_ProtectStop);
+            }
+            else if (m_StalkMode != EStalkMode.None)
+            {
+                m_StatusLabel.Color = m_StalkMode == EStalkMode.Long ? Color.DodgerBlue : Color.OrangeRed;
+                m_StatusLabel.Text  = "STALKING ON";
+            }
+            else
+            {
+                m_StatusLabel.Color = Color.DimGray;
+                m_StatusLabel.Text  = "STALKING OFF";
+            }
         }
 
-        private void ClearDrawings()
+        // ─── LIFECYCLE ────────────────────────────────────────────────────────────
+        protected override void Destroy()
         {
-            if (m_EntryLine != null)   { m_EntryLine.Delete();   m_EntryLine = null; }
-            if (m_ProtectLine != null) { m_ProtectLine.Delete(); m_ProtectLine = null; }
-            if (m_TargetLine != null)  { m_TargetLine.Delete();  m_TargetLine = null; }
+            ClearTradeLevelDrawings();
+            if (m_StalkLine   != null) { m_StalkLine.Delete();   m_StalkLine   = null; }
             if (m_StatusLabel != null) { m_StatusLabel.Delete(); m_StatusLabel = null; }
         }
 
-        private ITrendLineObject m_TargetLine;
+        /// <summary>
+        /// Deletes only trade-level lines (Entry, Protect, Target).
+        /// Never touches HUD objects (m_StalkLine, m_StatusLabel).
+        /// Safe to call from OnMouseEvent.
+        /// </summary>
+        private void ClearTradeLevelDrawings()
+        {
+            if (m_EntryLine   != null) { m_EntryLine.Delete();   m_EntryLine   = null; }
+            if (m_ProtectLine != null) { m_ProtectLine.Delete(); m_ProtectLine = null; }
+            if (m_TargetLine  != null) { m_TargetLine.Delete();  m_TargetLine  = null; }
+        }
 
         // ─── MOUSE EVENT ──────────────────────────────────────────────────────────
         protected override void OnMouseEvent(MouseClickArgs arg)
         {
-            if (arg.buttons != MouseButtons.Left) return;
+            if (arg.buttons != MouseButtons.Left && arg.buttons != MouseButtons.Right) return;
 
             bool ctrl  = (arg.keys & Keys.Control) == Keys.Control;
             bool shift = (arg.keys & Keys.Shift)   == Keys.Shift;
 
-            // ─── HANDLE SHIFT-CLICK (FLATTEN & CANCEL) ───
+            // SHIFT-CLICK: cancel everything, return to STALKING OFF
             if (shift)
             {
-                m_SignalActive = false;
-                ClearDrawings();
+                m_SignalActive  = false;
+                m_StalkMode     = EStalkMode.None;
+                m_ActivationBar = -1;
+                ClearTradeLevelDrawings();
 
-                if (CurrentPosition.Side == EMarketPositionSide.Long) m_CloseLong.Send();
+                if (CurrentPosition.Side == EMarketPositionSide.Long)       m_CloseLong.Send();
                 else if (CurrentPosition.Side == EMarketPositionSide.Short) m_CloseShort.Send();
 
-                Output.WriteLine("[TailTrading] SHIFT-CLICK: Flattening position and cancelling orders.");
+                Output.WriteLine("[TailTrading] SHIFT-CLICK: All cancelled.");
                 ExecControl.Recalculate();
                 return;
             }
 
+            // RIGHT-CLICK: arm stalking by click position
+            if (arg.buttons == MouseButtons.Right)
+            {
+                m_StalkMode = (arg.point.Price > Bars.Close[0]) ? EStalkMode.Long : EStalkMode.Short;
+                if (CurrentPosition.Side == EMarketPositionSide.Flat)
+                {
+                    m_SignalActive  = false;
+                    m_ActivationBar = Bars.CurrentBar;
+                }
+                Output.WriteLine("[TailTrading] RIGHT-CLICK: Stalking {0}.", m_StalkMode);
+                ExecControl.Recalculate();
+                return;
+            }
+
+            // CTRL-CLICK: arm stalking using EMA slope to determine direction
             if (!ctrl) return;
 
-            double tick = (double)Bars.Info.MinMove / Bars.Info.PriceScale; // one tick value
+            int clickedBar = Math.Max(2, Math.Min(arg.bar_number, Bars.CurrentBar));
+            int clickIdx   = Math.Max(1, Math.Min(clickedBar - 1, MaxBars - 1));
 
-            // 1. READ REGIME & STEEPNESS
-            int clickedBar = arg.bar_number;
-            if (clickedBar < 2) clickedBar = 2;
-            if (clickedBar > Bars.CurrentBar) clickedBar = Bars.CurrentBar;
-            int clickIdx = clickedBar - 1;
-            
-            // STAY IN BOUNDS
-            if (clickIdx >= MaxBars) clickIdx = MaxBars - 1;
-            if (clickIdx < 1) clickIdx = 1;
+            double emaSlope    = m_EMAArray[clickIdx] - m_EMAArray[clickIdx - 1];
+            double brickSize   = GetBrickSize();
+            double steepThresh = brickSize * 0.20;
+            bool   isSteepLong  = emaSlope >  steepThresh;
+            bool   isSteepShort = emaSlope < -steepThresh;
 
-            double emaSlope = m_EMAArray[clickIdx] - m_EMAArray[clickIdx - 1];
-            double brickSize = GetBrickSize();
-            double steepThreshold = brickSize * 0.20; // 20% of a brick per bar is a solid slope
-            
-            bool isSteepLong  = emaSlope >  steepThreshold;
-            bool isSteepShort = emaSlope < -steepThreshold;
+            if      (isSteepLong)  m_IsLong = true;
+            else if (isSteepShort) m_IsLong = false;
+            else                   m_IsLong = (arg.point.Price > Bars.Close[0]);
 
-            double currentPrice = Bars.Close[0];
-            string reason = "Click Location";
+            m_StalkMode     = m_IsLong ? EStalkMode.Long : EStalkMode.Short;
+            m_SignalActive  = false;
+            m_ActivationBar = Bars.CurrentBar;
 
-            // 2. DECIDE DIRECTION (Trend Priority > Click Location)
-            if (isSteepLong)
-            {
-                m_IsLong = true;
-                reason   = "Steep Uptrend Override";
-            }
-            else if (isSteepShort)
-            {
-                m_IsLong = false;
-                reason   = "Steep Downtrend Override";
-            }
-            else
-            {
-                // Flat/Slow market — let the user define the direction via click location
-                if (arg.point.Price > currentPrice)
-                    m_IsLong = true;
-                else if (arg.point.Price < currentPrice)
-                    m_IsLong = false;
-                else
-                    m_IsLong = (emaSlope >= 0);
-            }
-
-            Output.WriteLine("[TailTrading] Direction: {0} ({1}). Slope: {2:F4} (Threshold: {3:F4})", 
-                m_IsLong ? "LONG" : "SHORT", reason, emaSlope, steepThreshold);
-
-            // 3. BRICK SIZE & ENTRY STOP — one brick beyond last CLOSED bar's close (Bar[1])
-            //    SHORT scenario: Bar[1] was the last confirmed brick. We're seeing
-            //    Bar[0] pop up as a counter-trend move. Entry triggers when price
-            //    breaks one brick below Bar[1].Close (next bearish brick confirms).
-            if (m_IsLong)
-                m_EntryStop = Bars.Close[1] + brickSize;  // Buy Stop: next bull brick confirms
-            else
-                m_EntryStop = Bars.Close[1] - brickSize;  // Sell Stop: next bear brick confirms
-
-            // 4. PROTECTIVE STOP — beyond the tail of Bar[0] (the rejection/counter-trend bar)
-            //    This is the bar whose tail we are fading. The stop must clear its extreme.
-            //    SHORT: stop goes ABOVE Bar[0].High + N ticks (above the upward tail)
-            //    LONG:  stop goes BELOW Bar[0].Low  - N ticks (below the downward tail)
-            if (m_IsLong)
-                m_ProtectStop = Bars.Low[0]  - (ProtectiveStopTicks * tick);
-            else
-                m_ProtectStop = Bars.High[0] + (ProtectiveStopTicks * tick);
-
-            m_SignalActive = true;
-
-            // 5. DRAW BOTH LEVELS on the chart
-            DrawLevels(arg.point.Time, m_EntryStop, m_ProtectStop, m_IsLong);
-
+            ClearTradeLevelDrawings();
+            Output.WriteLine("[TailTrading] CTRL-CLICK: Stalking {0}.", m_StalkMode);
             ExecControl.Recalculate();
         }
 
         // ─── HELPERS ──────────────────────────────────────────────────────────────
 
-        /// <summary>
-        /// Returns the Renko brick size by averaging the body size of the last 5 closed bricks.
-        /// Falls back to Bar[1] body size, then a tick-based estimate if needed.
-        /// </summary>
-        private double GetBrickSize()
+        private double GetNextBrickPrice(bool isLong)
         {
-            double sum   = 0;
-            int    count = 0;
-            int    lookback = Math.Min(5, Bars.CurrentBar - 1);
-
-            for (int i = 1; i <= lookback; i++)
-            {
-                double bodySize = Math.Abs(Bars.Close[i] - Bars.Open[i]);
-                if (bodySize > 0) { sum += bodySize; count++; }
-            }
-
-            if (count > 0) return sum / count;
-
-            // Fallback: current bar or tick-based estimate
-            double current = Math.Abs(Bars.Close[0] - Bars.Open[0]);
-            if (current > 0) return current;
-            return (double)Bars.Info.MinMove / Bars.Info.PriceScale * 9; // e.g., 9-tick default
+            double brickSize = GetBrickSize();
+            bool   lastWasUp = Bars.Close[1] > Bars.Open[1];
+            if (isLong)
+                return lastWasUp ? (Bars.Close[1] + brickSize) : (Bars.Open[1] + brickSize);
+            else
+                return !lastWasUp ? (Bars.Close[1] - brickSize) : (Bars.Open[1] - brickSize);
         }
 
-        /// <summary>Draws the entry stop line and protective stop line on the chart.</summary>
-        private void DrawLevels(DateTime fromTime, double entryPrice, double protectPrice, bool isLong)
+        private double GetBrickSize()
         {
-            Color entryColor   = isLong ? Color.DodgerBlue  : Color.OrangeRed;
-            Color protectColor = isLong ? Color.Salmon       : Color.Yellow;
+            double sum = 0; int count = 0;
+            int lookback = Math.Min(5, Bars.CurrentBar - 1);
+            for (int i = 1; i <= lookback; i++)
+            {
+                double body = Math.Abs(Bars.Close[i] - Bars.Open[i]);
+                if (body > 0) { sum += body; count++; }
+            }
+            if (count > 0) return sum / count;
+            double cur = Math.Abs(Bars.Close[0] - Bars.Open[0]);
+            return cur > 0 ? cur : (double)Bars.Info.MinMove / Bars.Info.PriceScale * 9;
+        }
 
-            // Entry line
-            if (m_EntryLine != null) m_EntryLine.Delete();
-            m_EntryLine = DrwTrendLine.Create(
-                new ChartPoint(fromTime, entryPrice),
-                new ChartPoint(Bars.Time[0].AddMinutes(1), entryPrice)); // Add offset for visibility
-            m_EntryLine.Color    = entryColor;
-            m_EntryLine.Size     = 2;
-            m_EntryLine.Style    = ETLStyle.ToolSolid;
-            m_EntryLine.ExtRight = true;
+        private void DrawTradeLevels(DateTime fromTime, double entryPrice, double protectPrice, bool isLong)
+        {
+            Color entryColor   = isLong ? Color.DodgerBlue : Color.OrangeRed;
+            Color protectColor = isLong ? Color.Salmon      : Color.Yellow;
 
-            // Protective stop line
-            if (m_ProtectLine != null) m_ProtectLine.Delete();
-            m_ProtectLine = DrwTrendLine.Create(
-                new ChartPoint(fromTime, protectPrice),
-                new ChartPoint(Bars.Time[0].AddMinutes(1), protectPrice)); // Add offset for visibility
-            m_ProtectLine.Color    = protectColor;
-            m_ProtectLine.Size     = 1;
-            m_ProtectLine.Style    = ETLStyle.ToolDashed;
-            m_ProtectLine.ExtRight = true;
+            if (m_TargetPrice == 0)
+                m_TargetPrice = isLong
+                    ? (m_EntryStop + GetBrickSize())
+                    : (m_EntryStop - GetBrickSize());
 
-            // Target line (Green)
+            DateTime rightEdge = Bars.Time[0].AddMinutes(5);
+
+            if (m_EntryLine == null)
+            {
+                m_EntryLine = DrwTrendLine.Create(new ChartPoint(fromTime, entryPrice), new ChartPoint(rightEdge, entryPrice));
+                m_EntryLine.Color = entryColor; m_EntryLine.Size = 2;
+                m_EntryLine.Style = ETLStyle.ToolSolid; m_EntryLine.ExtRight = true;
+            }
+            else
+            {
+                m_EntryLine.Begin = new ChartPoint(fromTime, entryPrice);
+                m_EntryLine.End   = new ChartPoint(rightEdge, entryPrice);
+                m_EntryLine.Color = entryColor;
+            }
+
+            if (m_ProtectLine == null)
+            {
+                m_ProtectLine = DrwTrendLine.Create(new ChartPoint(fromTime, protectPrice), new ChartPoint(rightEdge, protectPrice));
+                m_ProtectLine.Color = protectColor; m_ProtectLine.Size = 1;
+                m_ProtectLine.Style = ETLStyle.ToolDashed; m_ProtectLine.ExtRight = true;
+            }
+            else
+            {
+                m_ProtectLine.Begin = new ChartPoint(fromTime, protectPrice);
+                m_ProtectLine.End   = new ChartPoint(rightEdge, protectPrice);
+                m_ProtectLine.Color = protectColor;
+            }
+
             if (m_TargetPrice != 0)
             {
-                if (m_TargetLine != null) m_TargetLine.Delete();
-                m_TargetLine = DrwTrendLine.Create(
-                    new ChartPoint(fromTime, m_TargetPrice),
-                    new ChartPoint(Bars.Time[0].AddMinutes(1), m_TargetPrice));
-                m_TargetLine.Color    = Color.LimeGreen;
-                m_TargetLine.Size     = 2;
-                m_TargetLine.Style    = ETLStyle.ToolSolid;
-                m_TargetLine.ExtRight = true;
+                if (m_TargetLine == null)
+                {
+                    m_TargetLine = DrwTrendLine.Create(new ChartPoint(fromTime, m_TargetPrice), new ChartPoint(rightEdge, m_TargetPrice));
+                    m_TargetLine.Color = Color.LimeGreen; m_TargetLine.Size = 2;
+                    m_TargetLine.Style = ETLStyle.ToolSolid; m_TargetLine.ExtRight = true;
+                }
+                else
+                {
+                    m_TargetLine.Begin = new ChartPoint(fromTime, m_TargetPrice);
+                    m_TargetLine.End   = new ChartPoint(rightEdge, m_TargetPrice);
+                }
             }
-
-            // Status label
-            if (m_StatusLabel == null)
-            {
-                m_StatusLabel        = DrwText.Create(new ChartPoint(Bars.Time[0], Bars.Close[0]), "");
-                m_StatusLabel.Locked = true;
-                m_StatusLabel.Size   = 13;
-            }
-            m_StatusLabel.Location = new ChartPoint(Bars.Time[0], Bars.Close[0]);
-            m_StatusLabel.Color    = entryColor;
-            m_StatusLabel.Text     = string.Format(
-                "{0} STOP @ {1:F2}  |  Protect @ {2:F2}  |  Target @ {3:F2}  ({4})",
-                isLong ? "BUY" : "SELL",
-                entryPrice,
-                protectPrice,
-                m_TargetPrice,
-                isLong ? "UPTREND" : "DOWNTREND");
         }
     }
 }
