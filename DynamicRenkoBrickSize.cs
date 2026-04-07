@@ -72,7 +72,7 @@ namespace PowerLanguage.Indicator
         protected override void Create()
         {
             // Brick size: thick cyan step histogram — easy to read at a glance
-            m_PlotBrick = AddPlot(new PlotAttributes("BrickSize", EPlotShapes.BarHistogram, Color.Cyan,   Color.Transparent, 4, 0, true));
+            m_PlotBrick = AddPlot(new PlotAttributes("BrickSize", EPlotShapes.Histogram, Color.Cyan,   Color.Transparent, 4, 0, true));
             // Raw ATR:   thin gray line — reference only
             m_PlotATR   = AddPlot(new PlotAttributes("ATR_Ticks", EPlotShapes.Line,         Color.DimGray, Color.Transparent, 1, 0, true));
         }
@@ -159,8 +159,8 @@ namespace PowerLanguage.Indicator
 
                 if (Enable_Alert && Bars.LastBarOnChart)
                 {
-                    Alert(string.Format(
-                        "Brick size changed: {0} ticks → {1} ticks  (ATR = {2:F1} ticks)",
+                    Output.WriteLine(string.Format(
+                        "[BrickSize] Changed: {0} ticks → {1} ticks  (ATR = {2:F1} ticks)",
                         prev, m_CurrentBrick, atrTicks
                     ));
                 }
