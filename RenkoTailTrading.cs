@@ -21,6 +21,10 @@ namespace PowerLanguage.Strategy
         private RenkoStateMachine m_Brain;
         private EStrategyState    m_LastState = EStrategyState.Inactive;
 
+        // ─── EMERGENCY FLATTEN FLAG ───────────────────────────────────────────────
+        // Set by Shift-Click. Bypasses ALL state machine logic until position is flat.
+        private bool m_FlattenRequested = false;
+
         // ─── ORDERS ───────────────────────────────────────────────────────────────
         private IOrderPriced m_BuyStopOrder;
         private IOrderPriced m_SellStopOrder;
@@ -83,6 +87,43 @@ namespace PowerLanguage.Strategy
             int idx = Bars.CurrentBar - 1;
             if (idx >= MaxBars) return;
 
+            // ══════════════════════════════════════════════════════════════════════
+            // RULE #1 — NUCLEAR FLATTEN (highest priority, overrides everything)
+            // If Shift-Click was pressed, hammer close orders every tick on EVERY bar
+            // until the platform confirms the position is fully flat.
+            // ══════════════════════════════════════════════════════════════════════
+            bool isLong  = CurrentPosition.Side == EMarketPositionSide.Long;
+            bool isShort = CurrentPosition.Side == EMarketPositionSide.Short;
+
+            if (m_FlattenRequested)
+            {
+                // In PowerLanguage, the way to cancel pending orders is simply 
+                // to STOP calling their .Send() methods. 
+                // By returning early here, we stop sending m_BuyStopOrder, etc.
+
+                // Hammer the exit market orders every tick
+                if (isLong) 
+                {
+                    Output.WriteLine("[Renko] NUCLEAR FLATTEN: Sending CloseLong Market Order.");
+                    Output.WriteLine("[Order] CloseLong Market."); m_CloseLong.Send();
+                }
+                if (isShort)
+                {
+                    Output.WriteLine("[Renko] NUCLEAR FLATTEN: Sending CloseShort Market Order.");
+                    Output.WriteLine("[Order] CloseShort Market."); m_CloseShort.Send();
+                }
+
+                // Only clear the flag once the platform confirms we are flat
+                if (!isLong && !isShort) 
+                {
+                    Output.WriteLine("[Renko] NUCLEAR FLATTEN: Position confirmed Flat. Clearing flag.");
+                    m_FlattenRequested = false;
+                }
+
+                if (Bars.LastBarOnChart) RefreshHUD(EStrategyState.Inactive);
+                return; // Skip all other logic until flat
+            }
+
             if (idx == 0) m_EMAArray[0] = Bars.Close[0];
             else
             {
@@ -100,21 +141,15 @@ namespace PowerLanguage.Strategy
             data.PrevClose = Bars.Close[1];
             data.Status    = (Bars.Status == EBarState.Close) ? EBarStatus.Close : EBarStatus.Open;
 
-            var result = m_Brain.ProcessBar(data, 
-                CurrentPosition.Side == EMarketPositionSide.Long,
-                CurrentPosition.Side == EMarketPositionSide.Short);
+            var result = m_Brain.ProcessBar(data, isLong, isShort); 
 
             if (result.State != m_LastState && !string.IsNullOrEmpty(result.TransitionLog))
             {
-                Output.WriteLine("[RenkoState] {0}", result.TransitionLog);
+                Output.WriteLine("[RenkoState] {0} (Bar {1})", result.TransitionLog, Bars.CurrentBar);
                 m_LastState = result.State;
             }
 
-            // ── FLATTEN: re-send every tick until position is gone ──────────────
-            // This must run even on historical bars so any orphaned position is closed.
-            bool needsFlatten = result.State == EStrategyState.Inactive;
-            if (needsFlatten && CurrentPosition.Side == EMarketPositionSide.Long)  m_CloseLong.Send();
-            if (needsFlatten && CurrentPosition.Side == EMarketPositionSide.Short) m_CloseShort.Send();
+
 
             // ── ALL OTHER ORDERS: only on the live bar ───────────────────────────
             // This prevents historical replay from placing real orders.
@@ -124,8 +159,8 @@ namespace PowerLanguage.Strategy
                 {
                     switch (cmd.Type)
                     {
-                        case EOrderType.BuyStop:           m_BuyStopOrder.Send(cmd.Price); break;
-                        case EOrderType.SellStop:          m_SellStopOrder.Send(cmd.Price); break;
+                        case EOrderType.BuyStop:           Output.WriteLine("[Order] BuyStop @ {0}", cmd.Price); m_BuyStopOrder.Send(cmd.Price); break;
+                        case EOrderType.SellStop:          Output.WriteLine("[Order] SellStop @ {0}", cmd.Price); m_SellStopOrder.Send(cmd.Price); break;
                         case EOrderType.LongProtectStop:   m_LongProtectStop.Send(cmd.Price); break;
                         case EOrderType.LongTargetLimit:   m_LongTargetLimit.Send(cmd.Price); break;
                         case EOrderType.ShortProtectStop:  m_ShortProtectStop.Send(cmd.Price); break;
@@ -210,19 +245,29 @@ namespace PowerLanguage.Strategy
 
         protected override void OnMouseEvent(MouseClickArgs arg)
         {
-            if (arg.buttons != MouseButtons.Left && arg.buttons != MouseButtons.Right) return;
+            if (arg.buttons != MouseButtons.Left) return;
             bool ctrl  = (arg.keys & Keys.Control) == Keys.Control;
             bool shift = (arg.keys & Keys.Shift)   == Keys.Shift;
 
-            if (shift) { m_Brain.OnShiftClick(); ExecControl.Recalculate(); return; }
-            if (arg.buttons == MouseButtons.Right) { m_Brain.OnRightClick(arg.point.Price > Bars.Close[0]); ExecControl.Recalculate(); return; }
+            if (shift) 
+            { 
+#if DEBUG
+                Output.WriteLine("[MouseLog] SHIFT-CLICK detected. Setting Nuclear Flatten.");
+#endif
+                m_FlattenRequested = true;
+                m_Brain.OnShiftClick(); 
+                return; 
+            }
             if (ctrl)
             {
+#if DEBUG
+                Output.WriteLine("[MouseLog] CTRL-CLICK detected. Starting Scan.");
+#endif
                 int clickedBar = Math.Max(2, Math.Min(arg.bar_number, Bars.CurrentBar));
                 int clickIdx   = Math.Max(1, Math.Min(clickedBar - 1, MaxBars - 1));
                 double emaSlope = m_EMAArray[clickIdx] - m_EMAArray[clickIdx - 1];
                 bool isLong = emaSlope > 0 || (emaSlope == 0 && arg.point.Price > Bars.Close[0]);
-                m_Brain.OnCtrlClick(isLong);
+                m_Brain.OnCtrlClick(isLong, Bars.CurrentBar);
                 ExecControl.Recalculate();
             }
         }
@@ -344,18 +389,18 @@ namespace PowerLanguage.Strategy
 
                 case EStrategyState.ArmedLong:
                     if (positionIsLong) Transition(EStrategyState.LongActive, "Filled", result);
-                    else if (bar.Status == EBarStatus.Close && IsBearishBar(bar)) { Transition(EStrategyState.ScanningLong, "Cancelled", result); ResetPrices(); }
+                    else if (bar.Status == EBarStatus.Close && IsBearishBar(bar)) { Transition(EStrategyState.Inactive, "Rejection Failed", result); ResetPrices(bar.BarIndex, true); }
                     else if (!positionIsShort) result.Orders.Add(CreateOrder(EOrderType.BuyStop, m_EntryStop));
                     break;
 
                 case EStrategyState.ArmedShort:
                     if (positionIsShort) Transition(EStrategyState.ShortActive, "Filled", result);
-                    else if (bar.Status == EBarStatus.Close && IsBullishBar(bar)) { Transition(EStrategyState.ScanningShort, "Cancelled", result); ResetPrices(); }
+                    else if (bar.Status == EBarStatus.Close && IsBullishBar(bar)) { Transition(EStrategyState.Inactive, "Rejection Failed", result); ResetPrices(bar.BarIndex, true); }
                     else if (!positionIsLong) result.Orders.Add(CreateOrder(EOrderType.SellStop, m_EntryStop));
                     break;
 
                 case EStrategyState.LongActive:
-                    if (!positionIsLong) { Transition(EStrategyState.ScanningLong, "Position Closed", result); ResetPrices(); }
+                    if (!positionIsLong) { Transition(EStrategyState.Inactive, "Trade Concluded", result); ResetPrices(bar.BarIndex, true); }
                     else
                     {
                         result.Orders.Add(CreateOrder(EOrderType.LongProtectStop, m_ProtectStop));
@@ -364,7 +409,7 @@ namespace PowerLanguage.Strategy
                     break;
 
                 case EStrategyState.ShortActive:
-                    if (!positionIsShort) { Transition(EStrategyState.ScanningShort, "Position Closed", result); ResetPrices(); }
+                    if (!positionIsShort) { Transition(EStrategyState.Inactive, "Trade Concluded", result); ResetPrices(bar.BarIndex, true); }
                     else
                     {
                         result.Orders.Add(CreateOrder(EOrderType.ShortProtectStop, m_ProtectStop));
@@ -377,8 +422,17 @@ namespace PowerLanguage.Strategy
             return result;
         }
 
-        public void OnCtrlClick(bool isLong) { m_State = isLong ? EStrategyState.ScanningLong : EStrategyState.ScanningShort; }
-        public void OnRightClick(bool isLong) { m_State = isLong ? EStrategyState.ScanningLong : EStrategyState.ScanningShort; }
+        public void OnCtrlClick(bool isLong, int currentBar) 
+        { 
+            m_State = isLong ? EStrategyState.ScanningLong : EStrategyState.ScanningShort;
+            // Only scan from this bar forward — ignore all historical bars
+            m_SignalBar = currentBar - 1;
+        }
+        public void OnRightClick(bool isLong, int currentBar) 
+        { 
+            m_State = isLong ? EStrategyState.ScanningLong : EStrategyState.ScanningShort;
+            m_SignalBar = currentBar - 1;
+        }
         public void OnShiftClick() { m_State = EStrategyState.Inactive; ResetPrices(); }
 
         private void Transition(EStrategyState next, string log, BarResult res) 
@@ -387,10 +441,18 @@ namespace PowerLanguage.Strategy
             m_State = next; 
         }
 
-        private void ResetPrices() { m_EntryStop = 0; m_ProtectStop = 0; m_TargetPrice = 0; } // Keep m_SignalBar for lockout check
+        private void ResetPrices(int currentBar, bool waitOneFullBar) 
+        { 
+            m_EntryStop = 0; 
+            m_ProtectStop = 0; 
+            m_TargetPrice = 0; 
+            if (waitOneFullBar) m_SignalBar = currentBar + 1; 
+        } 
 
-        private bool IsLongHammer(BarData b) { return b.Low < b.PrevOpen && b.Close >= b.Open && b.Close > b.Low; }
-        private bool IsShortStar(BarData b) { return b.High > b.PrevOpen && b.Close <= b.Open && b.Close < b.High; }
+        private void ResetPrices() { ResetPrices(-1, false); }
+
+        private bool IsLongHammer(BarData b) { return b.Low < b.PrevOpen; }
+        private bool IsShortStar(BarData b)  { return b.High > b.PrevOpen; }
         private bool IsBearishBar(BarData b) { return b.Close < b.Open; }
         private bool IsBullishBar(BarData b) { return b.Close > b.Open; }
 
@@ -399,9 +461,11 @@ namespace PowerLanguage.Strategy
             m_SignalBar = b.BarIndex; 
             double brick = Math.Abs(b.PrevClose - b.PrevOpen); 
             if (brick == 0) brick = 4.0; 
-            m_EntryStop = b.Close + brick; 
+            // If prev bar was counter-trend (red in uptrend), need 2 bricks to clear it
+            bool prevWasCounterTrend = b.PrevClose < b.PrevOpen;
+            m_EntryStop  = b.PrevClose + brick * (prevWasCounterTrend ? 2.0 : 1.0);
             m_ProtectStop = b.Low - (m_ProtectiveStopTicks * m_TickSize); 
-            m_TargetPrice = m_EntryStop + brick; 
+            m_TargetPrice = m_EntryStop + brick;
         }
 
         private void ArmShort(BarData b) 
@@ -409,9 +473,11 @@ namespace PowerLanguage.Strategy
             m_SignalBar = b.BarIndex; 
             double brick = Math.Abs(b.PrevClose - b.PrevOpen); 
             if (brick == 0) brick = 4.0; 
-            m_EntryStop = b.Close - brick; 
+            // If prev bar was counter-trend (blue in downtrend), need 2 bricks to clear it
+            bool prevWasCounterTrend = b.PrevClose > b.PrevOpen;
+            m_EntryStop  = b.PrevClose - brick * (prevWasCounterTrend ? 2.0 : 1.0);
             m_ProtectStop = b.High + (m_ProtectiveStopTicks * m_TickSize); 
-            m_TargetPrice = m_EntryStop - brick; 
+            m_TargetPrice = m_EntryStop - brick;
         }
 
         private OrderInstruction CreateOrder(EOrderType type, double price) 

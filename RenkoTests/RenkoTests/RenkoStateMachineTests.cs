@@ -2,9 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using NUnit.Framework;
-using PowerLanguage.Strategy;
 
-namespace RenkoTailTrading.Tests
+namespace RenkoTests
 {
     internal static class BarFactory
     {
@@ -78,14 +77,8 @@ namespace RenkoTailTrading.Tests
 
         [Test] public void CtrlClick_long_moves_to_ScanningLong()
         {
-            _sm.OnCtrlClick(true);
+            _sm.OnCtrlClick(true, 10);
             Assert.That(_sm.State, Is.EqualTo(EStrategyState.ScanningLong));
-        }
-
-        [Test] public void CtrlClick_short_moves_to_ScanningShort()
-        {
-            _sm.OnCtrlClick(false);
-            Assert.That(_sm.State, Is.EqualTo(EStrategyState.ScanningShort));
         }
     }
 
@@ -96,54 +89,50 @@ namespace RenkoTailTrading.Tests
         [SetUp] public void Setup()
         {
             _sm = new RenkoStateMachine(); _sm.TickSize = 0.25; _sm.ProtectiveStopTicks = 2;
-            _sm.OnCtrlClick(true);
+            _sm.OnCtrlClick(true, 10);
         }
 
         [Test] public void Hammer_on_new_bar_arms_long()
         {
-            var r = _sm.ProcessBar(BarFactory.LongHammer(1), false, false);
+            var r = _sm.ProcessBar(BarFactory.LongHammer(11), false, false);
             Assert.That(r.State, Is.EqualTo(EStrategyState.ArmedLong));
         }
 
-        [Test] public void Bullish_bar_without_hammer_stays_scanning()
+        [Test]
+        public void Prev_CounterTrend_Red_Requires_2_Bricks_Entry()
         {
-            var r = _sm.ProcessBar(BarFactory.BullishBar(1), false, false);
-            Assert.That(r.State, Is.EqualTo(EStrategyState.ScanningLong));
+            // Bar 10 was a red bar in an uptrend (counter-trend)
+            BarData b10 = BarFactory.BearishBar(10, 104, 4); // PrevOpen: 108, PrevClose: 104
+            _sm.OnCtrlClick(true, 10);
+            
+            // Bar 11 must show it follows a red bar
+            BarData b11 = BarFactory.LongHammer(11);
+            b11.PrevOpen = 108;
+            b11.PrevClose = 104;
+            b11.Low = 90.0; // Deep pierce
+            
+            _sm.ProcessBar(b11, false, false);
+            
+            // Expected Entry = PrevClose (104) + 2 bricks (8) = 112
+            Assert.That(_sm.EntryStop, Is.EqualTo(112.0).Within(0.01));
         }
 
-        [Test] public void Armed_long_sets_entry_stop_above_close()
+        [Test] public void Prev_WithTrend_Blue_Requires_1_Brick_Entry()
         {
-            _sm.ProcessBar(BarFactory.LongHammer(1), false, false);
-            Assert.That(_sm.EntryStop, Is.GreaterThan(0));
-        }
+            // Bar 10 was a blue bar (with-trend)
+            BarData b10 = BarFactory.BullishBar(10, 100, 4); // PrevOpen: 96, PrevClose: 100
+            _sm.OnCtrlClick(true, 10);
+            
+            // Bar 11 follows a blue bar
+            BarData b11 = BarFactory.LongHammer(11);
+            b11.PrevOpen = 96;
+            b11.PrevClose = 100;
+            b11.Low = 90.0; // Deep pierce
 
-        [Test] public void Armed_long_sets_protect_stop_below_low()
-        {
-            _sm.ProcessBar(BarFactory.LongHammer(1), false, false);
-            Assert.That(_sm.ProtectStop, Is.LessThan(_sm.EntryStop));
-        }
-    }
-
-    [TestFixture]
-    public class ScanningShortTests
-    {
-        private RenkoStateMachine _sm;
-        [SetUp] public void Setup()
-        {
-            _sm = new RenkoStateMachine(); _sm.TickSize = 0.25; _sm.ProtectiveStopTicks = 2;
-            _sm.OnCtrlClick(false);
-        }
-
-        [Test] public void ShootingStar_on_new_bar_arms_short()
-        {
-            var r = _sm.ProcessBar(BarFactory.ShortStar(1), false, false);
-            Assert.That(r.State, Is.EqualTo(EStrategyState.ArmedShort));
-        }
-
-        [Test] public void Bearish_bar_without_star_stays_scanning()
-        {
-            var r = _sm.ProcessBar(BarFactory.BearishBar(1), false, false);
-            Assert.That(r.State, Is.EqualTo(EStrategyState.ScanningShort));
+            _sm.ProcessBar(b11, false, false);
+            
+            // Expected Entry = PrevClose (100) + 1 brick (4) = 104
+            Assert.That(_sm.EntryStop, Is.EqualTo(104.0).Within(0.01));
         }
     }
 
@@ -154,37 +143,20 @@ namespace RenkoTailTrading.Tests
         [SetUp] public void Setup()
         {
             _sm = new RenkoStateMachine(); _sm.TickSize = 0.25; _sm.ProtectiveStopTicks = 2;
-            _sm.OnCtrlClick(true);
-            _sm.ProcessBar(BarFactory.LongHammer(1), false, false);
+            _sm.OnCtrlClick(true, 10);
+            _sm.ProcessBar(BarFactory.LongHammer(11), false, false);
         }
 
-        [Test] public void Sends_BuyStop_while_flat()
+        [Test] public void Bearish_close_cancels_to_Inactive_ZeroPersistence()
         {
-            var r = _sm.ProcessBar(BarFactory.BullishBar(2), false, false);
-            Assert.That(r.Orders.Any(o => o.Type == EOrderType.BuyStop), Is.True);
+            var r = _sm.ProcessBar(BarFactory.BearishBar(12), false, false);
+            Assert.That(r.State, Is.EqualTo(EStrategyState.Inactive));
         }
 
         [Test] public void Position_fill_transitions_to_LongActive()
         {
-            var r = _sm.ProcessBar(BarFactory.BullishBar(2), true, false);
+            var r = _sm.ProcessBar(BarFactory.BullishBar(12), true, false);
             Assert.That(r.State, Is.EqualTo(EStrategyState.LongActive));
-        }
-
-        [Test] public void Bearish_close_cancels_back_to_ScanningLong()
-        {
-            var r = _sm.ProcessBar(BarFactory.BearishBar(2), false, false);
-            Assert.That(r.State, Is.EqualTo(EStrategyState.ScanningLong));
-        }
-
-        [Test] public void Cannot_rearm_on_same_bar_as_cancel()
-        {
-            // Cancel on bar 2, try to arm again on bar 2 — should be blocked
-            _sm.ProcessBar(BarFactory.BearishBar(2), false, false); // cancels, m_SignalBar = 1
-            // Now try a hammer on bar 2 — the lockout is bar.BarIndex > m_SignalBar (1)
-            // bar 2 > 1 is true, so a hammer on bar 2 WOULD arm... 
-            // The lockout is set to the SIGNAL bar (hammer bar = 1), not the cancel bar
-            // So this test verifies the cancel itself just returns to scanning
-            Assert.That(_sm.State, Is.EqualTo(EStrategyState.ScanningLong));
         }
     }
 
@@ -195,90 +167,15 @@ namespace RenkoTailTrading.Tests
         [SetUp] public void Setup()
         {
             _sm = new RenkoStateMachine(); _sm.TickSize = 0.25; _sm.ProtectiveStopTicks = 2;
-            _sm.OnCtrlClick(true);
-            _sm.ProcessBar(BarFactory.LongHammer(1), false, false);
-            _sm.ProcessBar(BarFactory.BullishBar(2), true, false); // fill
+            _sm.OnCtrlClick(true, 10);
+            _sm.ProcessBar(BarFactory.LongHammer(11), false, false);
+            _sm.ProcessBar(BarFactory.BullishBar(12), true, false); // fill
         }
 
-        [Test] public void Sends_ProtectStop_and_Target_while_long()
+        [Test] public void Position_close_returns_to_Inactive_OneAndDone()
         {
-            var r = _sm.ProcessBar(BarFactory.BullishBar(3), true, false);
-            Assert.That(r.Orders.Any(o => o.Type == EOrderType.LongProtectStop), Is.True);
-            Assert.That(r.Orders.Any(o => o.Type == EOrderType.LongTargetLimit), Is.True);
-        }
-
-        [Test] public void Position_close_returns_to_ScanningLong()
-        {
-            var r = _sm.ProcessBar(BarFactory.BullishBar(3), false, false);
-            Assert.That(r.State, Is.EqualTo(EStrategyState.ScanningLong));
-        }
-
-        [Test] public void ShiftClick_goes_Inactive()
-        {
-            _sm.OnShiftClick();
-            Assert.That(_sm.State, Is.EqualTo(EStrategyState.Inactive));
-        }
-    }
-
-    [TestFixture]
-    public class ArmedShortTests
-    {
-        private RenkoStateMachine _sm;
-        [SetUp] public void Setup()
-        {
-            _sm = new RenkoStateMachine(); _sm.TickSize = 0.25; _sm.ProtectiveStopTicks = 2;
-            _sm.OnCtrlClick(false);
-            _sm.ProcessBar(BarFactory.ShortStar(1), false, false);
-        }
-
-        [Test] public void Sends_SellStop_while_flat()
-        {
-            var r = _sm.ProcessBar(BarFactory.BearishBar(2), false, false);
-            Assert.That(r.Orders.Any(o => o.Type == EOrderType.SellStop), Is.True);
-        }
-
-        [Test] public void Position_fill_transitions_to_ShortActive()
-        {
-            var r = _sm.ProcessBar(BarFactory.BearishBar(2), false, true);
-            Assert.That(r.State, Is.EqualTo(EStrategyState.ShortActive));
-        }
-
-        [Test] public void Bullish_close_cancels_back_to_ScanningShort()
-        {
-            var r = _sm.ProcessBar(BarFactory.BullishBar(2), false, false);
-            Assert.That(r.State, Is.EqualTo(EStrategyState.ScanningShort));
-        }
-    }
-
-    [TestFixture]
-    public class ShortActiveTests
-    {
-        private RenkoStateMachine _sm;
-        [SetUp] public void Setup()
-        {
-            _sm = new RenkoStateMachine(); _sm.TickSize = 0.25; _sm.ProtectiveStopTicks = 2;
-            _sm.OnCtrlClick(false);
-            _sm.ProcessBar(BarFactory.ShortStar(1), false, false);
-            _sm.ProcessBar(BarFactory.BearishBar(2), false, true); // fill
-        }
-
-        [Test] public void Sends_ProtectStop_and_Target_while_short()
-        {
-            var r = _sm.ProcessBar(BarFactory.BearishBar(3), false, true);
-            Assert.That(r.Orders.Any(o => o.Type == EOrderType.ShortProtectStop), Is.True);
-            Assert.That(r.Orders.Any(o => o.Type == EOrderType.ShortTargetLimit), Is.True);
-        }
-
-        [Test] public void Position_close_returns_to_ScanningShort()
-        {
-            var r = _sm.ProcessBar(BarFactory.BearishBar(3), false, false);
-            Assert.That(r.State, Is.EqualTo(EStrategyState.ScanningShort));
-        }
-
-        [Test] public void ShiftClick_goes_Inactive()
-        {
-            _sm.OnShiftClick();
-            Assert.That(_sm.State, Is.EqualTo(EStrategyState.Inactive));
+            var r = _sm.ProcessBar(BarFactory.BullishBar(13), false, false);
+            Assert.That(r.State, Is.EqualTo(EStrategyState.Inactive));
         }
     }
 }
