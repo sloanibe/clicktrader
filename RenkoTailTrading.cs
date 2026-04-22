@@ -41,10 +41,13 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_EntryLine;
         private ITrendLineObject m_ProtectLine;
         private ITrendLineObject m_TargetLine;
+        private ITextObject      m_EntryLabel;
+        private ITextObject      m_ProtectLabel;
+        private ITextObject      m_TargetLabel;
 
         // ─── EMA ──────────────────────────────────────────────────────────────────
         private double[] m_EMAArray;
-        private const int MaxBars = 100000;
+        private const int MaxBars = 1000000; // Increased to 1M bars for Renko safety
 
         // ─── CONSTRUCTOR ──────────────────────────────────────────────────────────
         public RenkoTailTrading(object ctx) : base(ctx)
@@ -143,9 +146,10 @@ namespace PowerLanguage.Strategy
 
             var result = m_Brain.ProcessBar(data, isLong, isShort); 
 
-            if (result.State != m_LastState && !string.IsNullOrEmpty(result.TransitionLog))
+            if (result.State != m_LastState || !string.IsNullOrEmpty(result.TransitionLog))
             {
-                Output.WriteLine("[RenkoState] {0} (Bar {1})", result.TransitionLog, Bars.CurrentBar);
+                string logStr = string.IsNullOrEmpty(result.TransitionLog) ? "VIA_MOUSE" : result.TransitionLog;
+                Output.WriteLine("[RenkoState] {0} -> {1} ({2}) at Bar {3}", m_LastState, result.State, logStr, Bars.CurrentBar);
                 m_LastState = result.State;
             }
 
@@ -197,48 +201,54 @@ namespace PowerLanguage.Strategy
             if (Bars.CurrentBar < 10) return;
 
             double   price    = Bars.Close[0];
-            DateTime rightEnd = Bars.Time[0];
+            // Anchor 3 bars back from the current forming bar
+            DateTime rightEnd = Bars.Time[Math.Min(3, Bars.CurrentBar - 1)];
 
-            int lb = 1;
-            while (lb < Bars.CurrentBar - 1 && Bars.Time[lb] >= rightEnd) lb++;
-            lb = Math.Min(lb + 8, Bars.CurrentBar - 1);
+            int lb = Math.Min(13, Bars.CurrentBar - 1);
             DateTime leftAnchor = Bars.Time[lb];
 
             if (m_StalkLine == null)
             {
                 m_StalkLine = DrwTrendLine.Create(new ChartPoint(leftAnchor, price), new ChartPoint(rightEnd, price));
-                m_StalkLine.Color = Color.DimGray; m_StalkLine.Style = ETLStyle.ToolDashed; m_StalkLine.ExtLeft = true;
+                m_StalkLine.Color = Color.Cyan; m_StalkLine.Style = ETLStyle.ToolDashed; m_StalkLine.ExtLeft = true;
+                m_StalkLine.Size = 2;
             }
             else { m_StalkLine.Begin = new ChartPoint(leftAnchor, price); m_StalkLine.End = new ChartPoint(rightEnd,   price); }
 
             if (m_StatusLabel == null)
             {
-                m_StatusLabel = DrwText.Create(new ChartPoint(leftAnchor, price), "STALKING OFF");
-                m_StatusLabel.HStyle = ETextStyleH.Right; m_StatusLabel.VStyle = ETextStyleV.Above;
-                m_StatusLabel.Size = 11; m_StatusLabel.Color = Color.DimGray;
+                m_StatusLabel = DrwText.Create(new ChartPoint(rightEnd, price), "STALKING OFF");
+                m_StatusLabel.HStyle = ETextStyleH.Left; m_StatusLabel.VStyle = ETextStyleV.Above;
+                m_StatusLabel.Size = 12; m_StatusLabel.Color = Color.Yellow;
             }
-            m_StatusLabel.Location = new ChartPoint(leftAnchor, price);
+            // Anchor the text label at the 10-bar-back mark
+            m_StatusLabel.Location = new ChartPoint(rightEnd, price);
 
             switch (state)
             {
                 case EStrategyState.Inactive:
-                    m_StatusLabel.Color = Color.DimGray; m_StatusLabel.Text = "STALKING OFF";
+                    m_StatusLabel.Color = Color.White; m_StatusLabel.Text = "STALKING OFF";
+                    m_StalkLine.Color = Color.SlateGray;
                     break;
                 case EStrategyState.ScanningLong:
-                    m_StatusLabel.Color = Color.DodgerBlue; m_StatusLabel.Text = "STALKING LONG";
+                    m_StatusLabel.Color = Color.White; m_StatusLabel.Text = "STALKING LONG";
+                    m_StalkLine.Color = Color.Cyan;
                     break;
                 case EStrategyState.ScanningShort:
-                    m_StatusLabel.Color = Color.OrangeRed; m_StatusLabel.Text = "STALKING SHORT";
+                    m_StatusLabel.Color = Color.White; m_StatusLabel.Text = "STALKING SHORT";
+                    m_StalkLine.Color = Color.Orange;
                     break;
                 case EStrategyState.ArmedLong:
                 case EStrategyState.ArmedShort:
                     bool isLong = state == EStrategyState.ArmedLong;
-                    m_StatusLabel.Color = isLong ? Color.DodgerBlue : Color.OrangeRed;
-                    m_StatusLabel.Text  = string.Format("ARMED {0}  |  @ {1:F2}  SL {2:F2}", isLong ? "LONG" : "SHORT", m_Brain.EntryStop, m_Brain.ProtectStop);
+                    m_StatusLabel.Color = Color.White;
+                    m_StatusLabel.Text  = string.Format("ARMED {0}", isLong ? "LONG" : "SHORT");
+                    m_StalkLine.Color = isLong ? Color.Cyan : Color.Orange;
                     break;
                 case EStrategyState.LongActive:
                 case EStrategyState.ShortActive:
-                    m_StatusLabel.Color = Color.LimeGreen; m_StatusLabel.Text = "POSITION ACTIVE";
+                    m_StatusLabel.Color = Color.Lime; m_StatusLabel.Text = "POSITION ACTIVE";
+                    m_StalkLine.Color = Color.Lime;
                     break;
             }
         }
@@ -274,25 +284,41 @@ namespace PowerLanguage.Strategy
 
         private void ClearTradeLevelDrawings()
         {
-            if (m_EntryLine   != null) { m_EntryLine.Delete();   m_EntryLine   = null; }
-            if (m_ProtectLine != null) { m_ProtectLine.Delete(); m_ProtectLine = null; }
-            if (m_TargetLine  != null) { m_TargetLine.Delete();  m_TargetLine  = null; }
+            if (m_EntryLine    != null) { m_EntryLine.Delete();    m_EntryLine    = null; }
+            if (m_ProtectLine  != null) { m_ProtectLine.Delete();  m_ProtectLine  = null; }
+            if (m_TargetLine   != null) { m_TargetLine.Delete();   m_TargetLine   = null; }
+            if (m_EntryLabel   != null) { m_EntryLabel.Delete();   m_EntryLabel   = null; }
+            if (m_ProtectLabel != null) { m_ProtectLabel.Delete(); m_ProtectLabel = null; }
+            if (m_TargetLabel  != null) { m_TargetLabel.Delete();  m_TargetLabel  = null; }
         }
 
         private void DrawTradeLevels(DateTime fromTime, double entryPrice, double protectPrice, double targetPrice, bool isLong)
         {
-            DateTime rightEdge = Bars.Time[0].AddMinutes(5);
+            DateTime rightEdge  = Bars.Time[0].AddMinutes(5);
+            DateTime labelAnchor = Bars.Time[Math.Min(3, Bars.CurrentBar - 1)];
             Color entryColor   = isLong ? Color.DodgerBlue : Color.OrangeRed;
             Color protectColor = isLong ? Color.Salmon      : Color.Yellow;
 
+            // ── Entry line + label ──────────────────────────────────────────────
             if (m_EntryLine == null) { m_EntryLine = DrwTrendLine.Create(new ChartPoint(fromTime, entryPrice), new ChartPoint(rightEdge, entryPrice)); m_EntryLine.Color = entryColor; m_EntryLine.Size = 2; m_EntryLine.ExtRight = true; }
             else { m_EntryLine.Begin = new ChartPoint(fromTime, entryPrice); m_EntryLine.End = new ChartPoint(rightEdge, entryPrice); m_EntryLine.Color = entryColor; }
 
+            if (m_EntryLabel == null) { m_EntryLabel = DrwText.Create(new ChartPoint(labelAnchor, entryPrice), "ENTRY"); m_EntryLabel.HStyle = ETextStyleH.Left; m_EntryLabel.VStyle = ETextStyleV.Above; m_EntryLabel.Size = 11; m_EntryLabel.Color = Color.White; }
+            else { m_EntryLabel.Location = new ChartPoint(labelAnchor, entryPrice); }
+
+            // ── Protect (stop loss) line + label ────────────────────────────────
             if (m_ProtectLine == null) { m_ProtectLine = DrwTrendLine.Create(new ChartPoint(fromTime, protectPrice), new ChartPoint(rightEdge, protectPrice)); m_ProtectLine.Color = protectColor; m_ProtectLine.Size = 1; m_ProtectLine.Style = ETLStyle.ToolDashed; m_ProtectLine.ExtRight = true; }
             else { m_ProtectLine.Begin = new ChartPoint(fromTime, protectPrice); m_ProtectLine.End = new ChartPoint(rightEdge, protectPrice); m_ProtectLine.Color = protectColor; }
 
+            if (m_ProtectLabel == null) { m_ProtectLabel = DrwText.Create(new ChartPoint(labelAnchor, protectPrice), "STOP"); m_ProtectLabel.HStyle = ETextStyleH.Left; m_ProtectLabel.VStyle = ETextStyleV.Above; m_ProtectLabel.Size = 11; m_ProtectLabel.Color = Color.White; }
+            else { m_ProtectLabel.Location = new ChartPoint(labelAnchor, protectPrice); }
+
+            // ── Target (take profit) line + label ───────────────────────────────
             if (m_TargetLine == null) { m_TargetLine = DrwTrendLine.Create(new ChartPoint(fromTime, targetPrice), new ChartPoint(rightEdge, targetPrice)); m_TargetLine.Color = Color.LimeGreen; m_TargetLine.Size = 2; m_TargetLine.ExtRight = true; }
             else { m_TargetLine.Begin = new ChartPoint(fromTime, targetPrice); m_TargetLine.End = new ChartPoint(rightEdge, targetPrice); }
+
+            if (m_TargetLabel == null) { m_TargetLabel = DrwText.Create(new ChartPoint(labelAnchor, targetPrice), "PROFIT"); m_TargetLabel.HStyle = ETextStyleH.Left; m_TargetLabel.VStyle = ETextStyleV.Above; m_TargetLabel.Size = 11; m_TargetLabel.Color = Color.White; }
+            else { m_TargetLabel.Location = new ChartPoint(labelAnchor, targetPrice); }
         }
 
         protected override void Destroy()
@@ -300,6 +326,7 @@ namespace PowerLanguage.Strategy
             ClearTradeLevelDrawings();
             if (m_StalkLine   != null) m_StalkLine.Delete();
             if (m_StatusLabel != null) m_StatusLabel.Delete();
+            // Labels inside ClearTradeLevelDrawings already handle the trade labels
         }
     }
 
@@ -390,13 +417,35 @@ namespace PowerLanguage.Strategy
                 case EStrategyState.ArmedLong:
                     if (positionIsLong) Transition(EStrategyState.LongActive, "Filled", result);
                     else if (bar.Status == EBarStatus.Close && IsBearishBar(bar)) { Transition(EStrategyState.Inactive, "Rejection Failed", result); ResetPrices(bar.BarIndex, true); }
-                    else if (!positionIsShort) result.Orders.Add(CreateOrder(EOrderType.BuyStop, m_EntryStop));
+                    else if (!positionIsShort) 
+                    {
+                        // Dynamically update stop to follow the lowest point of the tail
+                        double potentialStop = bar.Low - (m_ProtectiveStopTicks * m_TickSize);
+                        if (potentialStop < m_ProtectStop) 
+                        {
+                            m_ProtectStop = potentialStop;
+                            result.TransitionLog = string.Format("Stop Trail (Long): {0:F2}", m_ProtectStop);
+                        }
+                        
+                        result.Orders.Add(CreateOrder(EOrderType.BuyStop, m_EntryStop));
+                    }
                     break;
 
                 case EStrategyState.ArmedShort:
                     if (positionIsShort) Transition(EStrategyState.ShortActive, "Filled", result);
                     else if (bar.Status == EBarStatus.Close && IsBullishBar(bar)) { Transition(EStrategyState.Inactive, "Rejection Failed", result); ResetPrices(bar.BarIndex, true); }
-                    else if (!positionIsLong) result.Orders.Add(CreateOrder(EOrderType.SellStop, m_EntryStop));
+                    else if (!positionIsLong) 
+                    {
+                        // Dynamically update stop to follow the highest point of the tail
+                        double potentialStop = bar.High + (m_ProtectiveStopTicks * m_TickSize);
+                        if (potentialStop > m_ProtectStop) 
+                        {
+                            m_ProtectStop = potentialStop;
+                            result.TransitionLog = string.Format("Stop Trail (Short): {0:F2}", m_ProtectStop);
+                        }
+                        
+                        result.Orders.Add(CreateOrder(EOrderType.SellStop, m_EntryStop));
+                    }
                     break;
 
                 case EStrategyState.LongActive:
