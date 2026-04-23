@@ -78,10 +78,13 @@ namespace PowerLanguage.Strategy
             m_CloseShort = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "Tail_FlatS", EOrderAction.BuyToCover));
         }
 
+        private double m_Alpha;
+
         protected override void StartCalc()
         {
             m_Brain.ProtectiveStopTicks = ProtectiveStopTicks;
             m_Brain.TickSize            = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            m_Alpha                     = 2.0 / (MAPeriod + 1.0);
 
             m_StalkLine   = null;
             m_StatusLabel = null;
@@ -127,11 +130,7 @@ namespace PowerLanguage.Strategy
             }
 
             if (idx == 0) m_EMAArray[0] = Bars.Close[0];
-            else
-            {
-                double alpha = 2.0 / (MAPeriod + 1.0);
-                m_EMAArray[idx] = (Bars.Close[0] - m_EMAArray[idx - 1]) * alpha + m_EMAArray[idx - 1];
-            }
+            else m_EMAArray[idx] = (Bars.Close[0] - m_EMAArray[idx - 1]) * m_Alpha + m_EMAArray[idx - 1];
 
             var data = new BarData();
             data.BarIndex  = Bars.CurrentBar;
@@ -147,8 +146,10 @@ namespace PowerLanguage.Strategy
 
             if (result.State != m_LastState || !string.IsNullOrEmpty(result.TransitionLog))
             {
+#if DEBUG
                 string logStr = string.IsNullOrEmpty(result.TransitionLog) ? "VIA_MOUSE" : result.TransitionLog;
                 Output.WriteLine("[RenkoState] {0} -> {1} ({2}) at Bar {3}", m_LastState, result.State, logStr, Bars.CurrentBar);
+#endif
                 m_LastState = result.State;
             }
 
@@ -162,13 +163,20 @@ namespace PowerLanguage.Strategy
                 {
                     switch (cmd.Type)
                     {
-                        case EOrderType.BuyStop:           Output.WriteLine("[Order] BuyStop @ {0}", cmd.Price); m_BuyStopOrder.Send(cmd.Price); break;
-                        case EOrderType.SellStop:          Output.WriteLine("[Order] SellStop @ {0}", cmd.Price); m_SellStopOrder.Send(cmd.Price); break;
+                        case EOrderType.BuyStop:           
+#if DEBUG
+                            Output.WriteLine("[Order] BuyStop @ {0}", cmd.Price); 
+#endif
+                            m_BuyStopOrder.Send(cmd.Price); break;
+                        case EOrderType.SellStop:          
+#if DEBUG
+                            Output.WriteLine("[Order] SellStop @ {0}", cmd.Price); 
+#endif
+                            m_SellStopOrder.Send(cmd.Price); break;
                         case EOrderType.LongProtectStop:   m_LongProtectStop.Send(cmd.Price); break;
                         case EOrderType.LongTargetLimit:   m_LongTargetLimit.Send(cmd.Price); break;
                         case EOrderType.ShortProtectStop:  m_ShortProtectStop.Send(cmd.Price); break;
                         case EOrderType.ShortTargetLimit:  m_ShortTargetLimit.Send(cmd.Price); break;
-                        // CloseLong / CloseShort handled above, every tick
                     }
                 }
             }
@@ -374,25 +382,25 @@ namespace PowerLanguage.Strategy
         public double TickSize               { get { return m_TickSize; } set { m_TickSize = value; } }
         public int    ProtectiveStopTicks    { get { return m_ProtectiveStopTicks; } set { m_ProtectiveStopTicks = value; } }
 
+        private BarResult m_Result;
+
         public RenkoStateMachine()
         {
             m_State = EStrategyState.Inactive;
             m_SignalBar = -1;
             m_TickSize = 0.25;
             m_ProtectiveStopTicks = 2;
+            m_Result = new BarResult();
         }
 
         public BarResult ProcessBar(BarData bar, bool positionIsLong, bool positionIsShort)
         {
-            BarResult result = new BarResult();
-            result.State = m_State;
+            m_Result.Orders.Clear();
+            m_Result.TransitionLog = null;
+            m_Result.State = m_State;
+            BarResult result = m_Result;
 
-            if (m_State == EStrategyState.Inactive)
-            {
-                if (positionIsLong)  result.Orders.Add(CreateOrder(EOrderType.CloseLong));
-                if (positionIsShort) result.Orders.Add(CreateOrder(EOrderType.CloseShort));
-                return result;
-            }
+            if (m_State == EStrategyState.Inactive) return result;
 
             switch (m_State)
             {
