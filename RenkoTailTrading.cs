@@ -71,8 +71,11 @@ namespace PowerLanguage.Strategy
             m_LongTargetLimit  = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "Tail_L_TP",  EOrderAction.Sell));
             m_ShortTargetLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "Tail_S_TP", EOrderAction.BuyToCover));
 
-            m_CloseLong  = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "Tail_FlatL", EOrderAction.Sell, OrderExit.FromAll));
-            m_CloseShort = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "Tail_FlatS", EOrderAction.BuyToCover, OrderExit.FromAll));
+            // ─── CRITICAL FLATTEN ARCHITECTURE ───────────────────────────────────────
+            // 1. Do NOT use OrderExit.FromAll. It causes silent order failures if not strictly tied to an entry name.
+            // 2. Do NOT use MarketThisBar. It waits for the Renko brick to close. MarketNextBar fires instantly on the next IOG tick.
+            m_CloseLong  = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "Tail_FlatL", EOrderAction.Sell));
+            m_CloseShort = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "Tail_FlatS", EOrderAction.BuyToCover));
         }
 
         protected override void StartCalc()
@@ -100,31 +103,27 @@ namespace PowerLanguage.Strategy
 
             if (m_FlattenRequested)
             {
-                // In PowerLanguage, the way to cancel pending orders is simply 
-                // to STOP calling their .Send() methods. 
-                // By returning early here, we stop sending m_BuyStopOrder, etc.
-
-                // Hammer the exit market orders every tick
-                if (isLong) 
+                // CRITICAL: Do not wrap these orders in history checks. The strategy must 
+                // execute entirely in live mode on the next incoming IOG data tick.
+                if (Bars.LastBarOnChart)
                 {
-                    Output.WriteLine("[Renko] NUCLEAR FLATTEN: Sending CloseLong Market Order.");
-                    Output.WriteLine("[Order] CloseLong Market."); m_CloseLong.Send();
-                }
-                if (isShort)
-                {
-                    Output.WriteLine("[Renko] NUCLEAR FLATTEN: Sending CloseShort Market Order.");
-                    Output.WriteLine("[Order] CloseShort Market."); m_CloseShort.Send();
-                }
+                    // Live Mode Execution
+                    if (isLong)  m_CloseLong.Send();
+                    if (isShort) m_CloseShort.Send();
 
-                // Only clear the flag once the platform confirms we are flat
-                if (!isLong && !isShort) 
-                {
-                    Output.WriteLine("[Renko] NUCLEAR FLATTEN: Position confirmed Flat. Clearing flag.");
-                    m_FlattenRequested = false;
+                    if (!isLong && !isShort) 
+                    {
+                        m_FlattenRequested = false;
+                        m_Brain.OnShiftClick(); 
+                        RefreshHUD(EStrategyState.Inactive);
+                        UpdateTradeLevelDrawings(EStrategyState.Inactive);
+                    }
+                    else
+                    {
+                        UpdateTradeLevelDrawings(m_Brain.State);
+                    }
                 }
-
-                if (Bars.LastBarOnChart) RefreshHUD(EStrategyState.Inactive);
-                return; // Skip all other logic until flat
+                return; // Bypass all other logic until flat
             }
 
             if (idx == 0) m_EMAArray[0] = Bars.Close[0];
@@ -262,10 +261,11 @@ namespace PowerLanguage.Strategy
             if (shift) 
             { 
 #if DEBUG
-                Output.WriteLine("[MouseLog] SHIFT-CLICK detected. Setting Nuclear Flatten.");
+                Output.WriteLine("[MouseLog] SHIFT-CLICK detected. Awaiting live tick for Flatten.");
 #endif
+                // CRITICAL: Do NOT use ExecControl.Recalculate() here. 
+                // Forcing a recalculation causes history-replay lag and breaks the live order sequence.
                 m_FlattenRequested = true;
-                m_Brain.OnShiftClick(); 
                 return; 
             }
             if (ctrl)
