@@ -427,14 +427,6 @@ namespace PowerLanguage.Strategy
                     else if (bar.Status == EBarStatus.Close && IsBearishBar(bar)) { Transition(EStrategyState.Inactive, "Rejection Failed", result); ResetPrices(bar.BarIndex, true); }
                     else if (!positionIsShort) 
                     {
-                        // Dynamically update stop to follow the lowest point of the tail
-                        double potentialStop = bar.Low - (m_ProtectiveStopTicks * m_TickSize);
-                        if (potentialStop < m_ProtectStop) 
-                        {
-                            m_ProtectStop = potentialStop;
-                            result.TransitionLog = string.Format("Stop Trail (Long): {0:F2}", m_ProtectStop);
-                        }
-                        
                         result.Orders.Add(CreateOrder(EOrderType.BuyStop, m_EntryStop));
                     }
                     break;
@@ -444,14 +436,6 @@ namespace PowerLanguage.Strategy
                     else if (bar.Status == EBarStatus.Close && IsBullishBar(bar)) { Transition(EStrategyState.Inactive, "Rejection Failed", result); ResetPrices(bar.BarIndex, true); }
                     else if (!positionIsLong) 
                     {
-                        // Dynamically update stop to follow the highest point of the tail
-                        double potentialStop = bar.High + (m_ProtectiveStopTicks * m_TickSize);
-                        if (potentialStop > m_ProtectStop) 
-                        {
-                            m_ProtectStop = potentialStop;
-                            result.TransitionLog = string.Format("Stop Trail (Short): {0:F2}", m_ProtectStop);
-                        }
-                        
                         result.Orders.Add(CreateOrder(EOrderType.SellStop, m_EntryStop));
                     }
                     break;
@@ -521,7 +505,8 @@ namespace PowerLanguage.Strategy
             // If prev bar was counter-trend (red in uptrend), need 2 bricks to clear it
             bool prevWasCounterTrend = b.PrevClose < b.PrevOpen;
             m_EntryStop  = b.PrevClose + brick * (prevWasCounterTrend ? 2.0 : 1.0);
-            m_ProtectStop = b.Low - (m_ProtectiveStopTicks * m_TickSize); 
+            // Protective stop is 2 bars (bricks) below the entry close (color change price)
+            m_ProtectStop = m_EntryStop - (2.0 * brick) - (m_ProtectiveStopTicks * m_TickSize); 
             m_TargetPrice = m_EntryStop + brick;
         }
 
@@ -533,7 +518,8 @@ namespace PowerLanguage.Strategy
             // If prev bar was counter-trend (blue in downtrend), need 2 bricks to clear it
             bool prevWasCounterTrend = b.PrevClose > b.PrevOpen;
             m_EntryStop  = b.PrevClose - brick * (prevWasCounterTrend ? 2.0 : 1.0);
-            m_ProtectStop = b.High + (m_ProtectiveStopTicks * m_TickSize); 
+            // Protective stop is 2 bars (bricks) above the entry close (color change price)
+            m_ProtectStop = m_EntryStop + (2.0 * brick) + (m_ProtectiveStopTicks * m_TickSize); 
             m_TargetPrice = m_EntryStop - brick;
         }
 
