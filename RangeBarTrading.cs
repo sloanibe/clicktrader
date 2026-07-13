@@ -10,24 +10,25 @@ namespace PowerLanguage.Strategy
     [IOGMode(IOGMode.Enabled)]
     [MouseEvents(true)]
     [SameAsSymbol(true)]
+    [RecoverDrawings(false)]
     [AllowSendOrdersAlways]
     public class RangeBarTradingV3 : SignalObject
     {
-        [Input] public int OrderQtyTier1 { get; set; }
-        [Input] public int OrderQtyTier2 { get; set; }
-        [Input] public int RangeSizeTicks { get; set; } // Default: 5 ticks; 0 = auto-detect from chart
-        [Input] public int ProfitTargetTicksTier1 { get; set; } 
-        [Input] public int ProfitTargetTicksTier2 { get; set; } 
-        [Input] public int StopTailOffsetTicks { get; set; }
-        [Input] public int ProximityTicks { get; set; }
-        [Input] public int EntryOffsetTicks { get; set; }
-        [Input] public bool ShowHUD { get; set; }
-        [Input] public int MasterTrendPeriod { get; set; }
-        [Input] public int MinExpansionTicks { get; set; }
-        [Input] public int MinBreadth_15_60 { get; set; }
-        [Input] public int MinBreadth_5_15 { get; set; }
-        [Input] public double MinSlopeTicks { get; set; }
-        [Input] public int TrendRecencyBars { get; set; }
+        // The only user-facing strategy settings.
+        [Input] public int RangeSizeTicks { get; set; }
+        [Input] public int ProtectiveStopLossTicks { get; set; }
+        [Input] public int ProfitTargetTicks { get; set; }
+
+        // Fixed internal behavior; these are intentionally not exposed in the
+        // Strategy Properties dialog.
+        private const int OrderQuantity = 1;
+        private const int EntryOffsetTicks = 1;
+        private const int ProximityTicks = 5;
+        private const bool ShowHUD = true;
+        private const int MasterTrendPeriod = 60;
+        private const int MinExpansionTicks = 25;
+        private const int MinBreadth_15_60 = 5;
+        private const int MinBreadth_5_15 = 4;
 
         private IOrderPriced m_BuyStop;
         private IOrderPriced m_SellStop;
@@ -48,12 +49,14 @@ namespace PowerLanguage.Strategy
         private double m_LastSentPrice = 0;
         
         private int m_LastMarketPosition = 0;
-        private int m_CurrentTradeTier = 1;
 
         private bool m_BuyOrderActive = false;
         private bool m_SellOrderActive = false;
-        private bool m_CancelRequested = false;
         private bool m_FlattenRequested = false;
+        // Persistent kill mode entered by Ctrl/Shift-click while armed or in a
+        // position. It suppresses every entry/exit order and flattens any open
+        // or late-arriving fill until the user explicitly arms again.
+        private bool m_KillModeActive = false;
         // Once Ctrl-click is used, manual arming owns entry selection until the
         // position is resolved or the user Shift-clicks to cancel.
         private bool m_ManualArmMode = false;
@@ -65,17 +68,15 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_StopLine;
         private ITrendLineObject m_ProjectedEntryLine;
         private ITrendLineObject m_GoSignalMarker;
+        private ITextObject m_TargetLabel;
+        private ITextObject m_StopLabel;
         private ITextObject m_HUDLabel;
 
         public RangeBarTradingV3(object ctx) : base(ctx)
         {
-            OrderQtyTier1 = 1; OrderQtyTier2 = 1; 
             RangeSizeTicks = 5;
-            ProfitTargetTicksTier1 = 10; ProfitTargetTicksTier2 = 15; 
-            StopTailOffsetTicks = 2; ProximityTicks = 5; EntryOffsetTicks = 1;
-            ShowHUD = true; MasterTrendPeriod = 60;
-            MinBreadth_15_60 = 5; MinBreadth_5_15 = 4; MinSlopeTicks = 1.0; 
-            MinExpansionTicks = 25; TrendRecencyBars = 30; 
+            ProtectiveStopLossTicks = 12;
+            ProfitTargetTicks = 10;
         }
 
         protected override void Create()
@@ -83,12 +84,14 @@ namespace PowerLanguage.Strategy
             m_FastEMA = new XAverage(this); m_SlowEMA = new XAverage(this); m_MasterEMA = new XAverage(this);
             m_BuyStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "RangeBuy", EOrderAction.Buy));
             m_SellStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "RangeSell", EOrderAction.SellShort));
-            m_BuyExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectLong", EOrderAction.Sell, OrderExit.FromAll));
-            m_SellExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectShort", EOrderAction.BuyToCover, OrderExit.FromAll));
-            m_BuyExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitLong", EOrderAction.Sell, OrderExit.FromAll));
-            m_SellExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitShort", EOrderAction.BuyToCover, OrderExit.FromAll));
-            m_CloseLongNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergLong", EOrderAction.Sell, OrderExit.FromAll));
-            m_CloseShortNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergShort", EOrderAction.BuyToCover, OrderExit.FromAll));
+            // Match the proven RenkoTailTrading exit-order construction. These
+            // actions are only emitted while the matching position is active.
+            m_BuyExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectLong", EOrderAction.Sell));
+            m_SellExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectShort", EOrderAction.BuyToCover));
+            m_BuyExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitLong", EOrderAction.Sell));
+            m_SellExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitShort", EOrderAction.BuyToCover));
+            m_CloseLongNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergLong", EOrderAction.Sell));
+            m_CloseShortNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergShort", EOrderAction.BuyToCover));
         }
 
         protected override void StartCalc()
@@ -96,15 +99,22 @@ namespace PowerLanguage.Strategy
             m_FastEMA.Length = 8; m_FastEMA.Price = Bars.Close;
             m_SlowEMA.Length = 24; m_SlowEMA.Price = Bars.Close;
             m_MasterEMA.Length = MasterTrendPeriod; m_MasterEMA.Price = Bars.Close;
-            m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = m_ProtectiveStopPrice = m_ProfitTargetPrice = m_LastSentPrice = 0;
-            m_ManualArmMode = false;
-            ClearTradingDrawings();
+            // Do not reset live execution state here. MultiCharts may call
+            // StartCalc again during a broker/order-triggered recalculation. The
+            // RenkoTail strategy preserves its state across those recalculations;
+            // clearing these flags here would make an armed order disappear on
+            // the next tick. Field initializers provide clean state for a newly
+            // created strategy instance, and Destroy handles drawing cleanup.
         }
 
         private void ClearTradingDrawings() {
-            if (m_HUDLabel != null) m_HUDLabel.Delete(); if (m_TargetLine != null) m_TargetLine.Delete();
-            if (m_StopLine != null) m_StopLine.Delete(); if (m_ProjectedEntryLine != null) m_ProjectedEntryLine.Delete();
-            if (m_GoSignalMarker != null) m_GoSignalMarker.Delete();
+            if (m_HUDLabel != null) { m_HUDLabel.Delete(); m_HUDLabel = null; }
+            if (m_TargetLine != null) { m_TargetLine.Delete(); m_TargetLine = null; }
+            if (m_StopLine != null) { m_StopLine.Delete(); m_StopLine = null; }
+            if (m_TargetLabel != null) { m_TargetLabel.Delete(); m_TargetLabel = null; }
+            if (m_StopLabel != null) { m_StopLabel.Delete(); m_StopLabel = null; }
+            ClearProjectedEntryLine();
+            if (m_GoSignalMarker != null) { m_GoSignalMarker.Delete(); m_GoSignalMarker = null; }
         }
 
         protected override void CalcBar()
@@ -116,43 +126,76 @@ namespace PowerLanguage.Strategy
             if (!Environment.IsRealTimeCalc) return;
 
             int currentPosition = StrategyInfo.MarketPosition;
-            if (currentPosition == 0 && !m_ManualArmMode && !m_BuyOrderActive && !m_SellOrderActive && !m_CancelRequested)
-                CheckForHiddenPierceSignals(tickSize);
 
-            if (m_FlattenRequested && currentPosition != 0) { if (currentPosition > 0) m_CloseLongNextBar.Send(); else m_CloseShortNextBar.Send(); m_ProtectiveStopPrice = m_ProfitTargetPrice = 0; }
-            else if (m_FlattenRequested && currentPosition == 0) m_FlattenRequested = false;
+            // Highest-priority execution path, modeled after RenkoTailTrading's
+            // nuclear flatten. Do not emit entry, stop-loss, or target orders
+            // while kill mode is active. Re-send only the market close until the
+            // platform confirms that the position is flat.
+            if (m_KillModeActive) {
+                m_BuyOrderActive = m_SellOrderActive = false;
+                m_StopPrice = m_LastSentPrice = 0;
+                m_ProtectiveStopPrice = m_ProfitTargetPrice = 0;
+                m_FlattenRequested = currentPosition != 0;
+
+                if (Bars.LastBarOnChart) {
+                    if (currentPosition > 0) m_CloseLongNextBar.Send();
+                    else if (currentPosition < 0) m_CloseShortNextBar.Send();
+                }
+
+                m_LastMarketPosition = currentPosition;
+                if (ShowHUD) UpdateHUD();
+                return;
+            }
+
+            if (currentPosition == 0 && !m_ManualArmMode && !m_BuyOrderActive && !m_SellOrderActive)
+                CheckForHiddenPierceSignals(tickSize);
 
             if (currentPosition != 0 && m_LastMarketPosition == 0) {
                 double entryPrice = StrategyInfo.AvgEntryPrice != 0 ? StrategyInfo.AvgEntryPrice : Bars.Close[0];
-                double activeTicks = GetActiveRangeTicks(tickSize);
-                int currentPTicks = (m_CurrentTradeTier == 2) ? ProfitTargetTicksTier2 : ProfitTargetTicksTier1;
-                double targetDist = currentPTicks > 0 ? (currentPTicks * tickSize) : (activeTicks * tickSize);
-                
-                if (currentPosition > 0) { m_ProtectiveStopPrice = Bars.Low[0] - (StopTailOffsetTicks * tickSize); m_ProfitTargetPrice = entryPrice + targetDist; }
-                else { m_ProtectiveStopPrice = Bars.High[0] + (StopTailOffsetTicks * tickSize); m_ProfitTargetPrice = entryPrice - targetDist; }
+                double stopDist = ProtectiveStopLossTicks * tickSize;
+                double targetDist = ProfitTargetTicks * tickSize;
+
+                if (currentPosition > 0) {
+                    m_ProtectiveStopPrice = ProtectiveStopLossTicks > 0 ? entryPrice - stopDist : 0;
+                    m_ProfitTargetPrice = ProfitTargetTicks > 0 ? entryPrice + targetDist : 0;
+                } else {
+                    m_ProtectiveStopPrice = ProtectiveStopLossTicks > 0 ? entryPrice + stopDist : 0;
+                    m_ProfitTargetPrice = ProfitTargetTicks > 0 ? entryPrice - targetDist : 0;
+                }
                 m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = m_LastSentPrice = 0;
                 if (m_GoSignalMarker != null) m_GoSignalMarker.Delete();
                 ClearProjectedEntryLine(); UpdateTargetLine(); UpdateStopLine();
             }
 
-            if (currentPosition == 0 && !m_CancelRequested) {
+            if (currentPosition == 0) {
                 double activeTicks = GetActiveRangeTicks(tickSize);
-                int currentQty = (m_CurrentTradeTier == 2) ? OrderQtyTier2 : OrderQtyTier1;
+                int currentQty = OrderQuantity;
                 if (m_BuyOrderActive) {
                     m_StopPrice = Math.Round((Bars.Low[0] + (activeTicks * tickSize) + (EntryOffsetTicks * tickSize)) / tickSize) * tickSize;
-                    if (Math.Abs(m_StopPrice - m_LastSentPrice) > (tickSize / 2)) { m_BuyStop.Send(m_StopPrice, currentQty); m_LastSentPrice = m_StopPrice; }
+                    // Re-send on every IOG calculation so the native order remains
+                    // active between ticks, matching RenkoTailTrading's behavior.
+                    if (Bars.LastBarOnChart) { m_BuyStop.Send(m_StopPrice, currentQty); m_LastSentPrice = m_StopPrice; }
                     UpdateProjectedEntryLine();
                 } else if (m_SellOrderActive) {
                     m_StopPrice = Math.Round((Bars.High[0] - (activeTicks * tickSize) - (EntryOffsetTicks * tickSize)) / tickSize) * tickSize;
-                    if (Math.Abs(m_StopPrice - m_LastSentPrice) > (tickSize / 2)) { m_SellStop.Send(m_StopPrice, currentQty); m_LastSentPrice = m_StopPrice; }
+                    // Re-send on every IOG calculation so the native order remains
+                    // active between ticks, matching RenkoTailTrading's behavior.
+                    if (Bars.LastBarOnChart) { m_SellStop.Send(m_StopPrice, currentQty); m_LastSentPrice = m_StopPrice; }
                     UpdateProjectedEntryLine();
                 } else {
                     ClearProjectedEntryLine();
                 }
             }
 
-            if (currentPosition > 0) { if (m_ProtectiveStopPrice > 0) m_BuyExitStop.Send(m_ProtectiveStopPrice); if (m_ProfitTargetPrice > 0) m_BuyExitLimit.Send(m_ProfitTargetPrice); }
-            else if (currentPosition < 0) { if (m_ProtectiveStopPrice > 0) m_SellExitStop.Send(m_ProtectiveStopPrice); if (m_ProfitTargetPrice > 0) m_SellExitLimit.Send(m_ProfitTargetPrice); }
+            if (Bars.LastBarOnChart) {
+                // Keep the strategy-owned exit controls visible and separate
+                // from MultiCharts' native-order badges.
+                if (currentPosition != 0) {
+                    UpdateTargetLine();
+                    UpdateStopLine();
+                }
+                SubmitActiveExitOrders(currentPosition);
+            }
 
             if (currentPosition == 0 && m_LastMarketPosition != 0) { 
                 m_ProtectiveStopPrice = m_ProfitTargetPrice = 0; 
@@ -161,8 +204,6 @@ namespace PowerLanguage.Strategy
                 m_ManualArmMode = false;
                 ClearTradingDrawings(); 
             }
-            if (m_CancelRequested) { m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = m_LastSentPrice = 0; m_ManualArmMode = false; ClearProjectedEntryLine(); m_CancelRequested = false; if (m_GoSignalMarker != null) m_GoSignalMarker.Delete(); }
-
             m_LastMarketPosition = currentPosition; if (ShowHUD) UpdateHUD();
         }
 
@@ -194,13 +235,13 @@ namespace PowerLanguage.Strategy
 
             if (expansionValid && fanStackBull && breadth15_60B && breadth5_15B && angleValidBull) {
                 if (projEma15Bull > Bars.Low[0]) { 
-                    m_CurrentTradeTier = 2; m_BuyOrderActive = true;
+                    m_BuyOrderActive = true;
                     if (m_GoSignalMarker == null) {
                         m_GoSignalMarker = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], Bars.Low[0] - (3 * tickSize)), new ChartPoint(Bars.Time[0].AddMinutes(0), Bars.Low[0] - (3 * tickSize)));
                         m_GoSignalMarker.Color = Color.RoyalBlue; m_GoSignalMarker.Size = 12;
                     }
                 } else if (m_FastEMA[0] > m_FastEMA[1] && projEma5Bull > Bars.Low[0]) { 
-                    m_CurrentTradeTier = 1; m_BuyOrderActive = true;
+                    m_BuyOrderActive = true;
                     if (m_GoSignalMarker == null) {
                         m_GoSignalMarker = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], Bars.Low[0] - (3 * tickSize)), new ChartPoint(Bars.Time[0].AddMinutes(0), Bars.Low[0] - (3 * tickSize)));
                         m_GoSignalMarker.Color = Color.Cyan; m_GoSignalMarker.Size = 10;
@@ -225,13 +266,13 @@ namespace PowerLanguage.Strategy
 
                 if (expansionValid && fanStackBear && breadth15_60S && breadth5_15S && angleValidBear) {
                     if (projEma15Bear < Bars.High[0]) { 
-                        m_CurrentTradeTier = 2; m_SellOrderActive = true;
+                        m_SellOrderActive = true;
                         if (m_GoSignalMarker == null) {
                             m_GoSignalMarker = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], Bars.High[0] + (3 * tickSize)), new ChartPoint(Bars.Time[0].AddMinutes(0), Bars.High[0] + (3 * tickSize)));
                             m_GoSignalMarker.Color = Color.DeepPink; m_GoSignalMarker.Size = 12;
                         }
                     } else if (m_FastEMA[0] < m_FastEMA[1] && projEma5Bear < Bars.High[0]) { 
-                        m_CurrentTradeTier = 1; m_SellOrderActive = true;
+                        m_SellOrderActive = true;
                         if (m_GoSignalMarker == null) {
                             m_GoSignalMarker = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], Bars.High[0] + (3 * tickSize)), new ChartPoint(Bars.Time[0].AddMinutes(0), Bars.High[0] + (3 * tickSize)));
                             m_GoSignalMarker.Color = Color.Magenta; m_GoSignalMarker.Size = 10;
@@ -245,46 +286,214 @@ namespace PowerLanguage.Strategy
             if (arg.buttons != MouseButtons.Left) return;
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale; if (tickSize <= 0) tickSize = 0.25;
             if ((arg.keys & Keys.Control) == Keys.Control) {
-                if (StrategyInfo.MarketPosition == 0) {
-                    // Ctrl-click is an armed-mode toggle.  A new manual arm uses
-                    // the fast 8 EMA slope to select its direction.
-                    m_ManualArmMode = true;
-                    if (m_BuyOrderActive || m_SellOrderActive) {
-                        m_BuyOrderActive = m_SellOrderActive = false;
-                        m_StopPrice = m_LastSentPrice = 0;
-                        ClearProjectedEntryLine();
-                        if (m_GoSignalMarker != null) { m_GoSignalMarker.Delete(); m_GoSignalMarker = null; }
-                    } else {
-                        m_CurrentTradeTier = 1;
-                        m_BuyOrderActive = m_FastEMA[0] >= m_FastEMA[1];
-                        m_SellOrderActive = !m_BuyOrderActive;
-                        double activeTicks = GetActiveRangeTicks(tickSize);
-                        m_StopPrice = m_BuyOrderActive
-                            ? Math.Round((Bars.Low[0] + (activeTicks * tickSize) + (EntryOffsetTicks * tickSize)) / tickSize) * tickSize
-                            : Math.Round((Bars.High[0] - (activeTicks * tickSize) - (EntryOffsetTicks * tickSize)) / tickSize) * tickSize;
-                        m_LastSentPrice = 0;
-                        UpdateProjectedEntryLine();
-                    }
-                    if (ShowHUD) UpdateHUD();
+                int currentPosition = StrategyInfo.MarketPosition;
+                if (currentPosition != 0 || m_BuyOrderActive || m_SellOrderActive) {
+                    // If anything is working or filled, Ctrl-click is an
+                    // unconditional cancel-and-flatten request.
+                    ActivateKillMode(currentPosition);
+                } else {
+                    // Flat and unarmed: leave kill mode and arm a new entry from
+                    // the fast 8 EMA slope.
+                    ArmManualEntry(tickSize);
                 }
+                if (ShowHUD) UpdateHUD();
             }
-            else if ((arg.keys & Keys.Shift) == Keys.Shift) { m_CancelRequested = true; if (StrategyInfo.MarketPosition != 0) m_FlattenRequested = true; }
-            else if (m_DraggingTarget) { m_ProfitTargetPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingTarget = false; UpdateTargetLine(); }
-            else if (m_DraggingStop) { m_ProtectiveStopPrice = Math.Round(arg.point.Price / tickSize) * tickSize; m_DraggingStop = false; UpdateStopLine(); }
-            else if (m_ProfitTargetPrice > 0 && Math.Abs(arg.point.Price - m_ProfitTargetPrice) <= (ProximityTicks * tickSize)) m_DraggingTarget = true;
-            else if (m_ProtectiveStopPrice > 0 && Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (ProximityTicks * tickSize)) m_DraggingStop = true;
+            else if ((arg.keys & Keys.Shift) == Keys.Shift) {
+                ActivateKillMode(StrategyInfo.MarketPosition);
+                if (ShowHUD) UpdateHUD();
+            }
+            else if (IsAltClick(arg.keys)) {
+                AdvanceProfitTargetOneRange(tickSize);
+            }
+            else if (m_DraggingTarget) {
+                m_ProfitTargetPrice = Math.Round(arg.point.Price / tickSize) * tickSize;
+                m_DraggingTarget = false;
+                UpdateTargetLine();
+                // Re-submit immediately at the price selected on our strategy
+                // line. This is the authoritative target price, unlike moving
+                // MultiCharts' broker-order badge directly.
+                SubmitActiveExitOrders(StrategyInfo.MarketPosition);
+            }
+            else if (m_DraggingStop) {
+                m_ProtectiveStopPrice = Math.Round(arg.point.Price / tickSize) * tickSize;
+                m_DraggingStop = false;
+                UpdateStopLine();
+                SubmitActiveExitOrders(StrategyInfo.MarketPosition);
+            }
+            else if (m_ProfitTargetPrice > 0 && Math.Abs(arg.point.Price - m_ProfitTargetPrice) <= (ProximityTicks * tickSize)) {
+                m_DraggingTarget = true;
+                SetTargetLineSelected(true);
+            }
+            else if (m_ProtectiveStopPrice > 0 && Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (ProximityTicks * tickSize)) {
+                m_DraggingStop = true;
+                SetStopLineSelected(true);
+            }
+        }
+
+        private void ArmManualEntry(double tickSize) {
+            m_KillModeActive = false;
+            m_FlattenRequested = false;
+            m_ManualArmMode = true;
+            m_BuyOrderActive = m_FastEMA[0] >= m_FastEMA[1];
+            m_SellOrderActive = !m_BuyOrderActive;
+
+            double activeTicks = GetActiveRangeTicks(tickSize);
+            m_StopPrice = m_BuyOrderActive
+                ? Math.Round((Bars.Low[0] + (activeTicks * tickSize) + (EntryOffsetTicks * tickSize)) / tickSize) * tickSize
+                : Math.Round((Bars.High[0] - (activeTicks * tickSize) - (EntryOffsetTicks * tickSize)) / tickSize) * tickSize;
+
+            // Submit immediately; CalcBar then maintains the same named order on
+            // every live IOG calculation.
+            int currentQty = OrderQuantity;
+            if (m_BuyOrderActive) m_BuyStop.Send(m_StopPrice, currentQty);
+            else m_SellStop.Send(m_StopPrice, currentQty);
+            m_LastSentPrice = m_StopPrice;
+            UpdateProjectedEntryLine();
+        }
+
+        private void ActivateKillMode(int currentPosition) {
+            m_KillModeActive = true;
+            m_FlattenRequested = currentPosition != 0;
+            m_ManualArmMode = true; // Remain unarmed; suppress automatic re-entry.
+            m_BuyOrderActive = m_SellOrderActive = false;
+            m_StopPrice = m_LastSentPrice = 0;
+            m_ProtectiveStopPrice = m_ProfitTargetPrice = 0;
+            m_DraggingTarget = m_DraggingStop = false;
+            ClearTradingDrawings();
+        }
+
+        private void AdvanceProfitTargetOneRange(double tickSize) {
+            int currentPosition = StrategyInfo.MarketPosition;
+            if (currentPosition == 0 || m_ProfitTargetPrice <= 0) return;
+
+            double rangeTicks = GetActiveRangeTicks(tickSize);
+            if (rangeTicks <= 0) return;
+
+            // Advance farther in the profitable direction: up for a long and
+            // down for a short. With the default five-tick range, each Alt-click
+            // moves the target exactly five ticks.
+            double direction = currentPosition > 0 ? 1.0 : -1.0;
+            m_ProfitTargetPrice = Math.Round((m_ProfitTargetPrice + (direction * rangeTicks * tickSize)) / tickSize) * tickSize;
+            m_DraggingTarget = false;
+            UpdateTargetLine();
+            SubmitActiveExitOrders(currentPosition);
+        }
+
+        private bool IsAltClick(Keys keys) {
+            // MultiCharts can report a left/right Alt click as LMenu/RMenu
+            // rather than setting the generic Alt modifier bit. Some chart
+            // drawing clicks report no modifier in arg.keys at all, so also
+            // read the live WinForms modifier state.
+            Keys liveModifiers = System.Windows.Forms.Control.ModifierKeys;
+            Keys keyCode = keys & Keys.KeyCode;
+            Keys liveKeyCode = liveModifiers & Keys.KeyCode;
+            return ((keys | liveModifiers) & Keys.Alt) == Keys.Alt ||
+                   keyCode == Keys.Menu ||
+                   keyCode == Keys.LMenu ||
+                   keyCode == Keys.RMenu ||
+                   liveKeyCode == Keys.Menu ||
+                   liveKeyCode == Keys.LMenu ||
+                   liveKeyCode == Keys.RMenu;
         }
 
         private void UpdateTargetLine() {
-            if (m_TargetLine != null) m_TargetLine.Delete(); if (m_ProfitTargetPrice <= 0) return;
-            m_TargetLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_ProfitTargetPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_ProfitTargetPrice));
-            m_TargetLine.Color = Color.Gold; m_TargetLine.Style = ETLStyle.ToolDashed; m_TargetLine.Size = 2; m_TargetLine.ExtRight = true;
+            if (m_ProfitTargetPrice <= 0) return;
+
+            // This is deliberately a short, thick control line beside the
+            // current price action—not an extension into the chart's right edge
+            // where MultiCharts draws its native target-order badge.
+            ChartPoint begin = new ChartPoint(GetTradeControlStartTime(), m_ProfitTargetPrice);
+            ChartPoint end = new ChartPoint(Bars.Time[0], m_ProfitTargetPrice);
+            if (m_TargetLine == null) {
+                m_TargetLine = DrwTrendLine.Create(begin, end);
+                m_TargetLine.ExtRight = false;
+            } else {
+                m_TargetLine.Begin = begin;
+                m_TargetLine.End = end;
+            }
+            m_TargetLine.Color = Color.LimeGreen;
+            m_TargetLine.Style = ETLStyle.ToolSolid;
+            m_TargetLine.Size = 4;
+
+            UpdateTargetLabel();
         }
 
         private void UpdateStopLine() {
-            if (m_StopLine != null) m_StopLine.Delete(); if (m_ProtectiveStopPrice <= 0) return;
-            m_StopLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_ProtectiveStopPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_ProtectiveStopPrice));
-            m_StopLine.Color = Color.Red; m_StopLine.Style = ETLStyle.ToolDashed; m_StopLine.Size = 2; m_StopLine.ExtRight = true;
+            if (m_ProtectiveStopPrice <= 0) return;
+
+            ChartPoint begin = new ChartPoint(GetTradeControlStartTime(), m_ProtectiveStopPrice);
+            ChartPoint end = new ChartPoint(Bars.Time[0], m_ProtectiveStopPrice);
+            if (m_StopLine == null) {
+                m_StopLine = DrwTrendLine.Create(begin, end);
+                m_StopLine.ExtRight = false;
+            } else {
+                m_StopLine.Begin = begin;
+                m_StopLine.End = end;
+            }
+            m_StopLine.Color = Color.Red;
+            m_StopLine.Style = ETLStyle.ToolSolid;
+            m_StopLine.Size = 4;
+
+            UpdateStopLabel();
+        }
+
+        private void SubmitActiveExitOrders(int currentPosition) {
+            if (currentPosition > 0) {
+                if (m_ProtectiveStopPrice > 0) m_BuyExitStop.Send(m_ProtectiveStopPrice);
+                if (m_ProfitTargetPrice > 0) m_BuyExitLimit.Send(m_ProfitTargetPrice);
+            } else if (currentPosition < 0) {
+                if (m_ProtectiveStopPrice > 0) m_SellExitStop.Send(m_ProtectiveStopPrice);
+                if (m_ProfitTargetPrice > 0) m_SellExitLimit.Send(m_ProfitTargetPrice);
+            }
+        }
+
+        private ChartPoint GetTradeLabelPoint(double price) {
+            return new ChartPoint(GetTradeControlStartTime(), price);
+        }
+
+        private DateTime GetTradeControlStartTime() {
+            int barsBack = Math.Min(6, Math.Max(0, Bars.CurrentBar - 1));
+            return Bars.Time[barsBack];
+        }
+
+        private void UpdateTargetLabel() {
+            if (m_ProfitTargetPrice <= 0) return;
+            ChartPoint point = GetTradeLabelPoint(m_ProfitTargetPrice);
+            if (m_TargetLabel == null) {
+                m_TargetLabel = DrwText.Create(point, "TARGET - ALT+LEFT-CLICK HERE = +1 RANGE");
+                m_TargetLabel.HStyle = ETextStyleH.Left;
+                m_TargetLabel.VStyle = ETextStyleV.Above;
+                m_TargetLabel.Size = 10;
+            }
+            m_TargetLabel.Location = point;
+            m_TargetLabel.Text = m_DraggingTarget
+                ? "TARGET SELECTED - click new price"
+                : string.Format("TARGET {0} - ALT+LEFT-CLICK HERE = +1 RANGE", m_ProfitTargetPrice);
+            m_TargetLabel.Color = m_DraggingTarget ? Color.Orange : Color.LimeGreen;
+        }
+
+        private void UpdateStopLabel() {
+            if (m_ProtectiveStopPrice <= 0) return;
+            ChartPoint point = GetTradeLabelPoint(m_ProtectiveStopPrice);
+            if (m_StopLabel == null) {
+                m_StopLabel = DrwText.Create(point, "STOP - click line, then click new price");
+                m_StopLabel.HStyle = ETextStyleH.Left;
+                m_StopLabel.VStyle = ETextStyleV.Above;
+                m_StopLabel.Size = 10;
+            }
+            m_StopLabel.Location = point;
+            m_StopLabel.Text = m_DraggingStop ? "STOP SELECTED - click new price" : "STOP - click line, then click new price";
+            m_StopLabel.Color = m_DraggingStop ? Color.Orange : Color.Red;
+        }
+
+        private void SetTargetLineSelected(bool selected) {
+            if (m_TargetLine != null) m_TargetLine.Color = selected ? Color.Orange : Color.LimeGreen;
+            UpdateTargetLabel();
+        }
+
+        private void SetStopLineSelected(bool selected) {
+            if (m_StopLine != null) m_StopLine.Color = selected ? Color.Orange : Color.Red;
+            UpdateStopLabel();
         }
 
         private double GetActiveRangeTicks(double tickSize) {
@@ -293,13 +502,21 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdateProjectedEntryLine() {
-            ClearProjectedEntryLine();
             if (m_StopPrice <= 0 || (!m_BuyOrderActive && !m_SellOrderActive)) return;
-            m_ProjectedEntryLine = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], m_StopPrice), new ChartPoint(Bars.Time[0].AddMinutes(5), m_StopPrice));
-            m_ProjectedEntryLine.Color = Color.DodgerBlue;
-            m_ProjectedEntryLine.Style = ETLStyle.ToolDashed;
-            m_ProjectedEntryLine.Size = 2;
-            m_ProjectedEntryLine.ExtRight = true;
+            ChartPoint begin = new ChartPoint(Bars.Time[0], m_StopPrice);
+            ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), m_StopPrice);
+            if (m_ProjectedEntryLine == null) {
+                m_ProjectedEntryLine = DrwTrendLine.Create(begin, end);
+                m_ProjectedEntryLine.Color = Color.DodgerBlue;
+                m_ProjectedEntryLine.Style = ETLStyle.ToolDashed;
+                m_ProjectedEntryLine.Size = 2;
+                m_ProjectedEntryLine.ExtRight = true;
+            } else {
+                // Move the existing object instead of deleting/recreating it on
+                // every tick. This keeps chart rendering out of the order path.
+                m_ProjectedEntryLine.Begin = begin;
+                m_ProjectedEntryLine.End = end;
+            }
         }
 
         private void ClearProjectedEntryLine() {
@@ -310,9 +527,10 @@ namespace PowerLanguage.Strategy
             double pnl = StrategyInfo.OpenEquity; double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale; if (tickSize <= 0) tickSize = 0.25;
             string status = "IDLE";
             if (m_ManualArmMode && !m_BuyOrderActive && !m_SellOrderActive) status = "UNARMED";
-            if (m_BuyOrderActive) status = m_CurrentTradeTier == 1? "ARMED BUY (T1)":"ARMED BUY (T2)";
-            if (m_SellOrderActive) status = m_CurrentTradeTier == 1? "ARMED SELL (T1)":"ARMED SELL (T2)";
+            if (m_BuyOrderActive) status = "ARMED BUY";
+            if (m_SellOrderActive) status = "ARMED SELL";
             if (StrategyInfo.MarketPosition != 0) status = "IN TRADE";
+            if (m_KillModeActive) status = m_FlattenRequested ? "FLATTENING" : "UNARMED";
             string text = string.Format("RANGE TRADER | {0} | PnL: {1:C2}", status, pnl);
             if (m_HUDLabel == null) { m_HUDLabel = DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0]), text); m_HUDLabel.Size = 14; }
             m_HUDLabel.Text = text; m_HUDLabel.Color = pnl >= 0 ? Color.LimeGreen : Color.Tomato;
