@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Windows.Forms;
+using System.Runtime.InteropServices;
 using PowerLanguage;
 using PowerLanguage.Function;
 using System.Collections.Generic;
@@ -14,6 +15,9 @@ namespace PowerLanguage.Strategy
     [AllowSendOrdersAlways]
     public class RangeBarTradingV3 : SignalObject
     {
+        [DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int virtualKey);
+
         // The only user-facing strategy settings.
         [Input] public int RangeSizeTicks { get; set; }
         [Input] public int ProtectiveStopLossTicks { get; set; }
@@ -68,15 +72,17 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_StopLine;
         private ITrendLineObject m_ProjectedEntryLine;
         private ITrendLineObject m_GoSignalMarker;
-        private ITextObject m_TargetLabel;
-        private ITextObject m_StopLabel;
         private ITextObject m_HUDLabel;
+        private ITextObject m_EmergencyLabel;
+        // Filled-trade annotations are retained after the position closes so
+        // the chart keeps a clean record of executed entries.
+        private readonly List<IDrawObject> m_TradeEntryMarkers = new List<IDrawObject>();
 
         public RangeBarTradingV3(object ctx) : base(ctx)
         {
             RangeSizeTicks = 5;
             ProtectiveStopLossTicks = 12;
-            ProfitTargetTicks = 10;
+            ProfitTargetTicks = 5;
         }
 
         protected override void Create()
@@ -111,8 +117,7 @@ namespace PowerLanguage.Strategy
             if (m_HUDLabel != null) { m_HUDLabel.Delete(); m_HUDLabel = null; }
             if (m_TargetLine != null) { m_TargetLine.Delete(); m_TargetLine = null; }
             if (m_StopLine != null) { m_StopLine.Delete(); m_StopLine = null; }
-            if (m_TargetLabel != null) { m_TargetLabel.Delete(); m_TargetLabel = null; }
-            if (m_StopLabel != null) { m_StopLabel.Delete(); m_StopLabel = null; }
+            if (m_EmergencyLabel != null) { m_EmergencyLabel.Delete(); m_EmergencyLabel = null; }
             ClearProjectedEntryLine();
             if (m_GoSignalMarker != null) { m_GoSignalMarker.Delete(); m_GoSignalMarker = null; }
         }
@@ -165,6 +170,7 @@ namespace PowerLanguage.Strategy
                 m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = m_LastSentPrice = 0;
                 if (m_GoSignalMarker != null) m_GoSignalMarker.Delete();
                 ClearProjectedEntryLine(); UpdateTargetLine(); UpdateStopLine();
+                DrawFilledEntryMarkers(currentPosition, entryPrice, tickSize);
             }
 
             if (currentPosition == 0) {
@@ -283,6 +289,14 @@ namespace PowerLanguage.Strategy
         }
 
         protected override void OnMouseEvent(MouseClickArgs arg) {
+            // Some MultiCharts chart configurations omit F12 from arg.keys,
+            // so also check its physical Windows key state.
+            if (arg.buttons == MouseButtons.Left &&
+                IsF12Held(arg.keys)) {
+                ActivateEmergencyFlatten();
+                return;
+            }
+
             if (arg.buttons != MouseButtons.Left) return;
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale; if (tickSize <= 0) tickSize = 0.25;
             if ((arg.keys & Keys.Control) == Keys.Control) {
@@ -331,10 +345,13 @@ namespace PowerLanguage.Strategy
         }
 
         private void ArmManualEntry(double tickSize) {
+            ClearEmergencyIndicator();
             m_KillModeActive = false;
             m_FlattenRequested = false;
             m_ManualArmMode = true;
-            m_BuyOrderActive = m_FastEMA[0] >= m_FastEMA[1];
+            // Manual Ctrl-arm direction follows the 24-period EMA, which is
+            // less sensitive to single-bar noise than the fast 8-period EMA.
+            m_BuyOrderActive = m_SlowEMA[0] >= m_SlowEMA[1];
             m_SellOrderActive = !m_BuyOrderActive;
 
             double activeTicks = GetActiveRangeTicks(tickSize);
@@ -362,6 +379,45 @@ namespace PowerLanguage.Strategy
             ClearTradingDrawings();
         }
 
+        private void ActivateEmergencyFlatten() {
+            int currentPosition = StrategyInfo.MarketPosition;
+            ActivateKillMode(currentPosition);
+            ShowEmergencyIndicator();
+
+            // MarketNextBar executes on the next IOG tick. CalcBar keeps
+            // sending it until the position is confirmed flat.
+            if (currentPosition > 0) m_CloseLongNextBar.Send();
+            else if (currentPosition < 0) m_CloseShortNextBar.Send();
+        }
+
+        private void ShowEmergencyIndicator() {
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tickSize <= 0) tickSize = 0.25;
+            ChartPoint point = new ChartPoint(Bars.Time[0], Bars.High[0] + (20 * tickSize));
+            if (m_EmergencyLabel == null) {
+                m_EmergencyLabel = DrwText.Create(point, "EMERGENCY: CANCELLING ALL ORDERS");
+                m_EmergencyLabel.Size = 16;
+                m_EmergencyLabel.HStyle = ETextStyleH.Left;
+                m_EmergencyLabel.VStyle = ETextStyleV.Above;
+            }
+            m_EmergencyLabel.Location = point;
+            m_EmergencyLabel.Text = "EMERGENCY: CANCELLING ALL ORDERS";
+            m_EmergencyLabel.Color = Color.Red;
+        }
+
+        private void ClearEmergencyIndicator() {
+            if (m_EmergencyLabel != null) { m_EmergencyLabel.Delete(); m_EmergencyLabel = null; }
+        }
+
+        private bool IsF12Held(Keys eventKeys) {
+            if ((eventKeys & Keys.KeyCode) == Keys.F12) return true;
+            try {
+                return (GetAsyncKeyState((int)Keys.F12) & 0x8000) != 0;
+            } catch {
+                return false;
+            }
+        }
+
         private void AdvanceProfitTargetOneRange(double tickSize) {
             int currentPosition = StrategyInfo.MarketPosition;
             if (currentPosition == 0 || m_ProfitTargetPrice <= 0) return;
@@ -377,6 +433,38 @@ namespace PowerLanguage.Strategy
             m_DraggingTarget = false;
             UpdateTargetLine();
             SubmitActiveExitOrders(currentPosition);
+        }
+
+        private void DrawFilledEntryMarkers(int currentPosition, double entryPrice, double tickSize) {
+            // Direction marker: below a long entry bar and above a short entry
+            // bar, so it points at the bar tail without covering the candle.
+            double tailOffset = 3 * tickSize;
+            double directionPrice = currentPosition > 0
+                ? Bars.Low[0] - tailOffset
+                : Bars.High[0] + tailOffset;
+            IArrowObject directionMarker = DrwArrow.Create(
+                new ChartPoint(Bars.Time[0], directionPrice), currentPosition < 0);
+            directionMarker.Color = currentPosition > 0 ? Color.DodgerBlue : Color.Red;
+            directionMarker.Size = 5;
+            m_TradeEntryMarkers.Add(directionMarker);
+
+            // A plain ASCII chevron is used here because it renders reliably
+            // in MultiCharts chart fonts. The prior bar's time places it just
+            // to the left of the fill bar at the actual average execution price.
+            int barsBack = Bars.CurrentBar > 1 ? 1 : 0;
+            ITextObject fillMarker = DrwText.Create(
+                new ChartPoint(Bars.Time[barsBack], entryPrice), ">");
+            fillMarker.Color = Color.Black;
+            fillMarker.HStyle = ETextStyleH.Right;
+            fillMarker.Size = 12;
+            m_TradeEntryMarkers.Add(fillMarker);
+        }
+
+        private void ClearFilledEntryMarkers() {
+            foreach (IDrawObject marker in m_TradeEntryMarkers) {
+                if (marker != null) marker.Delete();
+            }
+            m_TradeEntryMarkers.Clear();
         }
 
         private bool IsAltClick(Keys keys) {
@@ -415,7 +503,6 @@ namespace PowerLanguage.Strategy
             m_TargetLine.Style = ETLStyle.ToolSolid;
             m_TargetLine.Size = 4;
 
-            UpdateTargetLabel();
         }
 
         private void UpdateStopLine() {
@@ -434,7 +521,6 @@ namespace PowerLanguage.Strategy
             m_StopLine.Style = ETLStyle.ToolSolid;
             m_StopLine.Size = 4;
 
-            UpdateStopLabel();
         }
 
         private void SubmitActiveExitOrders(int currentPosition) {
@@ -447,53 +533,17 @@ namespace PowerLanguage.Strategy
             }
         }
 
-        private ChartPoint GetTradeLabelPoint(double price) {
-            return new ChartPoint(GetTradeControlStartTime(), price);
-        }
-
         private DateTime GetTradeControlStartTime() {
             int barsBack = Math.Min(6, Math.Max(0, Bars.CurrentBar - 1));
             return Bars.Time[barsBack];
         }
 
-        private void UpdateTargetLabel() {
-            if (m_ProfitTargetPrice <= 0) return;
-            ChartPoint point = GetTradeLabelPoint(m_ProfitTargetPrice);
-            if (m_TargetLabel == null) {
-                m_TargetLabel = DrwText.Create(point, "TARGET - ALT+LEFT-CLICK HERE = +1 RANGE");
-                m_TargetLabel.HStyle = ETextStyleH.Left;
-                m_TargetLabel.VStyle = ETextStyleV.Above;
-                m_TargetLabel.Size = 10;
-            }
-            m_TargetLabel.Location = point;
-            m_TargetLabel.Text = m_DraggingTarget
-                ? "TARGET SELECTED - click new price"
-                : string.Format("TARGET {0} - ALT+LEFT-CLICK HERE = +1 RANGE", m_ProfitTargetPrice);
-            m_TargetLabel.Color = m_DraggingTarget ? Color.Orange : Color.LimeGreen;
-        }
-
-        private void UpdateStopLabel() {
-            if (m_ProtectiveStopPrice <= 0) return;
-            ChartPoint point = GetTradeLabelPoint(m_ProtectiveStopPrice);
-            if (m_StopLabel == null) {
-                m_StopLabel = DrwText.Create(point, "STOP - click line, then click new price");
-                m_StopLabel.HStyle = ETextStyleH.Left;
-                m_StopLabel.VStyle = ETextStyleV.Above;
-                m_StopLabel.Size = 10;
-            }
-            m_StopLabel.Location = point;
-            m_StopLabel.Text = m_DraggingStop ? "STOP SELECTED - click new price" : "STOP - click line, then click new price";
-            m_StopLabel.Color = m_DraggingStop ? Color.Orange : Color.Red;
-        }
-
         private void SetTargetLineSelected(bool selected) {
             if (m_TargetLine != null) m_TargetLine.Color = selected ? Color.Orange : Color.LimeGreen;
-            UpdateTargetLabel();
         }
 
         private void SetStopLineSelected(bool selected) {
             if (m_StopLine != null) m_StopLine.Color = selected ? Color.Orange : Color.Red;
-            UpdateStopLabel();
         }
 
         private double GetActiveRangeTicks(double tickSize) {
@@ -531,9 +581,9 @@ namespace PowerLanguage.Strategy
             if (m_SellOrderActive) status = "ARMED SELL";
             if (StrategyInfo.MarketPosition != 0) status = "IN TRADE";
             if (m_KillModeActive) status = m_FlattenRequested ? "FLATTENING" : "UNARMED";
-            string text = string.Format("RANGE TRADER | {0} | PnL: {1:C2}", status, pnl);
+            string text = string.Format("{0} | PnL: {1:C2}", status, pnl);
             if (m_HUDLabel == null) { m_HUDLabel = DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0]), text); m_HUDLabel.Size = 14; }
-            m_HUDLabel.Text = text; m_HUDLabel.Color = pnl >= 0 ? Color.LimeGreen : Color.Tomato;
+            m_HUDLabel.Text = text; m_HUDLabel.Color = Color.Black;
             m_HUDLabel.Location = new ChartPoint(Bars.Time[0], Bars.High[0] + (12 * tickSize));
         }
 
@@ -543,6 +593,9 @@ namespace PowerLanguage.Strategy
             return Math.Atan2(rise, run) * (180.0 / Math.PI);
         }
 
-        protected override void Destroy() { ClearTradingDrawings(); }
+        protected override void Destroy() {
+            ClearTradingDrawings();
+            ClearFilledEntryMarkers();
+        }
     }
 }
