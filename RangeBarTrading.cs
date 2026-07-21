@@ -95,6 +95,7 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_ProjectedEntryLine;
         private ITrendLineObject m_PinBarLowerLine;
         private ITrendLineObject m_PinBarUpperLine;
+        private ITextObject m_PinBarLabel;
         private ITrendLineObject m_GoSignalMarker;
         private ITextObject m_HUDLabel;
         private ITextObject m_EmergencyLabel;
@@ -600,6 +601,7 @@ namespace PowerLanguage.Strategy
 
             UpdatePinBarProjectionLine(ref m_PinBarLowerLine, projectedLow, direction);
             UpdatePinBarProjectionLine(ref m_PinBarUpperLine, projectedHigh, direction);
+            UpdatePinBarProjectionLabel(projectedHigh, direction);
         }
 
         private int GetSlowEmaDirection() {
@@ -710,6 +712,20 @@ namespace PowerLanguage.Strategy
         private void ClearPinBarProjectionLines() {
             if (m_PinBarLowerLine != null) { m_PinBarLowerLine.Delete(); m_PinBarLowerLine = null; }
             if (m_PinBarUpperLine != null) { m_PinBarUpperLine.Delete(); m_PinBarUpperLine = null; }
+            if (m_PinBarLabel != null) { m_PinBarLabel.Delete(); m_PinBarLabel = null; }
+        }
+
+        private void UpdatePinBarProjectionLabel(double price, int direction) {
+            ChartPoint point = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
+            if (m_PinBarLabel == null) {
+                m_PinBarLabel = DrwText.Create(point, "pinbar");
+                m_PinBarLabel.Size = 10;
+                m_PinBarLabel.HStyle = ETextStyleH.Left;
+                m_PinBarLabel.VStyle = ETextStyleV.Above;
+            }
+            m_PinBarLabel.Location = point;
+            m_PinBarLabel.Text = "pinbar";
+            m_PinBarLabel.Color = direction > 0 ? Color.DodgerBlue : Color.OrangeRed;
         }
 
         private bool IsF12Held(Keys eventKeys) {
