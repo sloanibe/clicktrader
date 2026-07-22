@@ -16,6 +16,8 @@ namespace PowerLanguage.Strategy
     // before this signal is permitted to transmit an order.
     public class RangeBarTradingV3 : SignalObject
     {
+        private enum EEntrySetup { None, PinBar, Ema24Bounce }
+
         [DllImport("user32.dll")]
         private static extern short GetAsyncKeyState(int virtualKey);
 
@@ -31,6 +33,7 @@ namespace PowerLanguage.Strategy
         [Input] public int ProtectiveStopLossTicks { get; set; }
         [Input] public int ProfitTargetTicks { get; set; }
         [Input] public bool EnablePinBarTrading { get; set; }
+        [Input] public bool Enable24EMABounceTrading { get; set; }
 
         // Fixed internal behavior; these are intentionally not exposed in the
         // Strategy Properties dialog.
@@ -41,6 +44,7 @@ namespace PowerLanguage.Strategy
         private const int PinBarRangeTicks = 5;
         private const int PinBarTailTicks = 4;
         private const int PinBarBodyTicks = 1;
+        private const int EmaBounceEntryOffsetTicks = 6;
         private const int MasterTrendPeriod = 60;
         private const int MinExpansionTicks = 25;
         private const int MinBreadth_15_60 = 5;
@@ -68,13 +72,19 @@ namespace PowerLanguage.Strategy
 
         private bool m_BuyOrderActive = false;
         private bool m_SellOrderActive = false;
-        private bool m_PinBarArmed = false;
-        private int m_PinBarDirection = 0;
+        private bool m_AutoEntryArmed = false;
+        private int m_ArmedDirection = 0;
         private int m_PinProjectionBar = -1;
         private int m_PinProjectionDirection = 0;
         private bool m_PinProjectionTailReached = false;
         private bool m_PinProjectionBroken = false;
-        private int m_LastPinBarEntryBar = -1;
+        private bool m_PinProjectionAllTail = false;
+        private bool m_PinProjectionOpenAligned = false;
+        private int m_PinBarOrderBar = -1;
+        private int m_EmaBounceProjectionBar = -1;
+        private int m_EmaBounceProjectionDirection = 0;
+        private int m_EmaBounceOrderBar = -1;
+        private EEntrySetup m_ActiveEntrySetup = EEntrySetup.None;
         private bool m_FlattenRequested = false;
         // Persistent kill mode entered by Ctrl/Shift-click while armed or in a
         // position. It suppresses every entry/exit order and flattens any open
@@ -96,6 +106,9 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_PinBarLowerLine;
         private ITrendLineObject m_PinBarUpperLine;
         private ITextObject m_PinBarLabel;
+        private ITrendLineObject m_EmaBounceLowerLine;
+        private ITrendLineObject m_EmaBounceUpperLine;
+        private ITextObject m_EmaBounceLabel;
         private ITrendLineObject m_GoSignalMarker;
         private ITextObject m_HUDLabel;
         private ITextObject m_EmergencyLabel;
@@ -109,6 +122,7 @@ namespace PowerLanguage.Strategy
             ProtectiveStopLossTicks = 12;
             ProfitTargetTicks = 5;
             EnablePinBarTrading = true;
+            Enable24EMABounceTrading = true;
         }
 
         protected override void Create()
@@ -146,6 +160,7 @@ namespace PowerLanguage.Strategy
             if (m_EmergencyLabel != null) { m_EmergencyLabel.Delete(); m_EmergencyLabel = null; }
             ClearProjectedEntryLine();
             ClearPinBarProjectionLines();
+            ClearEmaBounceProjectionLines();
             if (m_GoSignalMarker != null) { m_GoSignalMarker.Delete(); m_GoSignalMarker = null; }
         }
 
@@ -163,22 +178,48 @@ namespace PowerLanguage.Strategy
 
             int currentPosition = StrategyInfo.MarketPosition;
 
-            if (!EnablePinBarTrading && currentPosition == 0) {
-                m_PinBarArmed = false;
-                m_PinBarDirection = 0;
+            if (!EnablePinBarTrading) {
                 m_PinProjectionBar = -1;
                 m_PinProjectionDirection = 0;
                 m_PinProjectionTailReached = false;
                 m_PinProjectionBroken = false;
-                m_BuyOrderActive = m_SellOrderActive = false;
-                m_StopPrice = m_LastSentPrice = 0;
-                ClearProjectedEntryLine();
+                m_PinProjectionAllTail = false;
+                m_PinProjectionOpenAligned = false;
+                ClearPinBarProjectionLines();
+                if (m_ActiveEntrySetup == EEntrySetup.PinBar && currentPosition == 0)
+                    ClearPinBarEntryIfActive();
             }
 
-            // Pin-bar projections are informational even while the strategy is
-            // unarmed.  An open position hides them so the trade-management
+            if (!Enable24EMABounceTrading) {
+                ResetEmaBounceProjection();
+                if (m_ActiveEntrySetup == EEntrySetup.Ema24Bounce && currentPosition == 0)
+                    ClearEmaBounceEntryIfActive();
+            }
+
+            if (!EnablePinBarTrading && !Enable24EMABounceTrading &&
+                currentPosition == 0) {
+                m_AutoEntryArmed = false;
+                m_ArmedDirection = 0;
+            }
+
+            // An EMA-bounce order belongs only to the bar that created it. If
+            // that bar ended without a fill, cancel its order before assessing
+            // the next bar as a completely fresh bounce candidate.
+            if (m_ActiveEntrySetup == EEntrySetup.Ema24Bounce &&
+                currentPosition == 0 && m_EmaBounceOrderBar != Bars.CurrentBar)
+                ClearEmaBounceEntryIfActive();
+
+            // A staged pin order is also valid only for the bar that formed its
+            // tail. A new bar starts a new, independent pin-bar evaluation.
+            if (m_ActiveEntrySetup == EEntrySetup.PinBar &&
+                currentPosition == 0 && m_PinBarOrderBar != Bars.CurrentBar)
+                ClearPinBarEntryIfActive();
+
+            // Setup projections are informational even while the strategy is
+            // unarmed. An open position hides them so the trade-management
             // controls remain visually distinct.
             UpdatePinBarProjection(tickSize, currentPosition);
+            UpdateEmaBounceProjection(tickSize, currentPosition);
 
             // Highest-priority execution path, modeled after RenkoTailTrading's
             // nuclear flatten. Do not emit entry, stop-loss, or target orders
@@ -186,6 +227,9 @@ namespace PowerLanguage.Strategy
             // platform confirms that the position is flat.
             if (m_KillModeActive) {
                 m_BuyOrderActive = m_SellOrderActive = false;
+                m_ActiveEntrySetup = EEntrySetup.None;
+                m_EmaBounceOrderBar = -1;
+                m_PinBarOrderBar = -1;
                 m_StopPrice = m_LastSentPrice = 0;
                 m_ProtectiveStopPrice = m_ProfitTargetPrice = 0;
                 m_FlattenRequested = currentPosition != 0;
@@ -222,36 +266,26 @@ namespace PowerLanguage.Strategy
                     m_ProfitTargetPrice = ProfitTargetTicks > 0 ? entryPrice - targetDist : 0;
                 }
                 m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = m_LastSentPrice = 0;
+                m_ActiveEntrySetup = EEntrySetup.None;
+                m_EmaBounceOrderBar = -1;
+                m_PinBarOrderBar = -1;
                 if (m_GoSignalMarker != null) m_GoSignalMarker.Delete();
                 ClearProjectedEntryLine(); UpdateTargetLine(); UpdateStopLine();
                 DrawFilledEntryMarkers(currentPosition, entryPrice, tickSize);
-            }
-
-            // Ctrl-click arms a direction, but no entry order exists until a
-            // completed bar exactly matches the hard-coded 4-tick tail and
-            // 1-tick body. Rejected bars are simply skipped while arming
-            // persists into the next bar.
-            if (currentPosition == 0 && m_LastMarketPosition == 0 &&
-                EnablePinBarTrading && m_PinBarArmed &&
-                !m_BuyOrderActive && !m_SellOrderActive &&
-                Bars.Status == EBarState.Close &&
-                Bars.CurrentBar != m_LastPinBarEntryBar &&
-                IsCompletedPinBar(m_PinBarDirection, tickSize)) {
-                ArmEntryFromCompletedPinBar(m_PinBarDirection, tickSize);
             }
 
             if (currentPosition == 0) {
                 int currentQty = OrderQuantity;
                 if (m_BuyOrderActive && m_StopPrice > 0) {
                     // Re-send on every IOG calculation so the native order remains
-                    // active between ticks. The pin bar fixes this price at one
-                    // tick above its completed high.
+                    // active between ticks. A pin uses its completed-bar price;
+                    // an EMA bounce updates its stop from the live projection.
                     if (Bars.LastBarOnChart) { m_BuyStop.Send(m_StopPrice, currentQty); m_LastSentPrice = m_StopPrice; }
                     UpdateProjectedEntryLine();
                 } else if (m_SellOrderActive && m_StopPrice > 0) {
                     // Re-send on every IOG calculation so the native order remains
-                    // active between ticks. The pin bar fixes this price at one
-                    // tick below its completed low.
+                    // active between ticks. A pin uses its completed-bar price;
+                    // an EMA bounce updates its stop from the live projection.
                     if (Bars.LastBarOnChart) { m_SellStop.Send(m_StopPrice, currentQty); m_LastSentPrice = m_StopPrice; }
                     UpdateProjectedEntryLine();
                 } else {
@@ -272,6 +306,9 @@ namespace PowerLanguage.Strategy
             if (currentPosition == 0 && m_LastMarketPosition != 0) { 
                 m_ProtectiveStopPrice = m_ProfitTargetPrice = 0; 
                 m_BuyOrderActive = m_SellOrderActive = false; 
+                m_ActiveEntrySetup = EEntrySetup.None;
+                m_EmaBounceOrderBar = -1;
+                m_PinBarOrderBar = -1;
                 m_LastSentPrice = 0; 
                 ClearTradingDrawings(); 
             }
@@ -366,14 +403,14 @@ namespace PowerLanguage.Strategy
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale; if (tickSize <= 0) tickSize = 0.25;
             if ((arg.keys & Keys.Control) == Keys.Control) {
                 int currentPosition = StrategyInfo.MarketPosition;
-                if (currentPosition != 0 || m_PinBarArmed || m_BuyOrderActive || m_SellOrderActive) {
+                if (currentPosition != 0 || m_AutoEntryArmed || m_BuyOrderActive || m_SellOrderActive) {
                     // If anything is working or filled, Ctrl-click is an
                     // unconditional cancel-and-flatten request.
                     ActivateKillMode(currentPosition);
-                } else if (EnablePinBarTrading) {
+                } else if (EnablePinBarTrading || Enable24EMABounceTrading) {
                     // Flat and unarmed: latch the 24 EMA direction and begin
-                    // waiting persistently for a completed pin bar.
-                    ArmPinBarMode(tickSize);
+                    // waiting persistently for an enabled automated setup.
+                    ArmAutomatedEntryMode(tickSize);
                 }
                 if (ShowHUD) UpdateHUD();
             }
@@ -409,35 +446,49 @@ namespace PowerLanguage.Strategy
             }
         }
 
-        private void ArmPinBarMode(double tickSize) {
+        private void ArmAutomatedEntryMode(double tickSize) {
             ClearEmergencyIndicator();
             m_KillModeActive = false;
             m_FlattenRequested = false;
-            m_PinBarArmed = true;
+            m_AutoEntryArmed = true;
             // Preserve the existing semantics: flat/rising 24 EMA is bullish;
             // falling 24 EMA is bearish. The direction remains latched until
             // the trader disarms with Ctrl/Shift-click.
-            m_PinBarDirection = m_SlowEMA[0] >= m_SlowEMA[1] ? 1 : -1;
+            m_ArmedDirection = m_SlowEMA[0] >= m_SlowEMA[1] ? 1 : -1;
             m_PinProjectionBar = Bars.CurrentBar;
-            m_PinProjectionDirection = m_PinBarDirection;
+            m_PinProjectionDirection = m_ArmedDirection;
             m_PinProjectionTailReached = false;
             m_PinProjectionBroken = false;
+            m_PinProjectionAllTail = false;
+            m_PinProjectionOpenAligned = IsPinBarOpenOnCorrectEmaSide(
+                m_PinProjectionDirection, tickSize);
             m_BuyOrderActive = m_SellOrderActive = false;
+            m_ActiveEntrySetup = EEntrySetup.None;
+            m_EmaBounceOrderBar = -1;
+            m_PinBarOrderBar = -1;
             m_StopPrice = m_LastSentPrice = 0;
             ClearProjectedEntryLine();
             UpdatePinBarProjection(tickSize, StrategyInfo.MarketPosition);
+            UpdateEmaBounceProjection(tickSize, StrategyInfo.MarketPosition);
         }
 
         private void ActivateKillMode(int currentPosition) {
             m_KillModeActive = true;
             m_FlattenRequested = currentPosition != 0;
-            m_PinBarArmed = false;
-            m_PinBarDirection = 0;
+            m_AutoEntryArmed = false;
+            m_ArmedDirection = 0;
             m_PinProjectionBar = -1;
             m_PinProjectionDirection = 0;
             m_PinProjectionTailReached = false;
             m_PinProjectionBroken = false;
+            m_PinProjectionAllTail = false;
+            m_PinProjectionOpenAligned = false;
+            m_EmaBounceProjectionBar = -1;
+            m_EmaBounceProjectionDirection = 0;
             m_BuyOrderActive = m_SellOrderActive = false;
+            m_ActiveEntrySetup = EEntrySetup.None;
+            m_EmaBounceOrderBar = -1;
+            m_PinBarOrderBar = -1;
             m_StopPrice = m_LastSentPrice = 0;
             m_ProtectiveStopPrice = m_ProfitTargetPrice = 0;
             m_DraggingTarget = m_DraggingStop = false;
@@ -576,32 +627,78 @@ namespace PowerLanguage.Strategy
             // 24 EMA slope rule so the chart never shows four competing lines.
             if (m_PinProjectionBar != Bars.CurrentBar) {
                 m_PinProjectionBar = Bars.CurrentBar;
-                m_PinProjectionDirection = m_PinBarArmed
-                    ? m_PinBarDirection
+                m_PinProjectionDirection = m_AutoEntryArmed
+                    ? m_ArmedDirection
                     : GetSlowEmaDirection();
                 m_PinProjectionTailReached = false;
                 m_PinProjectionBroken = false;
+                m_PinProjectionAllTail = false;
+                m_PinProjectionOpenAligned = IsPinBarOpenOnCorrectEmaSide(
+                    m_PinProjectionDirection, tickSize);
             }
 
-            int direction = m_PinBarArmed ? m_PinBarDirection : m_PinProjectionDirection;
+            int direction = m_AutoEntryArmed ? m_ArmedDirection : m_PinProjectionDirection;
             if (direction == 0) {
                 ClearPinBarProjectionLines();
+                ClearPinBarEntryIfActive();
+                return;
+            }
+
+            if (!m_PinProjectionOpenAligned) {
+                ClearPinBarProjectionLines();
+                ClearPinBarEntryIfActive();
                 return;
             }
 
             double projectedLow;
             double projectedHigh;
-            GetPinBarProjectionPrices(direction, tickSize, out projectedLow, out projectedHigh);
-            UpdatePinBarFormationState(direction, projectedLow, projectedHigh, tickSize);
-            if (m_PinProjectionBroken || !CanStillFormPinBar(direction, tickSize)) {
-                m_PinProjectionBroken = true;
-                ClearPinBarProjectionLines();
-                return;
+            if (m_PinProjectionAllTail) {
+                GetPinBarProjectionPrices(direction, PinBarRangeTicks, 0, tickSize,
+                                           out projectedLow, out projectedHigh);
+                if (!CanStillFormPinBar(direction, PinBarRangeTicks, 0, tickSize)) {
+                    m_PinProjectionBroken = true;
+                    ClearPinBarProjectionLines();
+                    ClearPinBarEntryIfActive();
+                    return;
+                }
+            } else {
+                GetPinBarProjectionPrices(direction, PinBarTailTicks, PinBarBodyTicks,
+                                           tickSize, out projectedLow, out projectedHigh);
+                UpdatePinBarFormationState(direction, projectedLow, projectedHigh, tickSize);
+                if (m_PinProjectionBroken ||
+                    !CanStillFormPinBar(direction, PinBarTailTicks, PinBarBodyTicks,
+                                         tickSize)) {
+                    // A fifth tail tick can still complete as a zero-body pin.
+                    // Switch the informational projection to that valid shape.
+                    if (CanStillFormPinBar(direction, PinBarRangeTicks, 0, tickSize)) {
+                        m_PinProjectionAllTail = true;
+                        m_PinProjectionBroken = false;
+                        GetPinBarProjectionPrices(direction, PinBarRangeTicks, 0, tickSize,
+                                                   out projectedLow, out projectedHigh);
+                    } else {
+                        m_PinProjectionBroken = true;
+                        ClearPinBarProjectionLines();
+                        ClearPinBarEntryIfActive();
+                        return;
+                    }
+                }
             }
 
             UpdatePinBarProjectionLine(ref m_PinBarLowerLine, projectedLow, direction);
             UpdatePinBarProjectionLine(ref m_PinBarUpperLine, projectedHigh, direction);
             UpdatePinBarProjectionLabel(projectedHigh, direction);
+
+            // Stage the stop as soon as the four-tick tail is reached. A fifth
+            // tail tick switches to the zero-body shape and updates the stop.
+            if (m_PinProjectionTailReached || m_PinProjectionAllTail)
+                ArmOrUpdateProjectedPinBarEntry(direction, projectedLow, projectedHigh, tickSize);
+            else
+                ClearPinBarEntryIfActive();
+        }
+
+        private bool IsPinBarOpenOnCorrectEmaSide(int direction, double tickSize) {
+            double open = RoundToTick(Bars.Open[0], tickSize);
+            return direction > 0 ? open > m_SlowEMA[0] : open < m_SlowEMA[0];
         }
 
         private int GetSlowEmaDirection() {
@@ -609,15 +706,16 @@ namespace PowerLanguage.Strategy
             return m_SlowEMA[0] >= m_SlowEMA[1] ? 1 : -1;
         }
 
-        private void GetPinBarProjectionPrices(int direction, double tickSize,
-                                               out double projectedLow, out double projectedHigh) {
+        private void GetPinBarProjectionPrices(int direction, int tailTicks, int bodyTicks,
+                                               double tickSize, out double projectedLow,
+                                               out double projectedHigh) {
             double open = RoundToTick(Bars.Open[0], tickSize);
             if (direction > 0) {
-                projectedLow = open - (PinBarTailTicks * tickSize);
-                projectedHigh = open + (PinBarBodyTicks * tickSize);
+                projectedLow = open - (tailTicks * tickSize);
+                projectedHigh = open + (bodyTicks * tickSize);
             } else {
-                projectedLow = open - (PinBarBodyTicks * tickSize);
-                projectedHigh = open + (PinBarTailTicks * tickSize);
+                projectedLow = open - (bodyTicks * tickSize);
+                projectedHigh = open + (tailTicks * tickSize);
             }
             projectedLow = RoundToTick(projectedLow, tickSize);
             projectedHigh = RoundToTick(projectedHigh, tickSize);
@@ -650,47 +748,241 @@ namespace PowerLanguage.Strategy
             }
         }
 
-        private bool CanStillFormPinBar(int direction, double tickSize) {
+        private bool CanStillFormPinBar(int direction, int tailTicks, int bodyTicks,
+                                        double tickSize) {
             double projectedLow;
             double projectedHigh;
-            GetPinBarProjectionPrices(direction, tickSize, out projectedLow, out projectedHigh);
+            GetPinBarProjectionPrices(direction, tailTicks, bodyTicks, tickSize,
+                                       out projectedLow, out projectedHigh);
+            return CanStillFormPinBar(projectedLow, projectedHigh, tickSize);
+        }
+
+        private bool CanStillFormPinBar(double projectedLow, double projectedHigh,
+                                        double tickSize) {
             double tolerance = tickSize * 0.1;
             return Bars.Low[0] >= projectedLow - tolerance &&
                    Bars.High[0] <= projectedHigh + tolerance;
         }
 
-        private bool IsCompletedPinBar(int direction, double tickSize) {
-            if (direction == 0) return false;
+        private void ArmOrUpdateProjectedPinBarEntry(int direction, double projectedLow,
+                                                     double projectedHigh, double tickSize) {
+            if (!m_AutoEntryArmed || StrategyInfo.MarketPosition != 0 ||
+                direction == 0) return;
 
-            double projectedLow;
-            double projectedHigh;
-            GetPinBarProjectionPrices(direction, tickSize, out projectedLow, out projectedHigh);
-            double tolerance = tickSize * 0.1;
-            bool exactRange = Math.Abs((Bars.High[0] - Bars.Low[0]) -
-                                       (PinBarRangeTicks * tickSize)) <= tolerance;
-            if (!exactRange ||
-                Math.Abs(Bars.Low[0] - projectedLow) > tolerance ||
-                Math.Abs(Bars.High[0] - projectedHigh) > tolerance)
-                return false;
+            // EMA Bounce owns the single entry order whenever both setups are
+            // available. A pin can only create or update its own pending order.
+            if (m_ActiveEntrySetup != EEntrySetup.None &&
+                m_ActiveEntrySetup != EEntrySetup.PinBar) return;
 
-            // With no wick on the body side, a bullish pin closes at its high
-            // and a bearish pin closes at its low.
-            double expectedClose = direction > 0 ? projectedHigh : projectedLow;
-            return Math.Abs(Bars.Close[0] - expectedClose) <= tolerance;
-        }
-
-        private void ArmEntryFromCompletedPinBar(int direction, double tickSize) {
-            m_LastPinBarEntryBar = Bars.CurrentBar;
+            m_ActiveEntrySetup = EEntrySetup.PinBar;
+            m_PinBarOrderBar = Bars.CurrentBar;
             m_BuyOrderActive = direction > 0;
             m_SellOrderActive = direction < 0;
             m_StopPrice = direction > 0
-                ? RoundToTick(Bars.High[0] + (EntryOffsetTicks * tickSize), tickSize)
-                : RoundToTick(Bars.Low[0] - (EntryOffsetTicks * tickSize), tickSize);
+                ? RoundToTick(projectedHigh + (EntryOffsetTicks * tickSize), tickSize)
+                : RoundToTick(projectedLow - (EntryOffsetTicks * tickSize), tickSize);
             m_LastSentPrice = 0;
+        }
+
+        private void ClearPinBarEntryIfActive() {
+            if (m_ActiveEntrySetup == EEntrySetup.PinBar &&
+                StrategyInfo.MarketPosition == 0) {
+                ClearPendingEntry();
+                m_PinBarOrderBar = -1;
+            }
+        }
+
+        private void UpdateEmaBounceProjection(double tickSize, int currentPosition) {
+            if (!Enable24EMABounceTrading || currentPosition != 0) {
+                ClearEmaBounceProjectionLines();
+                return;
+            }
+
+            if (m_EmaBounceProjectionBar != Bars.CurrentBar) {
+                m_EmaBounceProjectionBar = Bars.CurrentBar;
+                m_EmaBounceProjectionDirection = 0;
+            }
+
+            int qualifyingDirection = GetEmaBounceDirection();
+            if (qualifyingDirection == 0) {
+                m_EmaBounceProjectionDirection = 0;
+                ClearEmaBounceProjectionLines();
+                ClearEmaBounceEntryIfActive();
+                return;
+            }
+            m_EmaBounceProjectionDirection = qualifyingDirection;
+
+            double projectedLow;
+            double projectedHigh;
+            if (!TryGetEmaBounceProjectionPrices(m_EmaBounceProjectionDirection,
+                                                  tickSize,
+                                                  out projectedLow,
+                                                  out projectedHigh)) {
+                // Geometry can recover before the range bar completes, so do
+                // not latch this as a permanent failure for the current bar.
+                ClearEmaBounceProjectionLines();
+                ClearEmaBounceEntryIfActive();
+                return;
+            }
+
+            UpdateEmaBounceProjectionLine(ref m_EmaBounceLowerLine, projectedLow,
+                                          m_EmaBounceProjectionDirection);
+            UpdateEmaBounceProjectionLine(ref m_EmaBounceUpperLine, projectedHigh,
+                                          m_EmaBounceProjectionDirection);
+            UpdateEmaBounceProjectionLabel(
+                m_EmaBounceProjectionDirection > 0 ? projectedHigh : projectedLow,
+                m_EmaBounceProjectionDirection);
+            ArmOrUpdateProjectedEmaBounceEntry(m_EmaBounceProjectionDirection,
+                                               projectedLow, projectedHigh, tickSize);
+        }
+
+        private int GetEmaBounceDirection() {
+            // Arming is the trader's slope/angle decision. A live bounce only
+            // needs the 8/24 stack to identify its long or short direction.
+            if (m_FastEMA[0] > m_SlowEMA[0])
+                return 1;
+            if (m_FastEMA[0] < m_SlowEMA[0])
+                return -1;
+            return 0;
+        }
+
+        private bool TryGetEmaBounceProjectionPrices(int direction, double tickSize,
+                                                      out double projectedLow,
+                                                      out double projectedHigh) {
+            double range = GetActiveRangeTicks(tickSize) * tickSize;
+            double currentEma = m_SlowEMA[0];
+            double tolerance = tickSize * 0.1;
+            projectedLow = projectedHigh = 0;
+            if (direction == 0 || range <= 0) return false;
+
+            if (direction > 0) {
+                // Setup recognition is based solely on whether the current or
+                // still-possible range bar can reach the live 24 EMA. The
+                // six-tick entry distance must not disqualify the projection.
+                double projectedTouchLow = currentEma;
+                double lowestPossibleLow = Math.Max(Bars.High[0] - range,
+                                                     currentEma - range);
+                double highestPossibleLow = Math.Min(Bars.Low[0],
+                                                      projectedTouchLow);
+                if (lowestPossibleLow > highestPossibleLow + tolerance) return false;
+                projectedLow = RoundDownToTick(highestPossibleLow, tickSize);
+                if (projectedLow < lowestPossibleLow - tolerance) return false;
+                projectedHigh = projectedLow + range;
+            } else {
+                // Bearish mirror: the current or still-possible bar only needs
+                // to reach the live 24 EMA; entry pricing is handled separately.
+                double projectedTouchHigh = currentEma;
+                double lowestPossibleHigh = Math.Max(Bars.High[0],
+                                                      projectedTouchHigh);
+                double highestPossibleHigh = Math.Min(Bars.Low[0] + range,
+                                                      currentEma + range);
+                if (lowestPossibleHigh > highestPossibleHigh + tolerance) return false;
+                projectedHigh = RoundUpToTick(lowestPossibleHigh, tickSize);
+                if (projectedHigh > highestPossibleHigh + tolerance) return false;
+                projectedLow = projectedHigh - range;
+            }
+
+            projectedLow = RoundToTick(projectedLow, tickSize);
+            projectedHigh = RoundToTick(projectedHigh, tickSize);
+            return true;
+        }
+
+        private void ArmOrUpdateProjectedEmaBounceEntry(int direction,
+                                                        double projectedLow,
+                                                        double projectedHigh,
+                                                        double tickSize) {
+            if (!m_AutoEntryArmed || StrategyInfo.MarketPosition != 0 ||
+                direction == 0) return;
+
+            // The strategy owns one pending entry at a time. An EMA bounce has
+            // priority, so it replaces a still-working pin-bar entry; a current
+            // position was already rejected above and therefore cannot receive
+            // another entry order.
+            if (m_ActiveEntrySetup == EEntrySetup.PinBar) {
+                ClearPendingEntry();
+                m_PinBarOrderBar = -1;
+            } else if (m_ActiveEntrySetup != EEntrySetup.None &&
+                       m_ActiveEntrySetup != EEntrySetup.Ema24Bounce)
+                return;
+
+            m_ActiveEntrySetup = EEntrySetup.Ema24Bounce;
+            m_EmaBounceOrderBar = Bars.CurrentBar;
+            m_BuyOrderActive = direction > 0;
+            m_SellOrderActive = direction < 0;
+            m_StopPrice = direction > 0
+                ? RoundToTick(projectedLow + (EmaBounceEntryOffsetTicks * tickSize), tickSize)
+                : RoundToTick(projectedHigh - (EmaBounceEntryOffsetTicks * tickSize), tickSize);
+            m_LastSentPrice = 0;
+        }
+
+        private void ClearEmaBounceEntryIfActive() {
+            if (m_ActiveEntrySetup == EEntrySetup.Ema24Bounce &&
+                StrategyInfo.MarketPosition == 0) {
+                ClearPendingEntry();
+                m_EmaBounceOrderBar = -1;
+            }
+        }
+
+        private void UpdateEmaBounceProjectionLine(ref ITrendLineObject line,
+                                                   double price, int direction) {
+            ChartPoint begin = new ChartPoint(Bars.Time[0], price);
+            ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
+            if (line == null) {
+                line = DrwTrendLine.Create(begin, end);
+                line.ExtRight = false;
+            } else {
+                line.Begin = begin;
+                line.End = end;
+            }
+            line.Color = direction > 0 ? Color.MediumSeaGreen : Color.DarkViolet;
+            line.Style = ETLStyle.ToolDashed;
+            line.Size = 2;
+        }
+
+        private void UpdateEmaBounceProjectionLabel(double price, int direction) {
+            // Anchor on the live bar and align into the chart. A future-time
+            // anchor can fall outside the visible pane until the user expands it.
+            ChartPoint point = new ChartPoint(Bars.Time[0], price);
+            if (m_EmaBounceLabel == null) {
+                m_EmaBounceLabel = DrwText.Create(point, "24 EMA Bounce");
+                m_EmaBounceLabel.Size = 10;
+                m_EmaBounceLabel.HStyle = ETextStyleH.Right;
+            }
+            m_EmaBounceLabel.Location = point;
+            m_EmaBounceLabel.Text = "24 EMA Bounce";
+            m_EmaBounceLabel.Color = direction > 0 ? Color.MediumSeaGreen : Color.DarkViolet;
+            m_EmaBounceLabel.VStyle = direction > 0 ? ETextStyleV.Above : ETextStyleV.Below;
+        }
+
+        private void ClearEmaBounceProjectionLines() {
+            if (m_EmaBounceLowerLine != null) { m_EmaBounceLowerLine.Delete(); m_EmaBounceLowerLine = null; }
+            if (m_EmaBounceUpperLine != null) { m_EmaBounceUpperLine.Delete(); m_EmaBounceUpperLine = null; }
+            if (m_EmaBounceLabel != null) { m_EmaBounceLabel.Delete(); m_EmaBounceLabel = null; }
+        }
+
+        private void ResetEmaBounceProjection() {
+            m_EmaBounceProjectionBar = -1;
+            m_EmaBounceProjectionDirection = 0;
+            ClearEmaBounceProjectionLines();
+        }
+
+        private void ClearPendingEntry() {
+            m_BuyOrderActive = m_SellOrderActive = false;
+            m_ActiveEntrySetup = EEntrySetup.None;
+            m_StopPrice = m_LastSentPrice = 0;
+            ClearProjectedEntryLine();
         }
 
         private double RoundToTick(double price, double tickSize) {
             return Math.Round(price / tickSize) * tickSize;
+        }
+
+        private double RoundDownToTick(double price, double tickSize) {
+            return Math.Floor(price / tickSize) * tickSize;
+        }
+
+        private double RoundUpToTick(double price, double tickSize) {
+            return Math.Ceiling(price / tickSize) * tickSize;
         }
 
         private void UpdatePinBarProjectionLine(ref ITrendLineObject line,
@@ -716,11 +1008,13 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdatePinBarProjectionLabel(double price, int direction) {
-            ChartPoint point = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
+            // Keep the label inside the visible pane by extending its text left
+            // from the current bar rather than placing it at a future time.
+            ChartPoint point = new ChartPoint(Bars.Time[0], price);
             if (m_PinBarLabel == null) {
                 m_PinBarLabel = DrwText.Create(point, "pinbar");
                 m_PinBarLabel.Size = 10;
-                m_PinBarLabel.HStyle = ETextStyleH.Left;
+                m_PinBarLabel.HStyle = ETextStyleH.Right;
                 m_PinBarLabel.VStyle = ETextStyleV.Above;
             }
             m_PinBarLabel.Location = point;
@@ -897,11 +1191,17 @@ namespace PowerLanguage.Strategy
             // publish it so the bid and ask chart instances display one total.
             double pnl = UpdateAndGetGlobalPnL(StrategyInfo.OpenEquity);
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale; if (tickSize <= 0) tickSize = 0.25;
-            string status = EnablePinBarTrading ? "PIN WATCH" : "IDLE";
-            if (m_PinBarArmed)
-                status = m_PinBarDirection > 0 ? "PIN ARMED BUY" : "PIN ARMED SELL";
-            if (m_BuyOrderActive) status = "PIN ENTRY BUY";
-            if (m_SellOrderActive) status = "PIN ENTRY SELL";
+            string status = EnablePinBarTrading && Enable24EMABounceTrading
+                ? "PIN + 24 EMA WATCH"
+                : EnablePinBarTrading
+                    ? "PIN WATCH"
+                    : Enable24EMABounceTrading ? "24 EMA WATCH" : "IDLE";
+            if (m_AutoEntryArmed)
+                status = m_ArmedDirection > 0 ? "AUTO ARMED BUY" : "AUTO ARMED SELL";
+            if (m_BuyOrderActive)
+                status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ? "24 EMA ENTRY BUY" : "PIN ENTRY BUY";
+            if (m_SellOrderActive)
+                status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ? "24 EMA ENTRY SELL" : "PIN ENTRY SELL";
             if (StrategyInfo.MarketPosition != 0) status = "IN TRADE";
             if (m_KillModeActive) status = m_FlattenRequested ? "FLATTENING" : "UNARMED";
             string text = string.Format("{0} | Session PnL: {1:C2}", status, pnl);
