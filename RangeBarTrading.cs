@@ -356,6 +356,13 @@ namespace PowerLanguage.Strategy
 
             if (currentPosition == 0 && m_LastMarketPosition != 0) { 
                 FinalizeActiveTradeEntryMarker();
+                // Require a deliberate re-arm after every completed trade.
+                // This applies equally to profit targets, protective stops,
+                // and any other path that takes the strategy flat.
+                m_KillModeActive = true;
+                m_FlattenRequested = false;
+                m_AutoEntryArmed = false;
+                m_ArmedDirection = 0;
                 m_ProtectiveStopPrice = m_ProfitTargetPrice = 0; 
                 m_BuyOrderActive = m_SellOrderActive = false; 
                 m_ActiveEntrySetup = EEntrySetup.None;
