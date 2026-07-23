@@ -60,6 +60,17 @@ namespace PowerLanguage.Indicator
 
         protected override void OnMouseEvent(MouseClickArgs arg)
         {
+            // Keep the chart-wide F11 display gesture consistent: the range
+            // measure annotations are cleared along with the trading HUD.
+            if (arg.buttons == MouseButtons.Left && IsF11Held(arg.keys))
+            {
+                m_HasFirstPoint = false;
+                m_F2WasMissingOnLastClick = false;
+                ClearMeasurementDrawings();
+                UpdateModeLabel();
+                return;
+            }
+
             // F2 + right-click is an explicit clear/reset gesture.  It keeps
             // the indicator loaded while removing the selected points, line,
             // and measurement text.
@@ -110,6 +121,16 @@ namespace PowerLanguage.Indicator
             if ((eventKeys & Keys.KeyCode) == Keys.F2) return true;
             try {
                 return (GetAsyncKeyState((int)Keys.F2) & 0x8000) != 0;
+            } catch {
+                return false;
+            }
+        }
+
+        private bool IsF11Held(Keys eventKeys)
+        {
+            if ((eventKeys & Keys.KeyCode) == Keys.F11) return true;
+            try {
+                return (GetAsyncKeyState((int)Keys.F11) & 0x8000) != 0;
             } catch {
                 return false;
             }
