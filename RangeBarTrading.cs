@@ -27,6 +27,7 @@ namespace PowerLanguage.Strategy
         private static readonly object s_GlobalPnLLock = new object();
         private static readonly Dictionary<RangeBarTradingV3, double> s_GlobalPnLContributors =
             new Dictionary<RangeBarTradingV3, double>();
+        private static RangeBarTradingV3 s_LastActiveChart;
 
         // The only user-facing strategy settings.
         [Input] public int RangeSizeTicks { get; set; }
@@ -453,6 +454,8 @@ namespace PowerLanguage.Strategy
         }
 
         protected override void OnMouseEvent(MouseClickArgs arg) {
+            MarkChartActive();
+
             // Some MultiCharts chart configurations omit F12 from arg.keys,
             // so also check its physical Windows key state.
             if (arg.buttons == MouseButtons.Left &&
@@ -509,6 +512,37 @@ namespace PowerLanguage.Strategy
             else if (m_ProtectiveStopPrice > 0 && Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (ProximityTicks * tickSize)) {
                 m_DraggingStop = true;
                 SetStopLineSelected(true);
+            }
+        }
+
+        private void MarkChartActive() {
+            RangeBarTradingV3 previous = s_LastActiveChart;
+            if (previous == this) return;
+
+            s_LastActiveChart = this;
+            if (previous != null) previous.DisarmForChartSwitch();
+        }
+
+        private void DisarmForChartSwitch() {
+            // Switching chart focus must not flatten an existing position. It
+            // only removes a pending entry and prevents the next automatic
+            // entry from being sent by the chart that was left behind.
+            m_AutoEntryArmed = false;
+            m_ArmedDirection = 0;
+            m_BuyOrderActive = m_SellOrderActive = false;
+            m_ActiveEntrySetup = EEntrySetup.None;
+            m_EmaBounceOrderBar = -1;
+            m_PinBarOrderBar = -1;
+            m_ShiftProjectionActive = false;
+            m_ShiftProjectionBar = -1;
+            m_StopPrice = m_LastSentPrice = 0;
+            CancelWorkingEntryOrders();
+            ClearPendingEntry();
+
+            if (StrategyInfo.MarketPosition == 0) {
+                m_KillModeActive = true;
+                m_FlattenRequested = false;
+                ClearTradingDrawings();
             }
         }
 
@@ -1967,6 +2001,7 @@ namespace PowerLanguage.Strategy
         }
 
         protected override void Destroy() {
+            if (s_LastActiveChart == this) s_LastActiveChart = null;
             RemoveGlobalPnLContributor();
             ClearTradingDrawings();
             ClearFilledEntryMarkers();
