@@ -16,7 +16,7 @@ namespace PowerLanguage.Strategy
     // before this signal is permitted to transmit an order.
     public class RangeBarTradingV3 : SignalObject
     {
-        private enum EEntrySetup { None, PinBar, Ema24Bounce }
+        private enum EEntrySetup { None, PinBar, Ema24Bounce, ShiftProjection }
 
         [DllImport("user32.dll")]
         private static extern short GetAsyncKeyState(int virtualKey);
@@ -32,6 +32,7 @@ namespace PowerLanguage.Strategy
         [Input] public int RangeSizeTicks { get; set; }
         [Input] public int ProtectiveStopLossTicks { get; set; }
         [Input] public int ProfitTargetTicks { get; set; }
+        [Input] public bool AutoProtectiveStopOn1BarProfit { get; set; }
         [Input] public bool EnablePinBarTrading { get; set; }
         [Input] public bool Enable24EMABounceTrading { get; set; }
 
@@ -42,8 +43,7 @@ namespace PowerLanguage.Strategy
         private const int ProximityTicks = 5;
         private const bool ShowHUD = true;
         private const int PinBarRangeTicks = 5;
-        private const int PinBarTailTicks = 4;
-        private const int PinBarBodyTicks = 1;
+        private const int PinBarMinTailTicks = 3;
         private const int EmaBounceEntryOffsetTicks = 6;
         private const int MasterTrendPeriod = 60;
         private const int MinExpansionTicks = 25;
@@ -67,6 +67,7 @@ namespace PowerLanguage.Strategy
         private double m_ProtectiveStopPrice = 0;
         private double m_ProfitTargetPrice = 0;
         private double m_LastSentPrice = 0;
+        private bool m_AutoProtectiveStopMoved = false;
         
         private int m_LastMarketPosition = 0;
 
@@ -78,15 +79,17 @@ namespace PowerLanguage.Strategy
         private int m_PinProjectionDirection = 0;
         private bool m_PinProjectionTailReached = false;
         private bool m_PinProjectionBroken = false;
-        private bool m_PinProjectionAllTail = false;
+        private int m_PinProjectionTailTicks = PinBarMinTailTicks;
         private bool m_PinProjectionOpenAligned = false;
         private int m_PinBarOrderBar = -1;
         private int m_EmaBounceProjectionBar = -1;
         private int m_EmaBounceProjectionDirection = 0;
         private int m_EmaBounceOrderBar = -1;
+        private bool m_ShiftProjectionActive = false;
+        private int m_ShiftProjectionBar = -1;
         private EEntrySetup m_ActiveEntrySetup = EEntrySetup.None;
         private bool m_FlattenRequested = false;
-        // Persistent kill mode entered by Ctrl/Shift-click while armed or in a
+        // Persistent kill mode entered by Ctrl-click while armed or in a
         // position. It suppresses every entry/exit order and flattens any open
         // or late-arriving fill until the user explicitly arms again.
         // Start locked.  A newly loaded/recalculated signal must never arm or
@@ -99,6 +102,9 @@ namespace PowerLanguage.Strategy
         private DateTime m_EmergencyMessageExpiresAt = DateTime.MinValue;
         private readonly List<int> m_EmergencyCancelOrderIds = new List<int>();
         private bool m_EmergencyCancellationPending = false;
+        private string m_StrategyBrokerProfile = string.Empty;
+        private string m_StrategyBrokerAccount = string.Empty;
+        private string m_StrategyBrokerSymbol = string.Empty;
         
         private ITrendLineObject m_TargetLine;
         private ITrendLineObject m_StopLine;
@@ -111,6 +117,7 @@ namespace PowerLanguage.Strategy
         private ITextObject m_EmaBounceLabel;
         private ITrendLineObject m_GoSignalMarker;
         private ITextObject m_HUDLabel;
+        private ITextObject m_BrokerStatusLabel;
         private ITextObject m_EmergencyLabel;
         // Filled-trade annotations are retained after the position closes so
         // the chart keeps a clean record of executed entries.
@@ -121,6 +128,7 @@ namespace PowerLanguage.Strategy
             RangeSizeTicks = 5;
             ProtectiveStopLossTicks = 12;
             ProfitTargetTicks = 5;
+            AutoProtectiveStopOn1BarProfit = true;
             EnablePinBarTrading = true;
             Enable24EMABounceTrading = true;
         }
@@ -155,6 +163,7 @@ namespace PowerLanguage.Strategy
 
         private void ClearTradingDrawings() {
             if (m_HUDLabel != null) { m_HUDLabel.Delete(); m_HUDLabel = null; }
+            if (m_BrokerStatusLabel != null) { m_BrokerStatusLabel.Delete(); m_BrokerStatusLabel = null; }
             if (m_TargetLine != null) { m_TargetLine.Delete(); m_TargetLine = null; }
             if (m_StopLine != null) { m_StopLine.Delete(); m_StopLine = null; }
             if (m_EmergencyLabel != null) { m_EmergencyLabel.Delete(); m_EmergencyLabel = null; }
@@ -183,7 +192,7 @@ namespace PowerLanguage.Strategy
                 m_PinProjectionDirection = 0;
                 m_PinProjectionTailReached = false;
                 m_PinProjectionBroken = false;
-                m_PinProjectionAllTail = false;
+                m_PinProjectionTailTicks = PinBarMinTailTicks;
                 m_PinProjectionOpenAligned = false;
                 ClearPinBarProjectionLines();
                 if (m_ActiveEntrySetup == EEntrySetup.PinBar && currentPosition == 0)
@@ -215,11 +224,18 @@ namespace PowerLanguage.Strategy
                 currentPosition == 0 && m_PinBarOrderBar != Bars.CurrentBar)
                 ClearPinBarEntryIfActive();
 
+            // A Shift projection belongs to the bar from which it was created.
+            // An unfilled order is removed before the next bar is evaluated.
+            if (m_ShiftProjectionActive && currentPosition == 0 &&
+                m_ShiftProjectionBar != Bars.CurrentBar)
+                ClearShiftProjectionEntry();
+
             // Setup projections are informational even while the strategy is
             // unarmed. An open position hides them so the trade-management
             // controls remain visually distinct.
             UpdatePinBarProjection(tickSize, currentPosition);
             UpdateEmaBounceProjection(tickSize, currentPosition);
+            UpdateShiftProjectionEntry(tickSize, currentPosition);
 
             // Highest-priority execution path, modeled after RenkoTailTrading's
             // nuclear flatten. Do not emit entry, stop-loss, or target orders
@@ -230,9 +246,16 @@ namespace PowerLanguage.Strategy
                 m_ActiveEntrySetup = EEntrySetup.None;
                 m_EmaBounceOrderBar = -1;
                 m_PinBarOrderBar = -1;
+                m_ShiftProjectionActive = false;
+                m_ShiftProjectionBar = -1;
                 m_StopPrice = m_LastSentPrice = 0;
                 m_ProtectiveStopPrice = m_ProfitTargetPrice = 0;
-                m_FlattenRequested = currentPosition != 0;
+                bool brokerPositionAvailable;
+                int brokerPosition = GetBrokerPositionForStrategy(out brokerPositionAvailable);
+                int positionToFlatten = brokerPositionAvailable
+                    ? brokerPosition
+                    : currentPosition;
+                m_FlattenRequested = positionToFlatten != 0;
 
                 // A prior version could leave a working native order behind
                 // after a chart reload.  On first real-time calculation, ask
@@ -244,8 +267,8 @@ namespace PowerLanguage.Strategy
                 }
 
                 if (Bars.LastBarOnChart) {
-                    if (currentPosition > 0) m_CloseLongNextBar.Send();
-                    else if (currentPosition < 0) m_CloseShortNextBar.Send();
+                    if (positionToFlatten > 0) m_CloseLongNextBar.Send();
+                    else if (positionToFlatten < 0) m_CloseShortNextBar.Send();
                 }
 
                 m_LastMarketPosition = currentPosition;
@@ -266,13 +289,18 @@ namespace PowerLanguage.Strategy
                     m_ProfitTargetPrice = ProfitTargetTicks > 0 ? entryPrice - targetDist : 0;
                 }
                 m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = m_LastSentPrice = 0;
+                m_AutoProtectiveStopMoved = false;
                 m_ActiveEntrySetup = EEntrySetup.None;
                 m_EmaBounceOrderBar = -1;
                 m_PinBarOrderBar = -1;
+                m_ShiftProjectionActive = false;
+                m_ShiftProjectionBar = -1;
                 if (m_GoSignalMarker != null) m_GoSignalMarker.Delete();
                 ClearProjectedEntryLine(); UpdateTargetLine(); UpdateStopLine();
                 DrawFilledEntryMarkers(currentPosition, entryPrice, tickSize);
             }
+
+            UpdateAutoProtectiveStopOnOneBarProfit(currentPosition, tickSize);
 
             if (currentPosition == 0) {
                 int currentQty = OrderQuantity;
@@ -309,7 +337,10 @@ namespace PowerLanguage.Strategy
                 m_ActiveEntrySetup = EEntrySetup.None;
                 m_EmaBounceOrderBar = -1;
                 m_PinBarOrderBar = -1;
+                m_ShiftProjectionActive = false;
+                m_ShiftProjectionBar = -1;
                 m_LastSentPrice = 0; 
+                m_AutoProtectiveStopMoved = false;
                 ClearTradingDrawings(); 
             }
             m_LastMarketPosition = currentPosition; if (ShowHUD) UpdateHUD();
@@ -395,7 +426,7 @@ namespace PowerLanguage.Strategy
             // so also check its physical Windows key state.
             if (arg.buttons == MouseButtons.Left &&
                 IsF12Held(arg.keys)) {
-                ActivateEmergencyFlatten();
+                ActivateEmergencyFlatten(true);
                 return;
             }
 
@@ -403,9 +434,13 @@ namespace PowerLanguage.Strategy
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale; if (tickSize <= 0) tickSize = 0.25;
             if ((arg.keys & Keys.Control) == Keys.Control) {
                 int currentPosition = StrategyInfo.MarketPosition;
-                if (currentPosition != 0 || m_AutoEntryArmed || m_BuyOrderActive || m_SellOrderActive) {
-                    // If anything is working or filled, Ctrl-click is an
-                    // unconditional cancel-and-flatten request.
+                if (currentPosition != 0 || HasWorkingStrategyOrders()) {
+                    // With a position or any broker-side working strategy
+                    // order, Ctrl-click uses the full emergency path: cancel
+                    // all strategy orders, then flatten until confirmed flat.
+                    ActivateEmergencyFlatten(false);
+                } else if (m_AutoEntryArmed) {
+                    // No working order exists, so this is only a disarm.
                     ActivateKillMode(currentPosition);
                 } else if (EnablePinBarTrading || Enable24EMABounceTrading) {
                     // Flat and unarmed: latch the 24 EMA direction and begin
@@ -414,8 +449,8 @@ namespace PowerLanguage.Strategy
                 }
                 if (ShowHUD) UpdateHUD();
             }
-            else if ((arg.keys & Keys.Shift) == Keys.Shift) {
-                ActivateKillMode(StrategyInfo.MarketPosition);
+            else if (IsShiftClick(arg.keys)) {
+                StartShiftProjectionEntry(tickSize);
                 if (ShowHUD) UpdateHUD();
             }
             else if (IsAltClick(arg.keys)) {
@@ -453,19 +488,21 @@ namespace PowerLanguage.Strategy
             m_AutoEntryArmed = true;
             // Preserve the existing semantics: flat/rising 24 EMA is bullish;
             // falling 24 EMA is bearish. The direction remains latched until
-            // the trader disarms with Ctrl/Shift-click.
+            // the trader disarms with Ctrl-click.
             m_ArmedDirection = m_SlowEMA[0] >= m_SlowEMA[1] ? 1 : -1;
             m_PinProjectionBar = Bars.CurrentBar;
             m_PinProjectionDirection = m_ArmedDirection;
             m_PinProjectionTailReached = false;
             m_PinProjectionBroken = false;
-            m_PinProjectionAllTail = false;
+            m_PinProjectionTailTicks = PinBarMinTailTicks;
             m_PinProjectionOpenAligned = IsPinBarOpenOnCorrectEmaSide(
                 m_PinProjectionDirection, tickSize);
             m_BuyOrderActive = m_SellOrderActive = false;
             m_ActiveEntrySetup = EEntrySetup.None;
             m_EmaBounceOrderBar = -1;
             m_PinBarOrderBar = -1;
+            m_ShiftProjectionActive = false;
+            m_ShiftProjectionBar = -1;
             m_StopPrice = m_LastSentPrice = 0;
             ClearProjectedEntryLine();
             UpdatePinBarProjection(tickSize, StrategyInfo.MarketPosition);
@@ -481,7 +518,7 @@ namespace PowerLanguage.Strategy
             m_PinProjectionDirection = 0;
             m_PinProjectionTailReached = false;
             m_PinProjectionBroken = false;
-            m_PinProjectionAllTail = false;
+            m_PinProjectionTailTicks = PinBarMinTailTicks;
             m_PinProjectionOpenAligned = false;
             m_EmaBounceProjectionBar = -1;
             m_EmaBounceProjectionDirection = 0;
@@ -489,21 +526,31 @@ namespace PowerLanguage.Strategy
             m_ActiveEntrySetup = EEntrySetup.None;
             m_EmaBounceOrderBar = -1;
             m_PinBarOrderBar = -1;
+            m_ShiftProjectionActive = false;
+            m_ShiftProjectionBar = -1;
             m_StopPrice = m_LastSentPrice = 0;
             m_ProtectiveStopPrice = m_ProfitTargetPrice = 0;
+            m_AutoProtectiveStopMoved = false;
             m_DraggingTarget = m_DraggingStop = false;
             ClearTradingDrawings();
         }
 
-        private void ActivateEmergencyFlatten() {
+        private void ActivateEmergencyFlatten(bool showEmergencyMessage) {
             int currentPosition = StrategyInfo.MarketPosition;
             ActivateKillMode(currentPosition);
-            ShowEmergencyIndicator(RequestTrackerOrderCancellations());
+            string cancellationStatus = RequestTrackerOrderCancellations();
+            if (showEmergencyMessage) ShowEmergencyIndicator(cancellationStatus);
+            else ClearEmergencyIndicator();
 
-            // MarketNextBar executes on the next IOG tick. CalcBar keeps
-            // sending it until the position is confirmed flat.
-            if (currentPosition > 0) m_CloseLongNextBar.Send();
-            else if (currentPosition < 0) m_CloseShortNextBar.Send();
+            // Prefer the broker-reported side immediately; CalcBar continues
+            // the request until that same broker position is confirmed flat.
+            bool brokerPositionAvailable;
+            int brokerPosition = GetBrokerPositionForStrategy(out brokerPositionAvailable);
+            int positionToFlatten = brokerPositionAvailable
+                ? brokerPosition
+                : currentPosition;
+            if (positionToFlatten > 0) m_CloseLongNextBar.Send();
+            else if (positionToFlatten < 0) m_CloseShortNextBar.Send();
         }
 
         private string RequestTrackerOrderCancellations() {
@@ -523,6 +570,8 @@ namespace PowerLanguage.Strategy
                 List<string> requested = new List<string>();
                 foreach (var order in orders) {
                     if (!IsThisStrategyOrder(order.StrategyName, order.Name) || !IsWorkingOrder((int)order.State)) continue;
+                    RememberStrategyBrokerScope(order.Profile, order.Account,
+                                                GetTrackerSymbol(order));
 
                     // ITradingProfile is exposed by MultiCharts as the objects
                     // in TradingProfiles; use its documented order ID rather
@@ -544,6 +593,105 @@ namespace PowerLanguage.Strategy
                 Output.WriteLine("RangeBarTrading tracker cancel error: " + ex.Message);
                 return "EMERGENCY: ORDER CANCEL ERROR";
             }
+        }
+
+        private bool HasWorkingStrategyOrders() {
+            if (m_BuyOrderActive || m_SellOrderActive) return true;
+
+            var tradeManager = TradeManager;
+            if (tradeManager == null || tradeManager.TradingData == null ||
+                tradeManager.TradingData.Orders == null) return false;
+
+            try {
+                tradeManager.ProcessEvents();
+                var orders = tradeManager.TradingData.Orders.Items;
+                if (orders == null) return false;
+                foreach (var order in orders) {
+                    if (IsThisStrategyOrder(order.StrategyName, order.Name))
+                        RememberStrategyBrokerScope(order.Profile, order.Account,
+                                                    GetTrackerSymbol(order));
+                    if (IsThisStrategyOrder(order.StrategyName, order.Name) &&
+                        IsWorkingOrder((int)order.State)) return true;
+                }
+            } catch (Exception ex) {
+                Output.WriteLine("RangeBarTrading working-order check error: " + ex.Message);
+            }
+            return false;
+        }
+
+        private void RememberStrategyBrokerScope(string profile, string account,
+                                                 string symbol) {
+            if (string.IsNullOrEmpty(profile) || string.IsNullOrEmpty(account)) return;
+            m_StrategyBrokerProfile = profile;
+            m_StrategyBrokerAccount = account;
+            if (!string.IsNullOrEmpty(symbol)) m_StrategyBrokerSymbol = symbol;
+        }
+
+        private int GetBrokerPositionForStrategy(out bool isAvailable) {
+            isAvailable = false;
+            var tradeManager = TradeManager;
+            if (tradeManager == null || tradeManager.TradingData == null ||
+                tradeManager.TradingData.Positions == null) return 0;
+
+            try {
+                tradeManager.ProcessEvents();
+                // If this instance has not yet recorded its profile/account,
+                // recover it from the strategy's tracked orders first.
+                if (string.IsNullOrEmpty(m_StrategyBrokerProfile) ||
+                    string.IsNullOrEmpty(m_StrategyBrokerAccount) ||
+                    string.IsNullOrEmpty(m_StrategyBrokerSymbol)) {
+                    var orders = tradeManager.TradingData.Orders.Items;
+                    if (orders != null) {
+                        foreach (var order in orders) {
+                            if (IsThisStrategyOrder(order.StrategyName, order.Name)) {
+                                RememberStrategyBrokerScope(order.Profile, order.Account,
+                                                            GetTrackerSymbol(order));
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (string.IsNullOrEmpty(m_StrategyBrokerProfile) ||
+                    string.IsNullOrEmpty(m_StrategyBrokerAccount) ||
+                    string.IsNullOrEmpty(m_StrategyBrokerSymbol)) return 0;
+
+                var positions = tradeManager.TradingData.Positions.Items;
+                if (positions == null) return 0;
+                isAvailable = true;
+                int brokerPosition = 0;
+                foreach (var position in positions) {
+                    if (!string.Equals(position.Profile, m_StrategyBrokerProfile,
+                                       StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(position.Account, m_StrategyBrokerAccount,
+                                       StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(GetTrackerSymbol(position),
+                                       m_StrategyBrokerSymbol,
+                                       StringComparison.OrdinalIgnoreCase)) continue;
+                    brokerPosition += position.Value;
+                }
+                return brokerPosition;
+            } catch (Exception ex) {
+                Output.WriteLine("RangeBarTrading broker-position check error: " + ex.Message);
+                isAvailable = false;
+                return 0;
+            }
+        }
+
+        private string GetTrackerSymbol(object trackerItem) {
+            if (trackerItem == null) return string.Empty;
+            string[] propertyNames = {
+                "Symbol", "SymbolName", "Instrument", "InstrumentName"
+            };
+            Type itemType = trackerItem.GetType();
+            foreach (string propertyName in propertyNames) {
+                var property = itemType.GetProperty(propertyName);
+                if (property == null) continue;
+                object value = property.GetValue(trackerItem, null);
+                if (value != null && !string.IsNullOrEmpty(value.ToString()))
+                    return value.ToString();
+            }
+            return string.Empty;
         }
 
         private bool IsThisStrategyOrder(string strategyName, string orderName) {
@@ -632,7 +780,7 @@ namespace PowerLanguage.Strategy
                     : GetSlowEmaDirection();
                 m_PinProjectionTailReached = false;
                 m_PinProjectionBroken = false;
-                m_PinProjectionAllTail = false;
+                m_PinProjectionTailTicks = PinBarMinTailTicks;
                 m_PinProjectionOpenAligned = IsPinBarOpenOnCorrectEmaSide(
                     m_PinProjectionDirection, tickSize);
             }
@@ -652,35 +800,41 @@ namespace PowerLanguage.Strategy
 
             double projectedLow;
             double projectedHigh;
-            if (m_PinProjectionAllTail) {
-                GetPinBarProjectionPrices(direction, PinBarRangeTicks, 0, tickSize,
-                                           out projectedLow, out projectedHigh);
-                if (!CanStillFormPinBar(direction, PinBarRangeTicks, 0, tickSize)) {
+            int bodyTicks = PinBarRangeTicks - m_PinProjectionTailTicks;
+            GetPinBarProjectionPrices(direction, m_PinProjectionTailTicks, bodyTicks,
+                                       tickSize, out projectedLow, out projectedHigh);
+            if (m_PinProjectionTailTicks < PinBarRangeTicks)
+                UpdatePinBarFormationState(direction, projectedLow, projectedHigh, tickSize);
+
+            if (m_PinProjectionBroken ||
+                !CanStillFormPinBar(direction, m_PinProjectionTailTicks, bodyTicks,
+                                     tickSize)) {
+                // A 3/2 pin can extend to 4/1, then to a 5/0 all-tail pin.
+                // Advance to the next valid shape while preserving the same
+                // live bar and staged order.
+                bool foundNextShape = false;
+                for (int nextTail = m_PinProjectionTailTicks + 1;
+                     nextTail <= PinBarRangeTicks;
+                     nextTail++) {
+                    int nextBody = PinBarRangeTicks - nextTail;
+                    if (!CanStillFormPinBar(direction, nextTail, nextBody, tickSize))
+                        continue;
+
+                    m_PinProjectionTailTicks = nextTail;
+                    m_PinProjectionBroken = false;
+                    GetPinBarProjectionPrices(direction, nextTail, nextBody, tickSize,
+                                               out projectedLow, out projectedHigh);
+                    m_PinProjectionTailReached = HasReachedPinBarTail(
+                        direction, projectedLow, projectedHigh, tickSize);
+                    foundNextShape = true;
+                    break;
+                }
+
+                if (!foundNextShape) {
                     m_PinProjectionBroken = true;
                     ClearPinBarProjectionLines();
                     ClearPinBarEntryIfActive();
                     return;
-                }
-            } else {
-                GetPinBarProjectionPrices(direction, PinBarTailTicks, PinBarBodyTicks,
-                                           tickSize, out projectedLow, out projectedHigh);
-                UpdatePinBarFormationState(direction, projectedLow, projectedHigh, tickSize);
-                if (m_PinProjectionBroken ||
-                    !CanStillFormPinBar(direction, PinBarTailTicks, PinBarBodyTicks,
-                                         tickSize)) {
-                    // A fifth tail tick can still complete as a zero-body pin.
-                    // Switch the informational projection to that valid shape.
-                    if (CanStillFormPinBar(direction, PinBarRangeTicks, 0, tickSize)) {
-                        m_PinProjectionAllTail = true;
-                        m_PinProjectionBroken = false;
-                        GetPinBarProjectionPrices(direction, PinBarRangeTicks, 0, tickSize,
-                                                   out projectedLow, out projectedHigh);
-                    } else {
-                        m_PinProjectionBroken = true;
-                        ClearPinBarProjectionLines();
-                        ClearPinBarEntryIfActive();
-                        return;
-                    }
                 }
             }
 
@@ -688,9 +842,9 @@ namespace PowerLanguage.Strategy
             UpdatePinBarProjectionLine(ref m_PinBarUpperLine, projectedHigh, direction);
             UpdatePinBarProjectionLabel(projectedHigh, direction);
 
-            // Stage the stop as soon as the four-tick tail is reached. A fifth
-            // tail tick switches to the zero-body shape and updates the stop.
-            if (m_PinProjectionTailReached || m_PinProjectionAllTail)
+            // Stage the stop as soon as the minimum three-tick tail is reached.
+            // A fourth or fifth tail tick updates the projected body and stop.
+            if (m_PinProjectionTailReached)
                 ArmOrUpdateProjectedPinBarEntry(direction, projectedLow, projectedHigh, tickSize);
             else
                 ClearPinBarEntryIfActive();
@@ -699,6 +853,14 @@ namespace PowerLanguage.Strategy
         private bool IsPinBarOpenOnCorrectEmaSide(int direction, double tickSize) {
             double open = RoundToTick(Bars.Open[0], tickSize);
             return direction > 0 ? open > m_SlowEMA[0] : open < m_SlowEMA[0];
+        }
+
+        private bool HasReachedPinBarTail(int direction, double projectedLow,
+                                          double projectedHigh, double tickSize) {
+            double tolerance = tickSize * 0.1;
+            return direction > 0
+                ? Bars.Low[0] <= projectedLow + tolerance
+                : Bars.High[0] >= projectedHigh - tolerance;
         }
 
         private int GetSlowEmaDirection() {
@@ -973,6 +1135,95 @@ namespace PowerLanguage.Strategy
             ClearProjectedEntryLine();
         }
 
+        private void StartShiftProjectionEntry(double tickSize) {
+            if (StrategyInfo.MarketPosition != 0) return;
+
+            // Shift replaces a pending entry with a single manually requested
+            // projection. It does not arm the automatic pin/EMA setups.
+            ClearEmergencyIndicator();
+            m_KillModeActive = false;
+            m_FlattenRequested = false;
+            CancelWorkingEntryOrders();
+            ClearPendingEntry();
+            m_ShiftProjectionActive = true;
+            m_ShiftProjectionBar = Bars.CurrentBar;
+            UpdateShiftProjectionEntry(tickSize, StrategyInfo.MarketPosition);
+            UpdateProjectedEntryLine();
+        }
+
+        private void UpdateShiftProjectionEntry(double tickSize, int currentPosition) {
+            if (!m_ShiftProjectionActive) return;
+            if (currentPosition != 0 || m_ShiftProjectionBar != Bars.CurrentBar) {
+                ClearShiftProjectionEntry();
+                return;
+            }
+
+            int direction = m_FastEMA[0] > m_SlowEMA[0] ? 1 :
+                            m_FastEMA[0] < m_SlowEMA[0] ? -1 : 0;
+            if (direction == 0) {
+                if (m_ActiveEntrySetup == EEntrySetup.ShiftProjection) {
+                    CancelWorkingEntryOrders();
+                    ClearPendingEntry();
+                }
+                return;
+            }
+
+            double rangeTicks = GetActiveRangeTicks(tickSize);
+            double open = RoundToTick(Bars.Open[0], tickSize);
+            double entryPrice = direction > 0
+                ? open + ((rangeTicks + EntryOffsetTicks) * tickSize)
+                : open - ((rangeTicks + EntryOffsetTicks) * tickSize);
+
+            bool buyDirection = direction > 0;
+            if (m_ActiveEntrySetup == EEntrySetup.ShiftProjection &&
+                ((m_BuyOrderActive && !buyDirection) ||
+                 (m_SellOrderActive && buyDirection)))
+                CancelWorkingEntryOrders();
+
+            m_ActiveEntrySetup = EEntrySetup.ShiftProjection;
+            m_BuyOrderActive = buyDirection;
+            m_SellOrderActive = !buyDirection;
+            m_StopPrice = RoundToTick(entryPrice, tickSize);
+            m_LastSentPrice = 0;
+        }
+
+        private void ClearShiftProjectionEntry() {
+            if (m_ActiveEntrySetup == EEntrySetup.ShiftProjection &&
+                StrategyInfo.MarketPosition == 0) {
+                CancelWorkingEntryOrders();
+                ClearPendingEntry();
+            }
+            m_ShiftProjectionActive = false;
+            m_ShiftProjectionBar = -1;
+        }
+
+        private void CancelWorkingEntryOrders() {
+            var tradeManager = TradeManager;
+            if (tradeManager == null || tradeManager.TradingData == null ||
+                tradeManager.TradingData.Orders == null) return;
+
+            try {
+                tradeManager.ProcessEvents();
+                var orders = tradeManager.TradingData.Orders.Items;
+                if (orders == null) return;
+
+                foreach (var order in orders) {
+                    if (!IsThisStrategyOrder(order.StrategyName, order.Name) ||
+                        (order.Name != "RangeBuy" && order.Name != "RangeSell") ||
+                        !IsWorkingOrder((int)order.State)) continue;
+
+                    foreach (var tradingProfile in tradeManager.TradingProfiles) {
+                        if (!string.Equals(tradingProfile.Name, order.Profile,
+                                           StringComparison.OrdinalIgnoreCase)) continue;
+                        tradingProfile.CancelOrder(order.OrderID);
+                        break;
+                    }
+                }
+            } catch (Exception ex) {
+                Output.WriteLine("RangeBarTrading entry cancel error: " + ex.Message);
+            }
+        }
+
         private double RoundToTick(double price, double tickSize) {
             return Math.Round(price / tickSize) * tickSize;
         }
@@ -1048,6 +1299,42 @@ namespace PowerLanguage.Strategy
             SubmitActiveExitOrders(currentPosition);
         }
 
+        private void UpdateAutoProtectiveStopOnOneBarProfit(int currentPosition,
+                                                             double tickSize) {
+            if (!AutoProtectiveStopOn1BarProfit || m_AutoProtectiveStopMoved ||
+                currentPosition == 0) return;
+
+            double entryPrice = StrategyInfo.AvgEntryPrice != 0
+                ? StrategyInfo.AvgEntryPrice
+                : Bars.Close[0];
+            double confirmationTicks = GetActiveRangeTicks(tickSize) + 1;
+            double confirmationDistance = confirmationTicks * tickSize;
+            double tolerance = tickSize * 0.1;
+            bool oneBarProfitConfirmed = currentPosition > 0
+                ? Bars.High[0] >= entryPrice + confirmationDistance - tolerance
+                : Bars.Low[0] <= entryPrice - confirmationDistance + tolerance;
+            if (!oneBarProfitConfirmed) return;
+
+            // For range-bar trading, the "break-even" stop intentionally
+            // allows one tick of loss. Do not loosen a stop the trader has
+            // already moved to a more favorable price.
+            double breakEvenStop = currentPosition > 0
+                ? RoundToTick(entryPrice - tickSize, tickSize)
+                : RoundToTick(entryPrice + tickSize, tickSize);
+            if (currentPosition > 0) {
+                if (m_ProtectiveStopPrice <= 0 ||
+                    m_ProtectiveStopPrice < breakEvenStop)
+                    m_ProtectiveStopPrice = breakEvenStop;
+            } else {
+                if (m_ProtectiveStopPrice <= 0 ||
+                    m_ProtectiveStopPrice > breakEvenStop)
+                    m_ProtectiveStopPrice = breakEvenStop;
+            }
+
+            m_AutoProtectiveStopMoved = true;
+            UpdateStopLine();
+        }
+
         private void DrawFilledEntryMarkers(int currentPosition, double entryPrice, double tickSize) {
             // Direction marker: below a long entry bar and above a short entry
             // bar, so it points at the bar tail without covering the candle.
@@ -1095,6 +1382,17 @@ namespace PowerLanguage.Strategy
                    liveKeyCode == Keys.Menu ||
                    liveKeyCode == Keys.LMenu ||
                    liveKeyCode == Keys.RMenu;
+        }
+
+        private bool IsShiftClick(Keys keys) {
+            // MultiCharts does not always include Shift in arg.keys, so use
+            // the live Windows modifier state as a fallback.
+            Keys liveModifiers = System.Windows.Forms.Control.ModifierKeys;
+            Keys keyCode = keys & Keys.KeyCode;
+            Keys liveKeyCode = liveModifiers & Keys.KeyCode;
+            return ((keys | liveModifiers) & Keys.Shift) == Keys.Shift ||
+                   keyCode == Keys.ShiftKey ||
+                   liveKeyCode == Keys.ShiftKey;
         }
 
         private void UpdateTargetLine() {
@@ -1199,15 +1497,112 @@ namespace PowerLanguage.Strategy
             if (m_AutoEntryArmed)
                 status = m_ArmedDirection > 0 ? "AUTO ARMED BUY" : "AUTO ARMED SELL";
             if (m_BuyOrderActive)
-                status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ? "24 EMA ENTRY BUY" : "PIN ENTRY BUY";
+                status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ? "24 EMA ENTRY BUY" :
+                    m_ActiveEntrySetup == EEntrySetup.ShiftProjection ? "SHIFT ENTRY BUY" : "PIN ENTRY BUY";
             if (m_SellOrderActive)
-                status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ? "24 EMA ENTRY SELL" : "PIN ENTRY SELL";
+                status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ? "24 EMA ENTRY SELL" :
+                    m_ActiveEntrySetup == EEntrySetup.ShiftProjection ? "SHIFT ENTRY SELL" : "PIN ENTRY SELL";
             if (StrategyInfo.MarketPosition != 0) status = "IN TRADE";
             if (m_KillModeActive) status = m_FlattenRequested ? "FLATTENING" : "UNARMED";
             string text = string.Format("{0} | Session PnL: {1:C2}", status, pnl);
             if (m_HUDLabel == null) { m_HUDLabel = DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0]), text); m_HUDLabel.Size = 14; }
             m_HUDLabel.Text = text; m_HUDLabel.Color = Color.Black;
             m_HUDLabel.Location = new ChartPoint(Bars.Time[0], Bars.High[0] + (12 * tickSize));
+            UpdateBrokerStatusLabel(tickSize);
+        }
+
+        private void UpdateBrokerStatusLabel(double tickSize) {
+            string text;
+            Color color;
+            int workingOrders = 0;
+            string brokerName = GetBrokerStatusName();
+            var tradeManager = TradeManager;
+            if (tradeManager == null || tradeManager.TradingData == null ||
+                tradeManager.TradingData.Orders == null) {
+                text = brokerName + ": TRACKER UNAVAILABLE";
+                color = Color.DarkOrange;
+            } else {
+                try {
+                    tradeManager.ProcessEvents();
+                    var orders = tradeManager.TradingData.Orders.Items;
+                    if (orders != null) {
+                        foreach (var order in orders) {
+                            if (!IsThisStrategyOrder(order.StrategyName, order.Name)) continue;
+                            RememberStrategyBrokerScope(order.Profile, order.Account,
+                                                        GetTrackerSymbol(order));
+                            if (IsWorkingOrder((int)order.State)) workingOrders++;
+                        }
+                    }
+
+                    bool brokerPositionAvailable;
+                    int brokerPosition = GetBrokerPositionForStrategy(
+                        out brokerPositionAvailable);
+                    if (!brokerPositionAvailable) {
+                        int strategyPosition = StrategyInfo.MarketPosition;
+                        if (strategyPosition > 0) {
+                            text = string.Format(
+                                "{0}: LONG {1} FILLED (SIGNAL) | {2} WORKING | SCOPE PENDING",
+                                brokerName, strategyPosition, workingOrders);
+                            color = Color.Navy;
+                        } else if (strategyPosition < 0) {
+                            text = string.Format(
+                                "{0}: SHORT {1} FILLED (SIGNAL) | {2} WORKING | SCOPE PENDING",
+                                brokerName, Math.Abs(strategyPosition), workingOrders);
+                            color = Color.Maroon;
+                        } else {
+                            text = string.Format("{0}: SCOPE PENDING | {1} WORKING",
+                                                 brokerName, workingOrders);
+                            color = Color.Black;
+                        }
+                    } else if (brokerPosition > 0) {
+                        text = string.Format("{0}: LONG {1} | {2} WORKING",
+                                             brokerName, brokerPosition, workingOrders);
+                        color = Color.Navy;
+                    } else if (brokerPosition < 0) {
+                        text = string.Format("{0}: SHORT {1} | {2} WORKING",
+                                             brokerName, Math.Abs(brokerPosition), workingOrders);
+                        color = Color.Maroon;
+                    } else {
+                        text = string.Format("{0}: FLAT | {1} WORKING",
+                                             brokerName, workingOrders);
+                        color = Color.Black;
+                    }
+                } catch (Exception ex) {
+                    Output.WriteLine("RangeBarTrading broker-status error: " + ex.Message);
+                    text = brokerName + ": TRACKER ERROR";
+                    color = Color.Red;
+                }
+            }
+
+            ChartPoint point = new ChartPoint(Bars.Time[0],
+                                              Bars.High[0] + (26 * tickSize));
+            if (m_BrokerStatusLabel == null) {
+                m_BrokerStatusLabel = DrwText.Create(point, text);
+                m_BrokerStatusLabel.Size = 11;
+                m_BrokerStatusLabel.HStyle = ETextStyleH.Right;
+            }
+            m_BrokerStatusLabel.Location = point;
+            m_BrokerStatusLabel.Text = text;
+            m_BrokerStatusLabel.Color = color;
+        }
+
+        private string GetBrokerStatusName() {
+            if (!string.IsNullOrEmpty(m_StrategyBrokerProfile))
+                return m_StrategyBrokerProfile.ToUpperInvariant();
+
+            var tradeManager = TradeManager;
+            if (tradeManager == null || tradeManager.TradingProfiles == null)
+                return "BROKER";
+            foreach (var tradingProfile in tradeManager.TradingProfiles) {
+                if (tradingProfile == null || string.IsNullOrEmpty(tradingProfile.Name))
+                    continue;
+                if (tradingProfile.Name.IndexOf("paper", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return tradingProfile.Name.ToUpperInvariant();
+            }
+            return tradeManager.TradingProfiles.Length == 1 &&
+                   !string.IsNullOrEmpty(tradeManager.TradingProfiles[0].Name)
+                ? tradeManager.TradingProfiles[0].Name.ToUpperInvariant()
+                : "BROKER";
         }
 
         private double GetAngle(double valCurrent, double valOld, int barsBack, double tickSize) {
