@@ -878,9 +878,12 @@ namespace PowerLanguage.Strategy
                 }
             }
 
-            UpdatePinBarProjectionLine(ref m_PinBarLowerLine, projectedLow, direction);
-            UpdatePinBarProjectionLine(ref m_PinBarUpperLine, projectedHigh, direction);
-            UpdatePinBarProjectionLabel(projectedHigh, direction);
+            UpdatePinBarProjectionLine(ref m_PinBarLowerLine, projectedLow, direction,
+                                       m_PinProjectionTailReached);
+            UpdatePinBarProjectionLine(ref m_PinBarUpperLine, projectedHigh, direction,
+                                       m_PinProjectionTailReached);
+            UpdatePinBarProjectionLabel(projectedHigh, direction,
+                                        m_PinProjectionTailReached);
 
             // A pin becomes an actionable entry candidate only after its tail
             // is reached. Until then it cannot displace an EMA order.
@@ -1033,22 +1036,24 @@ namespace PowerLanguage.Strategy
                 return;
             }
 
+            bool emaBoundaryReached = HasReachedEmaBounceBoundary(
+                m_EmaBounceProjectionDirection, projectedLow, projectedHigh, tickSize);
             UpdateEmaBounceProjectionLine(ref m_EmaBounceLowerLine, projectedLow,
-                                          m_EmaBounceProjectionDirection);
+                                          m_EmaBounceProjectionDirection,
+                                          emaBoundaryReached);
             UpdateEmaBounceProjectionLine(ref m_EmaBounceUpperLine, projectedHigh,
-                                          m_EmaBounceProjectionDirection);
+                                          m_EmaBounceProjectionDirection,
+                                          emaBoundaryReached);
             UpdateEmaBounceProjectionLabel(
                 m_EmaBounceProjectionDirection > 0 ? projectedHigh : projectedLow,
-                m_EmaBounceProjectionDirection);
+                m_EmaBounceProjectionDirection, emaBoundaryReached);
 
             // A displayed projection is only a possible bounce.  Do not put a
             // native stop order on the chart until price has actually reached
             // the EMA-side boundary of that projected range bar.  This is the
             // same gate used by pin bars: show the setup first, stage the
             // entry only after its required boundary has been touched.
-            if (!HasReachedEmaBounceBoundary(m_EmaBounceProjectionDirection,
-                                              projectedLow, projectedHigh,
-                                              tickSize)) {
+            if (!emaBoundaryReached) {
                 ClearEmaBounceEntryIfActive();
                 return;
             }
@@ -1241,7 +1246,8 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdateEmaBounceProjectionLine(ref ITrendLineObject line,
-                                                   double price, int direction) {
+                                                   double price, int direction,
+                                                   bool active) {
             ChartPoint begin = new ChartPoint(Bars.Time[0], price);
             ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
             if (line == null) {
@@ -1251,12 +1257,15 @@ namespace PowerLanguage.Strategy
                 line.Begin = begin;
                 line.End = end;
             }
-            line.Color = direction > 0 ? Color.MediumSeaGreen : Color.DarkViolet;
+            line.Color = active
+                ? (direction > 0 ? Color.MediumSeaGreen : Color.DarkViolet)
+                : Color.Gray;
             line.Style = ETLStyle.ToolDashed;
             line.Size = 2;
         }
 
-        private void UpdateEmaBounceProjectionLabel(double price, int direction) {
+        private void UpdateEmaBounceProjectionLabel(double price, int direction,
+                                                    bool active) {
             // Anchor on the live bar and align into the chart. A future-time
             // anchor can fall outside the visible pane until the user expands it.
             ChartPoint point = new ChartPoint(Bars.Time[0], price);
@@ -1267,7 +1276,9 @@ namespace PowerLanguage.Strategy
             }
             m_EmaBounceLabel.Location = point;
             m_EmaBounceLabel.Text = "24 EMA Bounce";
-            m_EmaBounceLabel.Color = direction > 0 ? Color.MediumSeaGreen : Color.DarkViolet;
+            m_EmaBounceLabel.Color = active
+                ? (direction > 0 ? Color.MediumSeaGreen : Color.DarkViolet)
+                : Color.Gray;
             m_EmaBounceLabel.VStyle = direction > 0 ? ETextStyleV.Above : ETextStyleV.Below;
         }
 
@@ -1408,7 +1419,8 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdatePinBarProjectionLine(ref ITrendLineObject line,
-                                                double price, int direction) {
+                                                double price, int direction,
+                                                bool active) {
             ChartPoint begin = new ChartPoint(Bars.Time[0], price);
             ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
             if (line == null) {
@@ -1418,7 +1430,9 @@ namespace PowerLanguage.Strategy
                 line.Begin = begin;
                 line.End = end;
             }
-            line.Color = direction > 0 ? Color.DodgerBlue : Color.OrangeRed;
+            line.Color = active
+                ? (direction > 0 ? Color.DodgerBlue : Color.OrangeRed)
+                : Color.Gray;
             line.Style = ETLStyle.ToolDashed;
             line.Size = 2;
         }
@@ -1429,7 +1443,8 @@ namespace PowerLanguage.Strategy
             if (m_PinBarLabel != null) { m_PinBarLabel.Delete(); m_PinBarLabel = null; }
         }
 
-        private void UpdatePinBarProjectionLabel(double price, int direction) {
+        private void UpdatePinBarProjectionLabel(double price, int direction,
+                                                 bool active) {
             // Keep the label inside the visible pane by extending its text left
             // from the current bar rather than placing it at a future time.
             ChartPoint point = new ChartPoint(Bars.Time[0], price);
@@ -1441,7 +1456,9 @@ namespace PowerLanguage.Strategy
             }
             m_PinBarLabel.Location = point;
             m_PinBarLabel.Text = "pinbar";
-            m_PinBarLabel.Color = direction > 0 ? Color.DodgerBlue : Color.OrangeRed;
+            m_PinBarLabel.Color = active
+                ? (direction > 0 ? Color.DodgerBlue : Color.OrangeRed)
+                : Color.Gray;
         }
 
         private bool IsF12Held(Keys eventKeys) {
