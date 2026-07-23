@@ -153,7 +153,10 @@ namespace PowerLanguage.Indicator
 
         private void SetModeLabel(string text, Color color)
         {
-            double modeLabelPrice = Bars.High[0] + (18 * m_TickSize);
+            // Keep the mode HUD inside the visible price area.  An 18-tick
+            // offset can place it above the pane on instruments such as MNQ,
+            // especially when the chart's auto-scale excludes drawings.
+            double modeLabelPrice = Bars.Close[0] + (4 * m_TickSize);
             ChartPoint point = new ChartPoint(Bars.Time[0], modeLabelPrice);
             if (m_ModeLabel == null) {
                 m_ModeLabel = DrwText.Create(point, text);
