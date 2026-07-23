@@ -132,10 +132,6 @@ namespace PowerLanguage.Strategy
         private ITextObject m_HUDLabel;
         private ITextObject m_BrokerStatusLabel;
         private ITextObject m_EmergencyLabel;
-        // RecoverDrawings(false) can discard drawings created during the
-        // historical load pass while leaving the managed references intact.
-        // The first live calculation must therefore recreate the HUD objects.
-        private bool m_StatusDrawnDuringHistoricalLoad;
         // Filled-trade annotations are retained after the position closes so
         // the chart keeps a clean record of executed entries.
         private readonly List<IDrawObject> m_TradeEntryMarkers = new List<IDrawObject>();
@@ -197,32 +193,10 @@ namespace PowerLanguage.Strategy
             if (tickSize <= 0) tickSize = 0.25;
 
             if (Bars.Status == EBarState.Close || m_AutoRangeTicks <= 0) m_AutoRangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
-            if (!Environment.IsRealTimeCalc) {
-                // A chart can finish loading historical bars before the first
-                // real-time tick arrives.  Draw the status block at that
-                // point, so a trader never has to Ctrl-click merely to learn
-                // that this newly loaded signal is safely UNARMED.
-                // Do this on the load pass itself instead of waiting for
-                // LastBarOnChart.  Some chart/session configurations do not
-                // report that flag during the historical-to-live handoff,
-                // which left the HUD absent until a mouse event forced a
-                // redraw.  The same drawing object is reused as bars advance,
-                // so the final update remains anchored to the visible bar.
-                if (ShowHUD) {
-                    m_StatusDrawnDuringHistoricalLoad = true;
-                    UpdateHUD();
-                }
-                return;
-            }
-
-            if (m_StatusDrawnDuringHistoricalLoad) {
-                // The platform may have removed these objects during the
-                // historical-to-live transition.  Drop only the references;
-                // UpdateHUD will create fresh objects at the live chart point.
-                m_HUDLabel = null;
-                m_BrokerStatusLabel = null;
-                m_StatusDrawnDuringHistoricalLoad = false;
-            }
+            // Do not create drawings or query the broker during historical
+            // calculation.  MultiCharts can remain stuck in "Calculating" if
+            // the order tracker is touched in that pass.
+            if (!Environment.IsRealTimeCalc) return;
 
             RefreshEmergencyCancellationStatus();
             if (m_EmergencyLabel != null && DateTime.Now >= m_EmergencyMessageExpiresAt)
@@ -477,8 +451,6 @@ namespace PowerLanguage.Strategy
             if (arg.buttons == MouseButtons.Left &&
                 IsF12Held(arg.keys)) {
                 ActivateEmergencyFlatten(true);
-                InvalidateStatusDrawings();
-                if (ShowHUD) UpdateHUD();
                 return;
             }
 
@@ -1842,24 +1814,13 @@ namespace PowerLanguage.Strategy
             UpdateBrokerStatusLabel(tickSize);
         }
 
-        private void InvalidateStatusDrawings() {
-            // MultiCharts can remove custom drawings during a chart refresh
-            // without notifying the signal object.  Dropping these references
-            // makes the next UpdateHUD call create fresh visible objects.
-            m_HUDLabel = null;
-            m_BrokerStatusLabel = null;
-        }
-
         private ChartPoint GetStatusLabelPoint(double tickSize, int offsetTicks) {
             // Anchor directly to the live bar. A trailing highest-high anchor
             // follows an advance immediately but remains stranded above an old
             // high during a decline. The live high keeps this compact status
             // block moving with price in either direction.
-            // Keep the status block anchored inside the visible price area;
-            // placing it above the current high can be clipped by chart panes
-            // that do not include custom drawings in their auto-scale range.
             return new ChartPoint(Bars.Time[0],
-                                  Bars.Close[0] + (offsetTicks * tickSize));
+                                  Bars.High[0] + (offsetTicks * tickSize));
         }
 
         private void UpdateBrokerStatusLabel(double tickSize) {
