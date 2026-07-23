@@ -108,6 +108,7 @@ namespace PowerLanguage.Strategy
         private bool m_StartupOrderCancellationRequested = false;
         private bool m_DraggingTarget = false;
         private bool m_DraggingStop = false;
+        private bool m_HudDisplayEnabled = true;
         private double m_AutoRangeTicks = 0;
         private DateTime m_EmergencyMessageExpiresAt = DateTime.MinValue;
         private readonly List<int> m_EmergencyCancelOrderIds = new List<int>();
@@ -293,7 +294,7 @@ namespace PowerLanguage.Strategy
                 }
 
                 m_LastMarketPosition = currentPosition;
-                if (ShowHUD) UpdateHUD();
+                if (ShowHUD && m_HudDisplayEnabled) UpdateHUD();
                 return;
             }
 
@@ -375,7 +376,8 @@ namespace PowerLanguage.Strategy
                 m_AutoProtectiveStopMoved = false;
                 ClearTradingDrawings(); 
             }
-            m_LastMarketPosition = currentPosition; if (ShowHUD) UpdateHUD();
+            m_LastMarketPosition = currentPosition;
+            if (ShowHUD && m_HudDisplayEnabled) UpdateHUD();
         }
 
         private void CheckForHiddenPierceSignals(double tickSize) {
@@ -464,6 +466,11 @@ namespace PowerLanguage.Strategy
                 return;
             }
 
+            if (arg.buttons == MouseButtons.Left && IsF11Held(arg.keys)) {
+                ToggleHudDisplay();
+                return;
+            }
+
             if (arg.buttons != MouseButtons.Left) return;
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale; if (tickSize <= 0) tickSize = 0.25;
             if ((arg.keys & Keys.Control) == Keys.Control) {
@@ -481,11 +488,11 @@ namespace PowerLanguage.Strategy
                     // waiting persistently for an enabled automated setup.
                     ArmAutomatedEntryMode(tickSize);
                 }
-                if (ShowHUD) UpdateHUD();
+                if (ShowHUD && m_HudDisplayEnabled) UpdateHUD();
             }
             else if (IsShiftClick(arg.keys)) {
                 StartShiftProjectionEntry(tickSize);
-                if (ShowHUD) UpdateHUD();
+                if (ShowHUD && m_HudDisplayEnabled) UpdateHUD();
             }
             else if (IsAltClick(arg.keys)) {
                 AdvanceProfitTargetOneRange(tickSize);
@@ -1519,6 +1526,28 @@ namespace PowerLanguage.Strategy
                 return (GetAsyncKeyState((int)Keys.F12) & 0x8000) != 0;
             } catch {
                 return false;
+            }
+        }
+
+        private bool IsF11Held(Keys eventKeys) {
+            if ((eventKeys & Keys.KeyCode) == Keys.F11) return true;
+            try {
+                return (GetAsyncKeyState((int)Keys.F11) & 0x8000) != 0;
+            } catch {
+                return false;
+            }
+        }
+
+        private void ToggleHudDisplay() {
+            m_HudDisplayEnabled = !m_HudDisplayEnabled;
+            if (!m_HudDisplayEnabled) {
+                if (m_HUDLabel != null) { m_HUDLabel.Delete(); m_HUDLabel = null; }
+                if (m_BrokerStatusLabel != null) {
+                    m_BrokerStatusLabel.Delete();
+                    m_BrokerStatusLabel = null;
+                }
+            } else if (ShowHUD) {
+                UpdateHUD();
             }
         }
 
