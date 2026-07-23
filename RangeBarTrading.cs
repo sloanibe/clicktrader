@@ -885,6 +885,14 @@ namespace PowerLanguage.Strategy
             UpdatePinBarProjectionLabel(projectedHigh, direction,
                                         m_PinProjectionTailReached);
 
+            // Keep the projected entry price available for visual priority
+            // even before the pin tail is reached.  Order staging still uses
+            // m_PinEntryCandidateValid below, so this does not arm early.
+            m_PinEntryCandidateDirection = direction;
+            m_PinEntryCandidatePrice = direction > 0
+                ? RoundToTick(projectedHigh + (EntryOffsetTicks * tickSize), tickSize)
+                : RoundToTick(projectedLow - (EntryOffsetTicks * tickSize), tickSize);
+
             // A pin becomes an actionable entry candidate only after its tail
             // is reached. Until then it cannot displace an EMA order.
             if (m_PinProjectionTailReached) {
@@ -1048,6 +1056,14 @@ namespace PowerLanguage.Strategy
                 m_EmaBounceProjectionDirection > 0 ? projectedHigh : projectedLow,
                 m_EmaBounceProjectionDirection, emaBoundaryReached);
 
+            // As with pin bars, retain the possible entry price for choosing
+            // which projection to display.  The validity flag below remains
+            // the gate for actual order staging.
+            m_EmaEntryCandidateDirection = m_EmaBounceProjectionDirection;
+            m_EmaEntryCandidatePrice = m_EmaBounceProjectionDirection > 0
+                ? RoundToTick(projectedLow + (EmaBounceEntryOffsetTicks * tickSize), tickSize)
+                : RoundToTick(projectedHigh - (EmaBounceEntryOffsetTicks * tickSize), tickSize);
+
             // A displayed projection is only a possible bounce.  Do not put a
             // native stop order on the chart until price has actually reached
             // the EMA-side boundary of that projected range bar.  This is the
@@ -1059,10 +1075,6 @@ namespace PowerLanguage.Strategy
             }
 
             m_EmaEntryCandidateValid = true;
-            m_EmaEntryCandidateDirection = m_EmaBounceProjectionDirection;
-            m_EmaEntryCandidatePrice = m_EmaBounceProjectionDirection > 0
-                ? RoundToTick(projectedLow + (EmaBounceEntryOffsetTicks * tickSize), tickSize)
-                : RoundToTick(projectedHigh - (EmaBounceEntryOffsetTicks * tickSize), tickSize);
         }
 
         private bool HasReachedEmaBounceBoundary(int direction, double projectedLow,
@@ -1154,16 +1166,22 @@ namespace PowerLanguage.Strategy
         }
 
         private void ApplyProjectionDisplayPriority() {
-            if (m_PinEntryCandidateValid && m_EmaEntryCandidateValid) {
+            bool pinProjectionAvailable = m_PinEntryCandidateDirection != 0 &&
+                                           m_PinEntryCandidatePrice > 0 &&
+                                           !m_PinProjectionBroken;
+            bool emaProjectionAvailable = m_EmaEntryCandidateDirection != 0 &&
+                                           m_EmaEntryCandidatePrice > 0;
+
+            if (pinProjectionAvailable && emaProjectionAvailable) {
                 double pinDistance = Math.Abs(m_PinEntryCandidatePrice - Bars.Close[0]);
                 double emaDistance = Math.Abs(m_EmaEntryCandidatePrice - Bars.Close[0]);
                 if (emaDistance <= pinDistance)
                     ClearPinBarProjectionLines();
                 else
                     ClearEmaBounceProjectionLines();
-            } else if (m_EmaEntryCandidateValid) {
+            } else if (emaProjectionAvailable) {
                 ClearPinBarProjectionLines();
-            } else if (m_PinEntryCandidateValid) {
+            } else if (pinProjectionAvailable) {
                 ClearEmaBounceProjectionLines();
             }
         }
