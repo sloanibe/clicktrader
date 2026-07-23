@@ -67,6 +67,9 @@ namespace PowerLanguage.Strategy
         private double m_ProtectiveStopPrice = 0;
         private double m_ProfitTargetPrice = 0;
         private double m_LastSentPrice = 0;
+        // Snapshot the realized strategy P&L when a position opens.  When it
+        // closes, the delta is the result of that one completed trade.
+        private double m_ClosedEquityAtEntry = 0;
         private bool m_AutoProtectiveStopMoved = false;
         
         private int m_LastMarketPosition = 0;
@@ -132,6 +135,7 @@ namespace PowerLanguage.Strategy
         // Filled-trade annotations are retained after the position closes so
         // the chart keeps a clean record of executed entries.
         private readonly List<IDrawObject> m_TradeEntryMarkers = new List<IDrawObject>();
+        private IArrowObject m_ActiveTradeEntryArrow;
 
         public RangeBarTradingV3(object ctx) : base(ctx)
         {
@@ -189,7 +193,14 @@ namespace PowerLanguage.Strategy
             if (tickSize <= 0) tickSize = 0.25;
 
             if (Bars.Status == EBarState.Close || m_AutoRangeTicks <= 0) m_AutoRangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
-            if (!Environment.IsRealTimeCalc) return;
+            if (!Environment.IsRealTimeCalc) {
+                // A chart can finish loading historical bars before the first
+                // real-time tick arrives.  Draw the status block at that
+                // point, so a trader never has to Ctrl-click merely to learn
+                // that this newly loaded signal is safely UNARMED.
+                if (ShowHUD && Bars.LastBarOnChart) UpdateHUD();
+                return;
+            }
 
             RefreshEmergencyCancellationStatus();
             if (m_EmergencyLabel != null && DateTime.Now >= m_EmergencyMessageExpiresAt)
@@ -294,6 +305,7 @@ namespace PowerLanguage.Strategy
                 double stopDist = ProtectiveStopLossTicks * tickSize;
                 double targetDist = ProfitTargetTicks * tickSize;
                 EEntrySetup filledEntrySetup = m_ActiveEntrySetup;
+                m_ClosedEquityAtEntry = StrategyInfo.ClosedEquity;
 
                 if (currentPosition > 0) {
                     m_ProtectiveStopPrice = ProtectiveStopLossTicks > 0 ? entryPrice - stopDist : 0;
@@ -347,6 +359,7 @@ namespace PowerLanguage.Strategy
             }
 
             if (currentPosition == 0 && m_LastMarketPosition != 0) { 
+                FinalizeActiveTradeEntryMarker();
                 m_ProtectiveStopPrice = m_ProfitTargetPrice = 0; 
                 m_BuyOrderActive = m_SellOrderActive = false; 
                 m_ActiveEntrySetup = EEntrySetup.None;
@@ -1024,11 +1037,32 @@ namespace PowerLanguage.Strategy
             UpdateEmaBounceProjectionLabel(
                 m_EmaBounceProjectionDirection > 0 ? projectedHigh : projectedLow,
                 m_EmaBounceProjectionDirection);
+
+            // A displayed projection is only a possible bounce.  Do not put a
+            // native stop order on the chart until price has actually reached
+            // the EMA-side boundary of that projected range bar.  This is the
+            // same gate used by pin bars: show the setup first, stage the
+            // entry only after its required boundary has been touched.
+            if (!HasReachedEmaBounceBoundary(m_EmaBounceProjectionDirection,
+                                              projectedLow, projectedHigh,
+                                              tickSize)) {
+                ClearEmaBounceEntryIfActive();
+                return;
+            }
+
             m_EmaEntryCandidateValid = true;
             m_EmaEntryCandidateDirection = m_EmaBounceProjectionDirection;
             m_EmaEntryCandidatePrice = m_EmaBounceProjectionDirection > 0
                 ? RoundToTick(projectedLow + (EmaBounceEntryOffsetTicks * tickSize), tickSize)
                 : RoundToTick(projectedHigh - (EmaBounceEntryOffsetTicks * tickSize), tickSize);
+        }
+
+        private bool HasReachedEmaBounceBoundary(int direction, double projectedLow,
+                                                  double projectedHigh, double tickSize) {
+            double tolerance = tickSize * 0.1;
+            return direction > 0
+                ? Bars.Low[0] <= projectedLow + tolerance
+                : Bars.High[0] >= projectedHigh - tolerance;
         }
 
         private int GetEmaBounceDirection() {
@@ -1484,25 +1518,26 @@ namespace PowerLanguage.Strategy
                 : Bars.High[barsBack] + tailOffset;
             IArrowObject directionMarker = DrwArrow.Create(
                 new ChartPoint(Bars.Time[barsBack], directionPrice), currentPosition < 0);
-            directionMarker.Color = currentPosition > 0 ? Color.DodgerBlue : Color.Red;
+            // The result is not known until the position closes.  It is then
+            // changed to green for profit or red for a loss/break-even trade.
+            directionMarker.Color = Color.DimGray;
             directionMarker.Size = 5;
             m_TradeEntryMarkers.Add(directionMarker);
+            m_ActiveTradeEntryArrow = directionMarker;
 
-            string entryType = entrySetup == EEntrySetup.PinBar ? "PIN BAR" :
-                               entrySetup == EEntrySetup.Ema24Bounce ? "24 EMA BOUNCE" :
-                               entrySetup == EEntrySetup.ShiftProjection ? "MANUAL" :
-                               "ENTRY";
-            double entryTypePrice = currentPosition > 0
-                ? Bars.Low[barsBack] - (3 * tickSize)
-                : Bars.High[barsBack] + (3 * tickSize);
+            string entryType = entrySetup == EEntrySetup.PinBar ? "PB" :
+                               entrySetup == EEntrySetup.Ema24Bounce ? "B" :
+                               entrySetup == EEntrySetup.ShiftProjection ? "M" :
+                               "M";
+            // "Below" means directly underneath the arrow for both long and
+            // short entries, rather than above a short-entry arrow.
+            double entryTypePrice = directionPrice - (2 * tickSize);
             ITextObject entryTypeMarker = DrwText.Create(
                 new ChartPoint(Bars.Time[barsBack], entryTypePrice), entryType);
             entryTypeMarker.Color = Color.Black;
-            entryTypeMarker.Size = 8;
+            entryTypeMarker.Size = 6;
             entryTypeMarker.HStyle = ETextStyleH.Center;
-            entryTypeMarker.VStyle = currentPosition > 0
-                ? ETextStyleV.Below
-                : ETextStyleV.Above;
+            entryTypeMarker.VStyle = ETextStyleV.Below;
             m_TradeEntryMarkers.Add(entryTypeMarker);
 
             // A plain ASCII chevron is used here because it renders reliably
@@ -1521,6 +1556,20 @@ namespace PowerLanguage.Strategy
                 if (marker != null) marker.Delete();
             }
             m_TradeEntryMarkers.Clear();
+            m_ActiveTradeEntryArrow = null;
+        }
+
+        private void FinalizeActiveTradeEntryMarker() {
+            if (m_ActiveTradeEntryArrow == null) return;
+
+            // A positive closed-equity change is a profitable completed
+            // trade.  Break-even is intentionally shown as red, per the
+            // requested successful/unsuccessful classification.
+            double realizedTradeProfit = StrategyInfo.ClosedEquity - m_ClosedEquityAtEntry;
+            m_ActiveTradeEntryArrow.Color = realizedTradeProfit > 0
+                ? Color.LimeGreen
+                : Color.Red;
+            m_ActiveTradeEntryArrow = null;
         }
 
         private bool IsAltClick(Keys keys) {
@@ -1729,11 +1778,15 @@ namespace PowerLanguage.Strategy
             // publish it so the bid and ask chart instances display one total.
             double pnl = UpdateAndGetGlobalPnL(StrategyInfo.OpenEquity);
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale; if (tickSize <= 0) tickSize = 0.25;
-            string status = EnablePinBarTrading && Enable24EMABounceTrading
+            string setupScope = EnablePinBarTrading && Enable24EMABounceTrading
                 ? "PIN + 24 EMA WATCH"
                 : EnablePinBarTrading
                     ? "PIN WATCH"
                     : Enable24EMABounceTrading ? "24 EMA WATCH" : "IDLE";
+            // Always state the automation state explicitly.  The prior
+            // watch-only text was ambiguous: it did not tell the trader that
+            // automatic entries were still unarmed.
+            string status = "UNARMED | " + setupScope;
             if (m_AutoEntryArmed)
                 status = m_ArmedDirection > 0 ? "ARMED BUY" : "ARMED SELL";
             if (m_BuyOrderActive)
