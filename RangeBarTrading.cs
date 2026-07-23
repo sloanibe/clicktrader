@@ -477,6 +477,8 @@ namespace PowerLanguage.Strategy
             if (arg.buttons == MouseButtons.Left &&
                 IsF12Held(arg.keys)) {
                 ActivateEmergencyFlatten(true);
+                InvalidateStatusDrawings();
+                if (ShowHUD) UpdateHUD();
                 return;
             }
 
@@ -1840,13 +1842,24 @@ namespace PowerLanguage.Strategy
             UpdateBrokerStatusLabel(tickSize);
         }
 
+        private void InvalidateStatusDrawings() {
+            // MultiCharts can remove custom drawings during a chart refresh
+            // without notifying the signal object.  Dropping these references
+            // makes the next UpdateHUD call create fresh visible objects.
+            m_HUDLabel = null;
+            m_BrokerStatusLabel = null;
+        }
+
         private ChartPoint GetStatusLabelPoint(double tickSize, int offsetTicks) {
             // Anchor directly to the live bar. A trailing highest-high anchor
             // follows an advance immediately but remains stranded above an old
             // high during a decline. The live high keeps this compact status
             // block moving with price in either direction.
+            // Keep the status block anchored inside the visible price area;
+            // placing it above the current high can be clipped by chart panes
+            // that do not include custom drawings in their auto-scale range.
             return new ChartPoint(Bars.Time[0],
-                                  Bars.High[0] + (offsetTicks * tickSize));
+                                  Bars.Close[0] + (offsetTicks * tickSize));
         }
 
         private void UpdateBrokerStatusLabel(double tickSize) {
