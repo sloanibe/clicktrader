@@ -31,6 +31,7 @@ namespace PowerLanguage.Indicator
         private ITrendLineObject m_MeasureLine;
         private ITextObject m_MeasureLabel;
         private ITextObject m_FirstPointLabel;
+        private ITextObject m_SecondPointLabel;
 
         public RangeMeasure(object ctx) : base(ctx)
         {
@@ -138,35 +139,12 @@ namespace PowerLanguage.Indicator
 
         private void UpdateModeLabel()
         {
-            if (Bars.CurrentBar < 0) return;
-            string text;
-            if (m_F2WasMissingOnLastClick)
-                text = "RANGE MEASURE: F2 WAS NOT DETECTED";
-            else if (m_HasFirstPoint)
-                text = "RANGE MEASURE: F2+LEFT-CLICK SECOND POINT";
-            else
-                text = "RANGE MEASURE: F2+LEFT-CLICK FIRST POINT";
-
-            SetModeLabel(text, m_F2WasMissingOnLastClick ? Color.Maroon :
-                                m_HasFirstPoint ? Color.Navy : Color.Black);
-        }
-
-        private void SetModeLabel(string text, Color color)
-        {
-            // Keep the mode HUD inside the visible price area.  An 18-tick
-            // offset can place it above the pane on instruments such as MNQ,
-            // especially when the chart's auto-scale excludes drawings.
-            double modeLabelPrice = Bars.Close[0] + (4 * m_TickSize);
-            ChartPoint point = new ChartPoint(Bars.Time[0], modeLabelPrice);
-            if (m_ModeLabel == null) {
-                m_ModeLabel = DrwText.Create(point, text);
-                m_ModeLabel.Size = 10;
-                m_ModeLabel.HStyle = ETextStyleH.Right;
-                m_ModeLabel.VStyle = ETextStyleV.Above;
+            // The chart HUD is intentionally disabled.  Keep this cleanup for
+            // drawings created by an older instance of the indicator.
+            if (m_ModeLabel != null) {
+                m_ModeLabel.Delete();
+                m_ModeLabel = null;
             }
-            m_ModeLabel.Location = point;
-            m_ModeLabel.Text = text;
-            m_ModeLabel.Color = color;
         }
 
         private void DrawFirstPoint()
@@ -182,10 +160,18 @@ namespace PowerLanguage.Indicator
 
         private void DrawMeasurement(double secondPrice, DateTime secondTime)
         {
-            ClearMeasurementDrawings();
+            if (m_MeasureLine != null) { m_MeasureLine.Delete(); m_MeasureLine = null; }
+            if (m_MeasureLabel != null) { m_MeasureLabel.Delete(); m_MeasureLabel = null; }
+            if (m_SecondPointLabel != null) { m_SecondPointLabel.Delete(); m_SecondPointLabel = null; }
             m_SecondPrice = secondPrice;
             m_SecondTime = secondTime;
             m_HasCompletedMeasurement = true;
+            m_SecondPointLabel = DrwText.Create(
+                new ChartPoint(m_SecondTime, m_SecondPrice), "2");
+            m_SecondPointLabel.Color = Color.Navy;
+            m_SecondPointLabel.Size = 12;
+            m_SecondPointLabel.HStyle = ETextStyleH.Center;
+            m_SecondPointLabel.VStyle = ETextStyleV.Above;
             RenderCompletedMeasurement();
         }
 
@@ -234,6 +220,7 @@ namespace PowerLanguage.Indicator
             if (m_MeasureLine != null) { m_MeasureLine.Delete(); m_MeasureLine = null; }
             if (m_MeasureLabel != null) { m_MeasureLabel.Delete(); m_MeasureLabel = null; }
             if (m_FirstPointLabel != null) { m_FirstPointLabel.Delete(); m_FirstPointLabel = null; }
+            if (m_SecondPointLabel != null) { m_SecondPointLabel.Delete(); m_SecondPointLabel = null; }
         }
 
         private double RoundToTick(double price)
