@@ -132,6 +132,10 @@ namespace PowerLanguage.Strategy
         private ITextObject m_HUDLabel;
         private ITextObject m_BrokerStatusLabel;
         private ITextObject m_EmergencyLabel;
+        // RecoverDrawings(false) can discard drawings created during the
+        // historical load pass while leaving the managed references intact.
+        // The first live calculation must therefore recreate the HUD objects.
+        private bool m_StatusDrawnDuringHistoricalLoad;
         // Filled-trade annotations are retained after the position closes so
         // the chart keeps a clean record of executed entries.
         private readonly List<IDrawObject> m_TradeEntryMarkers = new List<IDrawObject>();
@@ -204,8 +208,20 @@ namespace PowerLanguage.Strategy
                 // which left the HUD absent until a mouse event forced a
                 // redraw.  The same drawing object is reused as bars advance,
                 // so the final update remains anchored to the visible bar.
-                if (ShowHUD) UpdateHUD();
+                if (ShowHUD) {
+                    m_StatusDrawnDuringHistoricalLoad = true;
+                    UpdateHUD();
+                }
                 return;
+            }
+
+            if (m_StatusDrawnDuringHistoricalLoad) {
+                // The platform may have removed these objects during the
+                // historical-to-live transition.  Drop only the references;
+                // UpdateHUD will create fresh objects at the live chart point.
+                m_HUDLabel = null;
+                m_BrokerStatusLabel = null;
+                m_StatusDrawnDuringHistoricalLoad = false;
             }
 
             RefreshEmergencyCancellationStatus();
