@@ -462,7 +462,12 @@ namespace PowerLanguage.Strategy
             // so also check its physical Windows key state.
             if (arg.buttons == MouseButtons.Left &&
                 IsF12Held(arg.keys)) {
+                // Emergency flatten is also the explicit safety reset: make
+                // the HUD visible again so the resulting UNARMED state is
+                // immediately observable.
+                m_HudDisplayEnabled = true;
                 ActivateEmergencyFlatten(true);
+                if (ShowHUD) UpdateHUD();
                 return;
             }
 
