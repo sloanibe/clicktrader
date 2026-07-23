@@ -60,6 +60,18 @@ namespace PowerLanguage.Indicator
 
         protected override void OnMouseEvent(MouseClickArgs arg)
         {
+            // F2 + right-click is an explicit clear/reset gesture.  It keeps
+            // the indicator loaded while removing the selected points, line,
+            // and measurement text.
+            if (arg.buttons == MouseButtons.Right && IsF2Held(arg.keys))
+            {
+                m_HasFirstPoint = false;
+                m_F2WasMissingOnLastClick = false;
+                ClearMeasurementDrawings();
+                UpdateModeLabel();
+                return;
+            }
+
             if (arg.buttons != MouseButtons.Left) return;
             if (!IsF2Held(arg.keys)) {
                 m_F2WasMissingOnLastClick = true;
