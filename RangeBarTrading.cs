@@ -108,10 +108,6 @@ namespace PowerLanguage.Strategy
         private bool m_DraggingTarget = false;
         private bool m_DraggingStop = false;
         private double m_AutoRangeTicks = 0;
-        // The ask stream can update a range bar's high many times before the
-        // bar completes.  Keep the HUD at one price for that whole bar.
-        private int m_HudAnchorBar = -1;
-        private double m_HudAnchorPrice = 0;
         private DateTime m_EmergencyMessageExpiresAt = DateTime.MinValue;
         private readonly List<int> m_EmergencyCancelOrderIds = new List<int>();
         private bool m_EmergencyCancellationPending = false;
@@ -1819,15 +1815,12 @@ namespace PowerLanguage.Strategy
         }
 
         private ChartPoint GetStatusLabelPoint(double tickSize, int offsetTicks) {
-            // Capture the anchor when the bar starts.  In particular, the ask
-            // chart's high can move on every quote; anchoring to that live high
-            // made the status text jump and occasionally move out of view.
-            if (m_HudAnchorBar != Bars.CurrentBar || m_HudAnchorPrice == 0) {
-                m_HudAnchorBar = Bars.CurrentBar;
-                m_HudAnchorPrice = Bars.High[0];
-            }
+            // Anchor directly to the live bar. A trailing highest-high anchor
+            // follows an advance immediately but remains stranded above an old
+            // high during a decline. The live high keeps this compact status
+            // block moving with price in either direction.
             return new ChartPoint(Bars.Time[0],
-                                  m_HudAnchorPrice + (offsetTicks * tickSize));
+                                  Bars.High[0] + (offsetTicks * tickSize));
         }
 
         private void UpdateBrokerStatusLabel(double tickSize) {
