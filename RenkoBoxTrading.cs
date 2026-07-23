@@ -10,7 +10,7 @@ namespace PowerLanguage.Strategy
     [IOGMode(IOGMode.Enabled)]
     [MouseEvents(true)]
     [SameAsSymbol(true)]
-    [AllowSendOrdersAlways]
+    // Orders require MultiCharts Auto Trading to be explicitly enabled.
     public class RenkoBoxTrader : SignalObject
     {
         [Input] public int BarSize { get; set; } // 0 = Auto-Detect

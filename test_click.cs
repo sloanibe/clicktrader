@@ -9,7 +9,7 @@ namespace PowerLanguage.Strategy
     [SameAsSymbol(true)]
     [MouseEvents(true)]
     [IOGMode(IOGMode.Enabled)]
-    [AllowSendOrdersAlways]
+    // Orders require MultiCharts Auto Trading to be explicitly enabled.
     public class click_trade_strategy : SignalObject
     {
         // Order objects for buy and sell stop-limit orders
