@@ -198,7 +198,13 @@ namespace PowerLanguage.Strategy
                 // real-time tick arrives.  Draw the status block at that
                 // point, so a trader never has to Ctrl-click merely to learn
                 // that this newly loaded signal is safely UNARMED.
-                if (ShowHUD && Bars.LastBarOnChart) UpdateHUD();
+                // Do this on the load pass itself instead of waiting for
+                // LastBarOnChart.  Some chart/session configurations do not
+                // report that flag during the historical-to-live handoff,
+                // which left the HUD absent until a mouse event forced a
+                // redraw.  The same drawing object is reused as bars advance,
+                // so the final update remains anchored to the visible bar.
+                if (ShowHUD) UpdateHUD();
                 return;
             }
 
