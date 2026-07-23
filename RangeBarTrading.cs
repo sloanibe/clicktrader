@@ -85,6 +85,12 @@ namespace PowerLanguage.Strategy
         private int m_EmaBounceProjectionBar = -1;
         private int m_EmaBounceProjectionDirection = 0;
         private int m_EmaBounceOrderBar = -1;
+        private bool m_PinEntryCandidateValid = false;
+        private int m_PinEntryCandidateDirection = 0;
+        private double m_PinEntryCandidatePrice = 0;
+        private bool m_EmaEntryCandidateValid = false;
+        private int m_EmaEntryCandidateDirection = 0;
+        private double m_EmaEntryCandidatePrice = 0;
         private bool m_ShiftProjectionActive = false;
         private int m_ShiftProjectionBar = -1;
         private EEntrySetup m_ActiveEntrySetup = EEntrySetup.None;
@@ -109,6 +115,10 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_TargetLine;
         private ITrendLineObject m_StopLine;
         private ITrendLineObject m_ProjectedEntryLine;
+        private ITextObject m_ProjectedEntryLabel;
+        private ITrendLineObject m_ShiftLowerLine;
+        private ITrendLineObject m_ShiftUpperLine;
+        private ITextObject m_ShiftCompletionLabel;
         private ITrendLineObject m_PinBarLowerLine;
         private ITrendLineObject m_PinBarUpperLine;
         private ITextObject m_PinBarLabel;
@@ -233,8 +243,11 @@ namespace PowerLanguage.Strategy
             // Setup projections are informational even while the strategy is
             // unarmed. An open position hides them so the trade-management
             // controls remain visually distinct.
+            ResetAutomaticEntryCandidates();
             UpdatePinBarProjection(tickSize, currentPosition);
             UpdateEmaBounceProjection(tickSize, currentPosition);
+            ReconcileAutomaticEntryCandidates(tickSize, currentPosition);
+            ApplyProjectionDisplayPriority();
             UpdateShiftProjectionEntry(tickSize, currentPosition);
 
             // Highest-priority execution path, modeled after RenkoTailTrading's
@@ -280,6 +293,7 @@ namespace PowerLanguage.Strategy
                 double entryPrice = StrategyInfo.AvgEntryPrice != 0 ? StrategyInfo.AvgEntryPrice : Bars.Close[0];
                 double stopDist = ProtectiveStopLossTicks * tickSize;
                 double targetDist = ProfitTargetTicks * tickSize;
+                EEntrySetup filledEntrySetup = m_ActiveEntrySetup;
 
                 if (currentPosition > 0) {
                     m_ProtectiveStopPrice = ProtectiveStopLossTicks > 0 ? entryPrice - stopDist : 0;
@@ -297,7 +311,8 @@ namespace PowerLanguage.Strategy
                 m_ShiftProjectionBar = -1;
                 if (m_GoSignalMarker != null) m_GoSignalMarker.Delete();
                 ClearProjectedEntryLine(); UpdateTargetLine(); UpdateStopLine();
-                DrawFilledEntryMarkers(currentPosition, entryPrice, tickSize);
+                DrawFilledEntryMarkers(currentPosition, entryPrice, tickSize,
+                                       filledEntrySetup);
             }
 
             UpdateAutoProtectiveStopOnOneBarProfit(currentPosition, tickSize);
@@ -505,8 +520,16 @@ namespace PowerLanguage.Strategy
             m_ShiftProjectionBar = -1;
             m_StopPrice = m_LastSentPrice = 0;
             ClearProjectedEntryLine();
+
+            // Arming can occur between normal CalcBar calls.  Build and
+            // arbitrate both candidates here as well, otherwise both drawings
+            // can briefly exist and a later pin invalidation appears to have
+            // removed the EMA setup that was merely hidden.
+            ResetAutomaticEntryCandidates();
             UpdatePinBarProjection(tickSize, StrategyInfo.MarketPosition);
             UpdateEmaBounceProjection(tickSize, StrategyInfo.MarketPosition);
+            ReconcileAutomaticEntryCandidates(tickSize, StrategyInfo.MarketPosition);
+            ApplyProjectionDisplayPriority();
         }
 
         private void ActivateKillMode(int currentPosition) {
@@ -765,7 +788,8 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdatePinBarProjection(double tickSize, int currentPosition) {
-            if (!EnablePinBarTrading || currentPosition != 0) {
+            if (!EnablePinBarTrading || currentPosition != 0 ||
+                m_ShiftProjectionActive) {
                 ClearPinBarProjectionLines();
                 return;
             }
@@ -842,12 +866,17 @@ namespace PowerLanguage.Strategy
             UpdatePinBarProjectionLine(ref m_PinBarUpperLine, projectedHigh, direction);
             UpdatePinBarProjectionLabel(projectedHigh, direction);
 
-            // Stage the stop as soon as the minimum three-tick tail is reached.
-            // A fourth or fifth tail tick updates the projected body and stop.
-            if (m_PinProjectionTailReached)
-                ArmOrUpdateProjectedPinBarEntry(direction, projectedLow, projectedHigh, tickSize);
-            else
+            // A pin becomes an actionable entry candidate only after its tail
+            // is reached. Until then it cannot displace an EMA order.
+            if (m_PinProjectionTailReached) {
+                m_PinEntryCandidateValid = true;
+                m_PinEntryCandidateDirection = direction;
+                m_PinEntryCandidatePrice = direction > 0
+                    ? RoundToTick(projectedHigh + (EntryOffsetTicks * tickSize), tickSize)
+                    : RoundToTick(projectedLow - (EntryOffsetTicks * tickSize), tickSize);
+            } else {
                 ClearPinBarEntryIfActive();
+            }
         }
 
         private bool IsPinBarOpenOnCorrectEmaSide(int direction, double tickSize) {
@@ -955,7 +984,8 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdateEmaBounceProjection(double tickSize, int currentPosition) {
-            if (!Enable24EMABounceTrading || currentPosition != 0) {
+            if (!Enable24EMABounceTrading || currentPosition != 0 ||
+                m_ShiftProjectionActive) {
                 ClearEmaBounceProjectionLines();
                 return;
             }
@@ -994,8 +1024,11 @@ namespace PowerLanguage.Strategy
             UpdateEmaBounceProjectionLabel(
                 m_EmaBounceProjectionDirection > 0 ? projectedHigh : projectedLow,
                 m_EmaBounceProjectionDirection);
-            ArmOrUpdateProjectedEmaBounceEntry(m_EmaBounceProjectionDirection,
-                                               projectedLow, projectedHigh, tickSize);
+            m_EmaEntryCandidateValid = true;
+            m_EmaEntryCandidateDirection = m_EmaBounceProjectionDirection;
+            m_EmaEntryCandidatePrice = m_EmaBounceProjectionDirection > 0
+                ? RoundToTick(projectedLow + (EmaBounceEntryOffsetTicks * tickSize), tickSize)
+                : RoundToTick(projectedHigh - (EmaBounceEntryOffsetTicks * tickSize), tickSize);
         }
 
         private int GetEmaBounceDirection() {
@@ -1006,6 +1039,91 @@ namespace PowerLanguage.Strategy
             if (m_FastEMA[0] < m_SlowEMA[0])
                 return -1;
             return 0;
+        }
+
+        private void ResetAutomaticEntryCandidates() {
+            m_PinEntryCandidateValid = false;
+            m_PinEntryCandidateDirection = 0;
+            m_PinEntryCandidatePrice = 0;
+            m_EmaEntryCandidateValid = false;
+            m_EmaEntryCandidateDirection = 0;
+            m_EmaEntryCandidatePrice = 0;
+        }
+
+        private void ReconcileAutomaticEntryCandidates(double tickSize,
+                                                        int currentPosition) {
+            if (currentPosition != 0 || !m_AutoEntryArmed ||
+                m_ShiftProjectionActive ||
+                m_ActiveEntrySetup == EEntrySetup.ShiftProjection) return;
+
+            EEntrySetup selectedSetup = EEntrySetup.None;
+            int selectedDirection = 0;
+            double selectedPrice = 0;
+            if (m_PinEntryCandidateValid && m_EmaEntryCandidateValid) {
+                double pinDistance = Math.Abs(m_PinEntryCandidatePrice - Bars.Close[0]);
+                double emaDistance = Math.Abs(m_EmaEntryCandidatePrice - Bars.Close[0]);
+                // A tie uses the EMA setup for a stable, deterministic result.
+                if (emaDistance <= pinDistance) {
+                    selectedSetup = EEntrySetup.Ema24Bounce;
+                    selectedDirection = m_EmaEntryCandidateDirection;
+                    selectedPrice = m_EmaEntryCandidatePrice;
+                } else {
+                    selectedSetup = EEntrySetup.PinBar;
+                    selectedDirection = m_PinEntryCandidateDirection;
+                    selectedPrice = m_PinEntryCandidatePrice;
+                }
+            } else if (m_EmaEntryCandidateValid) {
+                selectedSetup = EEntrySetup.Ema24Bounce;
+                selectedDirection = m_EmaEntryCandidateDirection;
+                selectedPrice = m_EmaEntryCandidatePrice;
+            } else if (m_PinEntryCandidateValid) {
+                selectedSetup = EEntrySetup.PinBar;
+                selectedDirection = m_PinEntryCandidateDirection;
+                selectedPrice = m_PinEntryCandidatePrice;
+            }
+
+            if (selectedSetup == EEntrySetup.None) {
+                if (m_ActiveEntrySetup == EEntrySetup.PinBar ||
+                    m_ActiveEntrySetup == EEntrySetup.Ema24Bounce) {
+                    CancelWorkingEntryOrders();
+                    ClearPendingEntry();
+                }
+                return;
+            }
+
+            bool setupChanged = m_ActiveEntrySetup != EEntrySetup.None &&
+                                m_ActiveEntrySetup != selectedSetup;
+            bool directionChanged = (m_BuyOrderActive && selectedDirection < 0) ||
+                                    (m_SellOrderActive && selectedDirection > 0);
+            if (setupChanged || directionChanged) {
+                CancelWorkingEntryOrders();
+                ClearPendingEntry();
+            }
+
+            m_ActiveEntrySetup = selectedSetup;
+            m_BuyOrderActive = selectedDirection > 0;
+            m_SellOrderActive = selectedDirection < 0;
+            m_StopPrice = selectedPrice;
+            m_LastSentPrice = 0;
+            if (selectedSetup == EEntrySetup.PinBar)
+                m_PinBarOrderBar = Bars.CurrentBar;
+            else
+                m_EmaBounceOrderBar = Bars.CurrentBar;
+        }
+
+        private void ApplyProjectionDisplayPriority() {
+            if (m_PinEntryCandidateValid && m_EmaEntryCandidateValid) {
+                double pinDistance = Math.Abs(m_PinEntryCandidatePrice - Bars.Close[0]);
+                double emaDistance = Math.Abs(m_EmaEntryCandidatePrice - Bars.Close[0]);
+                if (emaDistance <= pinDistance)
+                    ClearPinBarProjectionLines();
+                else
+                    ClearEmaBounceProjectionLines();
+            } else if (m_EmaEntryCandidateValid) {
+                ClearPinBarProjectionLines();
+            } else if (m_PinEntryCandidateValid) {
+                ClearEmaBounceProjectionLines();
+            }
         }
 
         private bool TryGetEmaBounceProjectionPrices(int direction, double tickSize,
@@ -1145,6 +1263,8 @@ namespace PowerLanguage.Strategy
             m_FlattenRequested = false;
             CancelWorkingEntryOrders();
             ClearPendingEntry();
+            ClearPinBarProjectionLines();
+            ClearEmaBounceProjectionLines();
             m_ShiftProjectionActive = true;
             m_ShiftProjectionBar = Bars.CurrentBar;
             UpdateShiftProjectionEntry(tickSize, StrategyInfo.MarketPosition);
@@ -1169,10 +1289,23 @@ namespace PowerLanguage.Strategy
             }
 
             double rangeTicks = GetActiveRangeTicks(tickSize);
-            double open = RoundToTick(Bars.Open[0], tickSize);
+            double range = rangeTicks * tickSize;
+            // Anchor the projected range to the live extreme in the intended
+            // direction. This starts at the bar open, then moves with the
+            // forming bar just like a pin projection instead of staying fixed
+            // at the original open price.
+            double projectedLow;
+            double projectedHigh;
+            if (direction > 0) {
+                projectedLow = RoundToTick(Bars.Low[0], tickSize);
+                projectedHigh = RoundToTick(projectedLow + range, tickSize);
+            } else {
+                projectedHigh = RoundToTick(Bars.High[0], tickSize);
+                projectedLow = RoundToTick(projectedHigh - range, tickSize);
+            }
             double entryPrice = direction > 0
-                ? open + ((rangeTicks + EntryOffsetTicks) * tickSize)
-                : open - ((rangeTicks + EntryOffsetTicks) * tickSize);
+                ? projectedHigh + (EntryOffsetTicks * tickSize)
+                : projectedLow - (EntryOffsetTicks * tickSize);
 
             bool buyDirection = direction > 0;
             if (m_ActiveEntrySetup == EEntrySetup.ShiftProjection &&
@@ -1185,6 +1318,7 @@ namespace PowerLanguage.Strategy
             m_SellOrderActive = !buyDirection;
             m_StopPrice = RoundToTick(entryPrice, tickSize);
             m_LastSentPrice = 0;
+            UpdateShiftRangeLines(projectedLow, projectedHigh, direction);
         }
 
         private void ClearShiftProjectionEntry() {
@@ -1335,23 +1469,45 @@ namespace PowerLanguage.Strategy
             UpdateStopLine();
         }
 
-        private void DrawFilledEntryMarkers(int currentPosition, double entryPrice, double tickSize) {
-            // Direction marker: below a long entry bar and above a short entry
-            // bar, so it points at the bar tail without covering the candle.
-            double tailOffset = 3 * tickSize;
+        private void DrawFilledEntryMarkers(int currentPosition, double entryPrice,
+                                            double tickSize, EEntrySetup entrySetup) {
+            // MultiCharts confirms the fill on the calculation following the
+            // actual fill bar.  Use that completed bar for both markers rather
+            // than Bars[0], which may already be a new forming range bar.
+            int barsBack = Bars.CurrentBar > 1 ? 1 : 0;
+
+            // Leave one tick of white space beyond the tail.  This keeps the
+            // arrow close to, but never inside, the entry candle.
+            double tailOffset = tickSize;
             double directionPrice = currentPosition > 0
-                ? Bars.Low[0] - tailOffset
-                : Bars.High[0] + tailOffset;
+                ? Bars.Low[barsBack] - tailOffset
+                : Bars.High[barsBack] + tailOffset;
             IArrowObject directionMarker = DrwArrow.Create(
-                new ChartPoint(Bars.Time[0], directionPrice), currentPosition < 0);
+                new ChartPoint(Bars.Time[barsBack], directionPrice), currentPosition < 0);
             directionMarker.Color = currentPosition > 0 ? Color.DodgerBlue : Color.Red;
             directionMarker.Size = 5;
             m_TradeEntryMarkers.Add(directionMarker);
 
+            string entryType = entrySetup == EEntrySetup.PinBar ? "PIN BAR" :
+                               entrySetup == EEntrySetup.Ema24Bounce ? "24 EMA BOUNCE" :
+                               entrySetup == EEntrySetup.ShiftProjection ? "MANUAL" :
+                               "ENTRY";
+            double entryTypePrice = currentPosition > 0
+                ? Bars.Low[barsBack] - (3 * tickSize)
+                : Bars.High[barsBack] + (3 * tickSize);
+            ITextObject entryTypeMarker = DrwText.Create(
+                new ChartPoint(Bars.Time[barsBack], entryTypePrice), entryType);
+            entryTypeMarker.Color = Color.Black;
+            entryTypeMarker.Size = 8;
+            entryTypeMarker.HStyle = ETextStyleH.Center;
+            entryTypeMarker.VStyle = currentPosition > 0
+                ? ETextStyleV.Below
+                : ETextStyleV.Above;
+            m_TradeEntryMarkers.Add(entryTypeMarker);
+
             // A plain ASCII chevron is used here because it renders reliably
             // in MultiCharts chart fonts. The prior bar's time places it just
             // to the left of the fill bar at the actual average execution price.
-            int barsBack = Bars.CurrentBar > 1 ? 1 : 0;
             ITextObject fillMarker = DrwText.Create(
                 new ChartPoint(Bars.Time[barsBack], entryPrice), ">");
             fillMarker.Color = Color.Black;
@@ -1478,10 +1634,94 @@ namespace PowerLanguage.Strategy
                 m_ProjectedEntryLine.Begin = begin;
                 m_ProjectedEntryLine.End = end;
             }
+
+            // Shift-click intentionally works while automatic entry is
+            // unarmed.  Put that fact directly on its projected order line so
+            // a manual order cannot be mistaken for an armed auto entry.
+            bool isUnarmedShiftEntry = m_ActiveEntrySetup == EEntrySetup.ShiftProjection &&
+                                       !m_AutoEntryArmed;
+            if (isUnarmedShiftEntry) {
+                string labelText = m_BuyOrderActive
+                    ? "UNARMED SHIFT BUY"
+                    : "UNARMED SHIFT SELL";
+                if (m_ProjectedEntryLabel == null) {
+                    m_ProjectedEntryLabel = DrwText.Create(begin, labelText);
+                    m_ProjectedEntryLabel.Size = 10;
+                    m_ProjectedEntryLabel.HStyle = ETextStyleH.Right;
+                }
+                m_ProjectedEntryLabel.Location = begin;
+                m_ProjectedEntryLabel.Text = labelText;
+                m_ProjectedEntryLabel.Color = Color.Black;
+                m_ProjectedEntryLabel.VStyle = m_BuyOrderActive
+                    ? ETextStyleV.Above
+                    : ETextStyleV.Below;
+            } else if (m_ProjectedEntryLabel != null) {
+                m_ProjectedEntryLabel.Delete();
+                m_ProjectedEntryLabel = null;
+            }
         }
 
         private void ClearProjectedEntryLine() {
             if (m_ProjectedEntryLine != null) { m_ProjectedEntryLine.Delete(); m_ProjectedEntryLine = null; }
+            if (m_ProjectedEntryLabel != null) { m_ProjectedEntryLabel.Delete(); m_ProjectedEntryLabel = null; }
+            ClearShiftCompletionLine();
+        }
+
+        private void UpdateShiftRangeLines(double projectedLow, double projectedHigh,
+                                           int direction) {
+            ChartPoint lowerBegin = new ChartPoint(Bars.Time[0], projectedLow);
+            ChartPoint lowerEnd = new ChartPoint(Bars.Time[0].AddMinutes(5), projectedLow);
+            if (m_ShiftLowerLine == null) {
+                m_ShiftLowerLine = DrwTrendLine.Create(lowerBegin, lowerEnd);
+                m_ShiftLowerLine.ExtRight = false;
+                m_ShiftLowerLine.Color = Color.DarkGray;
+                m_ShiftLowerLine.Style = ETLStyle.ToolDashed;
+                m_ShiftLowerLine.Size = 2;
+            } else {
+                m_ShiftLowerLine.Begin = lowerBegin;
+                m_ShiftLowerLine.End = lowerEnd;
+            }
+
+            ChartPoint upperBegin = new ChartPoint(Bars.Time[0], projectedHigh);
+            ChartPoint upperEnd = new ChartPoint(Bars.Time[0].AddMinutes(5), projectedHigh);
+            if (m_ShiftUpperLine == null) {
+                m_ShiftUpperLine = DrwTrendLine.Create(upperBegin, upperEnd);
+                m_ShiftUpperLine.ExtRight = false;
+                m_ShiftUpperLine.Color = Color.DarkGray;
+                m_ShiftUpperLine.Style = ETLStyle.ToolDashed;
+                m_ShiftUpperLine.Size = 2;
+            } else {
+                m_ShiftUpperLine.Begin = upperBegin;
+                m_ShiftUpperLine.End = upperEnd;
+            }
+
+            ChartPoint completionPoint = direction > 0 ? upperBegin : lowerBegin;
+            if (m_ShiftCompletionLabel == null) {
+                m_ShiftCompletionLabel = DrwText.Create(completionPoint, "SHIFT COMPLETE");
+                m_ShiftCompletionLabel.Size = 9;
+                m_ShiftCompletionLabel.HStyle = ETextStyleH.Right;
+                m_ShiftCompletionLabel.Color = Color.Black;
+            }
+            m_ShiftCompletionLabel.Location = completionPoint;
+            m_ShiftCompletionLabel.Text = "SHIFT COMPLETE";
+            m_ShiftCompletionLabel.VStyle = direction > 0
+                ? ETextStyleV.Below
+                : ETextStyleV.Above;
+        }
+
+        private void ClearShiftCompletionLine() {
+            if (m_ShiftLowerLine != null) {
+                m_ShiftLowerLine.Delete();
+                m_ShiftLowerLine = null;
+            }
+            if (m_ShiftUpperLine != null) {
+                m_ShiftUpperLine.Delete();
+                m_ShiftUpperLine = null;
+            }
+            if (m_ShiftCompletionLabel != null) {
+                m_ShiftCompletionLabel.Delete();
+                m_ShiftCompletionLabel = null;
+            }
         }
 
         private void UpdateHUD() {
@@ -1495,20 +1735,43 @@ namespace PowerLanguage.Strategy
                     ? "PIN WATCH"
                     : Enable24EMABounceTrading ? "24 EMA WATCH" : "IDLE";
             if (m_AutoEntryArmed)
-                status = m_ArmedDirection > 0 ? "AUTO ARMED BUY" : "AUTO ARMED SELL";
+                status = m_ArmedDirection > 0 ? "ARMED BUY" : "ARMED SELL";
             if (m_BuyOrderActive)
                 status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ? "24 EMA ENTRY BUY" :
-                    m_ActiveEntrySetup == EEntrySetup.ShiftProjection ? "SHIFT ENTRY BUY" : "PIN ENTRY BUY";
+                    m_ActiveEntrySetup == EEntrySetup.ShiftProjection
+                        ? (m_AutoEntryArmed ? "SHIFT ENTRY BUY" : "UNARMED SHIFT ENTRY BUY")
+                        : "PIN ENTRY BUY";
             if (m_SellOrderActive)
                 status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ? "24 EMA ENTRY SELL" :
-                    m_ActiveEntrySetup == EEntrySetup.ShiftProjection ? "SHIFT ENTRY SELL" : "PIN ENTRY SELL";
+                    m_ActiveEntrySetup == EEntrySetup.ShiftProjection
+                        ? (m_AutoEntryArmed ? "SHIFT ENTRY SELL" : "UNARMED SHIFT ENTRY SELL")
+                        : "PIN ENTRY SELL";
             if (StrategyInfo.MarketPosition != 0) status = "IN TRADE";
             if (m_KillModeActive) status = m_FlattenRequested ? "FLATTENING" : "UNARMED";
             string text = string.Format("{0} | Session PnL: {1:C2}", status, pnl);
-            if (m_HUDLabel == null) { m_HUDLabel = DrwText.Create(new ChartPoint(Bars.Time[0], Bars.High[0]), text); m_HUDLabel.Size = 14; }
+            // Keep the session line immediately below the broker line as one
+            // compact, unobtrusive status block.
+            ChartPoint hudPoint = GetStatusLabelPoint(tickSize, 4);
+            if (m_HUDLabel == null) {
+                m_HUDLabel = DrwText.Create(hudPoint, text);
+            }
+            m_HUDLabel.Size = 11;
+            // In MultiCharts text drawings, Right keeps the visible left edge
+            // at the shared chart point; Left aligns the right edges instead.
+            m_HUDLabel.HStyle = ETextStyleH.Right;
+            m_HUDLabel.VStyle = ETextStyleV.Above;
             m_HUDLabel.Text = text; m_HUDLabel.Color = Color.Black;
-            m_HUDLabel.Location = new ChartPoint(Bars.Time[0], Bars.High[0] + (12 * tickSize));
+            m_HUDLabel.Location = hudPoint;
             UpdateBrokerStatusLabel(tickSize);
+        }
+
+        private ChartPoint GetStatusLabelPoint(double tickSize, int offsetTicks) {
+            // Anchor directly to the live bar. A trailing highest-high anchor
+            // follows an advance immediately but remains stranded above an old
+            // high during a decline. The live high keeps this compact status
+            // block moving with price in either direction.
+            return new ChartPoint(Bars.Time[0],
+                                  Bars.High[0] + (offsetTicks * tickSize));
         }
 
         private void UpdateBrokerStatusLabel(double tickSize) {
@@ -1574,13 +1837,14 @@ namespace PowerLanguage.Strategy
                 }
             }
 
-            ChartPoint point = new ChartPoint(Bars.Time[0],
-                                              Bars.High[0] + (26 * tickSize));
+            ChartPoint point = GetStatusLabelPoint(tickSize, 7);
             if (m_BrokerStatusLabel == null) {
                 m_BrokerStatusLabel = DrwText.Create(point, text);
-                m_BrokerStatusLabel.Size = 11;
-                m_BrokerStatusLabel.HStyle = ETextStyleH.Right;
             }
+            // Match the HUD so the two lines read as a single status block.
+            m_BrokerStatusLabel.Size = 11;
+            m_BrokerStatusLabel.HStyle = ETextStyleH.Right;
+            m_BrokerStatusLabel.VStyle = ETextStyleV.Above;
             m_BrokerStatusLabel.Location = point;
             m_BrokerStatusLabel.Text = text;
             m_BrokerStatusLabel.Color = color;
