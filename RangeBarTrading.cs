@@ -45,6 +45,8 @@ namespace PowerLanguage.Strategy
         private const bool ShowHUD = true;
         private const int PinBarRangeTicks = 5;
         private const int PinBarMinTailTicks = 2;
+        private const double PinBarMinEmaSeparationBars = 0.5;
+        private const double PinBarMinFastEmaSlopeDegrees = 20.0;
         private const int MasterTrendPeriod = 60;
         private const int MinExpansionTicks = 25;
         private const int MinBreadth_15_60 = 5;
@@ -872,6 +874,17 @@ namespace PowerLanguage.Strategy
                 return;
             }
 
+            // A pin-bar projection is only meaningful when the fast EMA is
+            // visibly separated from the 24 EMA and is sloping in the trade
+            // direction.  Treat this as a visualization and order-eligibility
+            // gate so weak/flat EMA conditions do not present a valid-looking
+            // pin setup.
+            if (!IsPinBarTrendFilterValid(direction, tickSize)) {
+                ClearPinBarProjectionLines();
+                ClearPinBarEntryIfActive();
+                return;
+            }
+
             // Open alignment is an order-eligibility rule, not a visualization
             // rule. Keep showing the geometric projection after arming even if
             // the EMA-side gate prevents this bar from staging an entry.
@@ -947,6 +960,22 @@ namespace PowerLanguage.Strategy
             } else {
                 ClearPinBarEntryIfActive();
             }
+        }
+
+        private bool IsPinBarTrendFilterValid(int direction, double tickSize) {
+            if (Bars.CurrentBar < 3 || direction == 0) return false;
+
+            double minimumSeparation = PinBarRangeTicks *
+                                       PinBarMinEmaSeparationBars * tickSize;
+            double emaSeparation = direction > 0
+                ? m_FastEMA[0] - m_SlowEMA[0]
+                : m_SlowEMA[0] - m_FastEMA[0];
+            if (emaSeparation < minimumSeparation) return false;
+
+            double fastEmaSlope = GetAngle(m_FastEMA[0], m_FastEMA[3], 3, tickSize);
+            return direction > 0
+                ? fastEmaSlope > PinBarMinFastEmaSlopeDegrees
+                : fastEmaSlope < -PinBarMinFastEmaSlopeDegrees;
         }
 
         private bool IsPinBarOpenOnCorrectEmaSide(int direction, double tickSize) {
