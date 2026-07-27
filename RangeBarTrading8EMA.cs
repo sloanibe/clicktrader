@@ -11,8 +11,7 @@ namespace PowerLanguage.Indicator
     {
         private const int FastEmaLength = 8;
         private const int SlowEmaLength = 24;
-        private const int RangeBarTicks = 5;
-        private const double MinimumSeparationBars = 0.5;
+        private const int MinimumSeparationTicks = 3;
         private const int SlopeLookbackBars = 3;
         private const double MinimumSlopeDegrees = 20.0;
 
@@ -57,8 +56,7 @@ namespace PowerLanguage.Indicator
         {
             if (Bars.CurrentBar < SlopeLookbackBars) return false;
 
-            double minimumSeparation = RangeBarTicks *
-                                       MinimumSeparationBars * tickSize;
+            double minimumSeparation = MinimumSeparationTicks * tickSize;
             double slope = GetAngle(m_FastEMA[0],
                                     m_FastEMA[SlopeLookbackBars],
                                     SlopeLookbackBars,

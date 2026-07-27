@@ -45,7 +45,7 @@ namespace PowerLanguage.Strategy
         private const bool ShowHUD = true;
         private const int PinBarRangeTicks = 5;
         private const int PinBarMinTailTicks = 2;
-        private const double PinBarMinEmaSeparationBars = 0.5;
+        private const int PinBarMinEmaSeparationTicks = 3;
         private const double PinBarMinFastEmaSlopeDegrees = 20.0;
         private const int MasterTrendPeriod = 60;
         private const int MinExpansionTicks = 25;
@@ -965,8 +965,7 @@ namespace PowerLanguage.Strategy
         private bool IsPinBarTrendFilterValid(int direction, double tickSize) {
             if (Bars.CurrentBar < 3 || direction == 0) return false;
 
-            double minimumSeparation = PinBarRangeTicks *
-                                       PinBarMinEmaSeparationBars * tickSize;
+            double minimumSeparation = PinBarMinEmaSeparationTicks * tickSize;
             double emaSeparation = direction > 0
                 ? m_FastEMA[0] - m_SlowEMA[0]
                 : m_SlowEMA[0] - m_FastEMA[0];
