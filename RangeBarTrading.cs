@@ -45,7 +45,6 @@ namespace PowerLanguage.Strategy
         private const bool ShowHUD = true;
         private const int PinBarRangeTicks = 5;
         private const int PinBarMinTailTicks = 2;
-        private const int EmaBounceEntryOffsetTicks = 6;
         private const int MasterTrendPeriod = 60;
         private const int MinExpansionTicks = 25;
         private const int MinBreadth_15_60 = 5;
@@ -120,15 +119,17 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_StopLine;
         private ITrendLineObject m_ProjectedEntryLine;
         private ITextObject m_ProjectedEntryLabel;
-        private ITrendLineObject m_ShiftLowerLine;
-        private ITrendLineObject m_ShiftUpperLine;
+        private ITrendLineObject m_ShiftTailLine;
+        private ITrendLineObject m_ShiftCompletionLine;
+        private ITrendLineObject m_ShiftEntryLine;
         private ITextObject m_ShiftCompletionLabel;
         private ITrendLineObject m_PinBarTailLine;
         private ITrendLineObject m_PinBarCompletionLine;
         private ITrendLineObject m_PinBarEntryLine;
         private ITextObject m_PinBarLabel;
-        private ITrendLineObject m_EmaBounceLowerLine;
-        private ITrendLineObject m_EmaBounceUpperLine;
+        private ITrendLineObject m_EmaBounceTailLine;
+        private ITrendLineObject m_EmaBounceCompletionLine;
+        private ITrendLineObject m_EmaBounceEntryLine;
         private ITextObject m_EmaBounceLabel;
         private ITrendLineObject m_GoSignalMarker;
         private ITextObject m_HUDLabel;
@@ -1088,23 +1089,29 @@ namespace PowerLanguage.Strategy
 
             bool emaBoundaryReached = HasReachedEmaBounceBoundary(
                 m_EmaBounceProjectionDirection, projectedLow, projectedHigh, tickSize);
-            UpdateEmaBounceProjectionLine(ref m_EmaBounceLowerLine, projectedLow,
+            double tailPrice = m_EmaBounceProjectionDirection > 0
+                ? projectedLow
+                : projectedHigh;
+            double completionPrice = m_EmaBounceProjectionDirection > 0
+                ? projectedHigh
+                : projectedLow;
+            double entryPrice = m_EmaBounceProjectionDirection > 0
+                ? RoundToTick(completionPrice + (EntryOffsetTicks * tickSize), tickSize)
+                : RoundToTick(completionPrice - (EntryOffsetTicks * tickSize), tickSize);
+            UpdateEmaBounceTailLine(tailPrice);
+            UpdateEmaBounceCompletionLine(completionPrice,
                                           m_EmaBounceProjectionDirection,
                                           emaBoundaryReached);
-            UpdateEmaBounceProjectionLine(ref m_EmaBounceUpperLine, projectedHigh,
-                                          m_EmaBounceProjectionDirection,
-                                          emaBoundaryReached);
-            UpdateEmaBounceProjectionLabel(
-                m_EmaBounceProjectionDirection > 0 ? projectedHigh : projectedLow,
-                m_EmaBounceProjectionDirection, emaBoundaryReached);
+            UpdateEmaBounceEntryLine(entryPrice);
+            UpdateEmaBounceProjectionLabel(completionPrice,
+                                           m_EmaBounceProjectionDirection,
+                                           emaBoundaryReached);
 
             // As with pin bars, retain the possible entry price for choosing
             // which projection to display.  The validity flag below remains
             // the gate for actual order staging.
             m_EmaEntryCandidateDirection = m_EmaBounceProjectionDirection;
-            m_EmaEntryCandidatePrice = m_EmaBounceProjectionDirection > 0
-                ? RoundToTick(projectedLow + (EmaBounceEntryOffsetTicks * tickSize), tickSize)
-                : RoundToTick(projectedHigh - (EmaBounceEntryOffsetTicks * tickSize), tickSize);
+            m_EmaEntryCandidatePrice = entryPrice;
 
             // A displayed projection is only a possible bounce.  Do not put a
             // native stop order on the chart until price has actually reached
@@ -1219,7 +1226,7 @@ namespace PowerLanguage.Strategy
             if (direction > 0) {
                 // Setup recognition is based solely on whether the current or
                 // still-possible range bar can reach the live 24 EMA. The
-                // six-tick entry distance must not disqualify the projection.
+                // one-tick entry offset must not disqualify the projection.
                 double projectedTouchLow = currentEma;
                 double lowestPossibleLow = Math.Max(Bars.High[0] - range,
                                                      currentEma - range);
@@ -1270,9 +1277,10 @@ namespace PowerLanguage.Strategy
             m_EmaBounceOrderBar = Bars.CurrentBar;
             m_BuyOrderActive = direction > 0;
             m_SellOrderActive = direction < 0;
+            double completionPrice = direction > 0 ? projectedHigh : projectedLow;
             m_StopPrice = direction > 0
-                ? RoundToTick(projectedLow + (EmaBounceEntryOffsetTicks * tickSize), tickSize)
-                : RoundToTick(projectedHigh - (EmaBounceEntryOffsetTicks * tickSize), tickSize);
+                ? RoundToTick(completionPrice + (EntryOffsetTicks * tickSize), tickSize)
+                : RoundToTick(completionPrice - (EntryOffsetTicks * tickSize), tickSize);
             m_LastSentPrice = 0;
         }
 
@@ -1284,23 +1292,39 @@ namespace PowerLanguage.Strategy
             }
         }
 
-        private void UpdateEmaBounceProjectionLine(ref ITrendLineObject line,
-                                                   double price, int direction,
+        private void UpdateEmaBounceTailLine(double price) {
+            UpdateEmaBounceLine(ref m_EmaBounceTailLine, price, Color.Gray,
+                                ETLStyle.ToolDashed, 1);
+        }
+
+        private void UpdateEmaBounceCompletionLine(double price, int direction,
                                                    bool active) {
+            Color color = active
+                ? (direction > 0 ? Color.MediumSeaGreen : Color.DarkViolet)
+                : Color.Gray;
+            UpdateEmaBounceLine(ref m_EmaBounceCompletionLine, price, color,
+                                ETLStyle.ToolDashed, 1);
+        }
+
+        private void UpdateEmaBounceEntryLine(double price) {
+            UpdateEmaBounceLine(ref m_EmaBounceEntryLine, price, Color.Green,
+                                ETLStyle.ToolSolid, 2);
+        }
+
+        private void UpdateEmaBounceLine(ref ITrendLineObject line, double price,
+                                         Color color, ETLStyle style, int size) {
             ChartPoint begin = new ChartPoint(Bars.Time[0], price);
             ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
             if (line == null) {
                 line = DrwTrendLine.Create(begin, end);
-                line.ExtRight = false;
             } else {
                 line.Begin = begin;
                 line.End = end;
             }
-            line.Color = active
-                ? (direction > 0 ? Color.MediumSeaGreen : Color.DarkViolet)
-                : Color.Gray;
-            line.Style = ETLStyle.ToolDashed;
-            line.Size = 2;
+            line.ExtRight = true;
+            line.Color = color;
+            line.Style = style;
+            line.Size = size;
         }
 
         private void UpdateEmaBounceProjectionLabel(double price, int direction,
@@ -1322,8 +1346,9 @@ namespace PowerLanguage.Strategy
         }
 
         private void ClearEmaBounceProjectionLines() {
-            if (m_EmaBounceLowerLine != null) { m_EmaBounceLowerLine.Delete(); m_EmaBounceLowerLine = null; }
-            if (m_EmaBounceUpperLine != null) { m_EmaBounceUpperLine.Delete(); m_EmaBounceUpperLine = null; }
+            if (m_EmaBounceTailLine != null) { m_EmaBounceTailLine.Delete(); m_EmaBounceTailLine = null; }
+            if (m_EmaBounceCompletionLine != null) { m_EmaBounceCompletionLine.Delete(); m_EmaBounceCompletionLine = null; }
+            if (m_EmaBounceEntryLine != null) { m_EmaBounceEntryLine.Delete(); m_EmaBounceEntryLine = null; }
             if (m_EmaBounceLabel != null) { m_EmaBounceLabel.Delete(); m_EmaBounceLabel = null; }
         }
 
@@ -1405,7 +1430,10 @@ namespace PowerLanguage.Strategy
             m_SellOrderActive = !buyDirection;
             m_StopPrice = RoundToTick(entryPrice, tickSize);
             m_LastSentPrice = 0;
-            UpdateShiftRangeLines(projectedLow, projectedHigh, direction);
+            double tailPrice = direction > 0 ? projectedLow : projectedHigh;
+            double completionPrice = direction > 0 ? projectedHigh : projectedLow;
+            UpdateShiftProjectionLines(tailPrice, completionPrice,
+                                       m_StopPrice, direction);
         }
 
         private void ClearShiftProjectionEntry() {
@@ -1775,13 +1803,18 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdateProjectedEntryLine() {
-            // Pin bars own a dedicated completion line and one-tick entry line.
-            // Do not cover the dedicated entry projection with the generic
+            // Pin bars and EMA bounces own dedicated completion and one-tick
+            // entry lines. Do not cover those projections with the generic
             // pending-entry drawing when the native stop order is staged.
-            if (m_ActiveEntrySetup == EEntrySetup.PinBar) {
+            if (m_ActiveEntrySetup == EEntrySetup.PinBar ||
+                m_ActiveEntrySetup == EEntrySetup.Ema24Bounce) {
                 ClearProjectedEntryLine();
                 return;
             }
+            // Shift-click owns its own live tail, completion, and entry lines.
+            // They were updated with the order price immediately before this
+            // generic drawing pass, so leave them intact.
+            if (m_ActiveEntrySetup == EEntrySetup.ShiftProjection) return;
             if (m_StopPrice <= 0 || (!m_BuyOrderActive && !m_SellOrderActive)) return;
             ChartPoint begin = new ChartPoint(Bars.Time[0], m_StopPrice);
             ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), m_StopPrice);
@@ -1798,67 +1831,26 @@ namespace PowerLanguage.Strategy
                 m_ProjectedEntryLine.End = end;
             }
 
-            // Shift-click intentionally works while automatic entry is
-            // unarmed.  Put that fact directly on its projected order line so
-            // a manual order cannot be mistaken for an armed auto entry.
-            bool isUnarmedShiftEntry = m_ActiveEntrySetup == EEntrySetup.ShiftProjection &&
-                                       !m_AutoEntryArmed;
-            if (isUnarmedShiftEntry) {
-                string labelText = m_BuyOrderActive
-                    ? "UNARMED SHIFT BUY"
-                    : "UNARMED SHIFT SELL";
-                if (m_ProjectedEntryLabel == null) {
-                    m_ProjectedEntryLabel = DrwText.Create(begin, labelText);
-                    m_ProjectedEntryLabel.Size = 10;
-                    m_ProjectedEntryLabel.HStyle = ETextStyleH.Right;
-                }
-                m_ProjectedEntryLabel.Location = begin;
-                m_ProjectedEntryLabel.Text = labelText;
-                m_ProjectedEntryLabel.Color = Color.Black;
-                m_ProjectedEntryLabel.VStyle = m_BuyOrderActive
-                    ? ETextStyleV.Above
-                    : ETextStyleV.Below;
-            } else if (m_ProjectedEntryLabel != null) {
-                m_ProjectedEntryLabel.Delete();
-                m_ProjectedEntryLabel = null;
-            }
         }
 
         private void ClearProjectedEntryLine() {
             if (m_ProjectedEntryLine != null) { m_ProjectedEntryLine.Delete(); m_ProjectedEntryLine = null; }
             if (m_ProjectedEntryLabel != null) { m_ProjectedEntryLabel.Delete(); m_ProjectedEntryLabel = null; }
-            ClearShiftCompletionLine();
+            ClearShiftProjectionLines();
         }
 
-        private void UpdateShiftRangeLines(double projectedLow, double projectedHigh,
-                                           int direction) {
-            ChartPoint lowerBegin = new ChartPoint(Bars.Time[0], projectedLow);
-            ChartPoint lowerEnd = new ChartPoint(Bars.Time[0].AddMinutes(5), projectedLow);
-            if (m_ShiftLowerLine == null) {
-                m_ShiftLowerLine = DrwTrendLine.Create(lowerBegin, lowerEnd);
-                m_ShiftLowerLine.ExtRight = false;
-                m_ShiftLowerLine.Color = Color.DarkGray;
-                m_ShiftLowerLine.Style = ETLStyle.ToolDashed;
-                m_ShiftLowerLine.Size = 2;
-            } else {
-                m_ShiftLowerLine.Begin = lowerBegin;
-                m_ShiftLowerLine.End = lowerEnd;
-            }
+        private void UpdateShiftProjectionLines(double tailPrice,
+                                                double completionPrice,
+                                                double entryPrice,
+                                                int direction) {
+            UpdateShiftProjectionLine(ref m_ShiftTailLine, tailPrice,
+                                      Color.DarkGray, ETLStyle.ToolDashed, 1);
+            UpdateShiftProjectionLine(ref m_ShiftCompletionLine, completionPrice,
+                                      Color.Gray, ETLStyle.ToolDashed, 1);
+            UpdateShiftProjectionLine(ref m_ShiftEntryLine, entryPrice,
+                                      Color.Green, ETLStyle.ToolSolid, 2);
 
-            ChartPoint upperBegin = new ChartPoint(Bars.Time[0], projectedHigh);
-            ChartPoint upperEnd = new ChartPoint(Bars.Time[0].AddMinutes(5), projectedHigh);
-            if (m_ShiftUpperLine == null) {
-                m_ShiftUpperLine = DrwTrendLine.Create(upperBegin, upperEnd);
-                m_ShiftUpperLine.ExtRight = false;
-                m_ShiftUpperLine.Color = Color.DarkGray;
-                m_ShiftUpperLine.Style = ETLStyle.ToolDashed;
-                m_ShiftUpperLine.Size = 2;
-            } else {
-                m_ShiftUpperLine.Begin = upperBegin;
-                m_ShiftUpperLine.End = upperEnd;
-            }
-
-            ChartPoint completionPoint = direction > 0 ? upperBegin : lowerBegin;
+            ChartPoint completionPoint = new ChartPoint(Bars.Time[0], completionPrice);
             if (m_ShiftCompletionLabel == null) {
                 m_ShiftCompletionLabel = DrwText.Create(completionPoint, "SHIFT COMPLETE");
                 m_ShiftCompletionLabel.Size = 9;
@@ -1870,16 +1862,53 @@ namespace PowerLanguage.Strategy
             m_ShiftCompletionLabel.VStyle = direction > 0
                 ? ETextStyleV.Below
                 : ETextStyleV.Above;
+
+            string entryLabelText = m_AutoEntryArmed
+                ? (direction > 0 ? "SHIFT BUY" : "SHIFT SELL")
+                : (direction > 0 ? "UNARMED SHIFT BUY" : "UNARMED SHIFT SELL");
+            ChartPoint entryPoint = new ChartPoint(Bars.Time[0], entryPrice);
+            if (m_ProjectedEntryLabel == null) {
+                m_ProjectedEntryLabel = DrwText.Create(entryPoint, entryLabelText);
+                m_ProjectedEntryLabel.Size = 10;
+                m_ProjectedEntryLabel.HStyle = ETextStyleH.Right;
+            }
+            m_ProjectedEntryLabel.Location = entryPoint;
+            m_ProjectedEntryLabel.Text = entryLabelText;
+            m_ProjectedEntryLabel.Color = Color.Black;
+            m_ProjectedEntryLabel.VStyle = direction > 0
+                ? ETextStyleV.Above
+                : ETextStyleV.Below;
         }
 
-        private void ClearShiftCompletionLine() {
-            if (m_ShiftLowerLine != null) {
-                m_ShiftLowerLine.Delete();
-                m_ShiftLowerLine = null;
+        private void UpdateShiftProjectionLine(ref ITrendLineObject line,
+                                               double price, Color color,
+                                               ETLStyle style, int size) {
+            ChartPoint begin = new ChartPoint(Bars.Time[0], price);
+            ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
+            if (line == null)
+                line = DrwTrendLine.Create(begin, end);
+            else {
+                line.Begin = begin;
+                line.End = end;
             }
-            if (m_ShiftUpperLine != null) {
-                m_ShiftUpperLine.Delete();
-                m_ShiftUpperLine = null;
+            line.ExtRight = true;
+            line.Color = color;
+            line.Style = style;
+            line.Size = size;
+        }
+
+        private void ClearShiftProjectionLines() {
+            if (m_ShiftTailLine != null) {
+                m_ShiftTailLine.Delete();
+                m_ShiftTailLine = null;
+            }
+            if (m_ShiftCompletionLine != null) {
+                m_ShiftCompletionLine.Delete();
+                m_ShiftCompletionLine = null;
+            }
+            if (m_ShiftEntryLine != null) {
+                m_ShiftEntryLine.Delete();
+                m_ShiftEntryLine = null;
             }
             if (m_ShiftCompletionLabel != null) {
                 m_ShiftCompletionLabel.Delete();
