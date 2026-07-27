@@ -44,7 +44,7 @@ namespace PowerLanguage.Strategy
         private const int ProximityTicks = 5;
         private const bool ShowHUD = true;
         private const int PinBarRangeTicks = 5;
-        private const int PinBarMinTailTicks = 3;
+        private const int PinBarMinTailTicks = 2;
         private const int EmaBounceEntryOffsetTicks = 6;
         private const int MasterTrendPeriod = 60;
         private const int MinExpansionTicks = 25;
@@ -107,7 +107,6 @@ namespace PowerLanguage.Strategy
         private bool m_KillModeActive = true;
         private bool m_StartupOrderCancellationRequested = false;
         private bool m_DraggingTarget = false;
-        private bool m_DraggingStop = false;
         private bool m_HudDisplayEnabled = true;
         private double m_AutoRangeTicks = 0;
         private DateTime m_EmergencyMessageExpiresAt = DateTime.MinValue;
@@ -133,6 +132,8 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_GoSignalMarker;
         private ITextObject m_HUDLabel;
         private ITextObject m_BrokerStatusLabel;
+        private ITextObject m_ControlsHintLabel;
+        private ITextObject m_ControlsActionHintLabel;
         private ITextObject m_EmergencyLabel;
         // Filled-trade annotations are retained after the position closes so
         // the chart keeps a clean record of executed entries.
@@ -180,6 +181,8 @@ namespace PowerLanguage.Strategy
         private void ClearTradingDrawings() {
             if (m_HUDLabel != null) { m_HUDLabel.Delete(); m_HUDLabel = null; }
             if (m_BrokerStatusLabel != null) { m_BrokerStatusLabel.Delete(); m_BrokerStatusLabel = null; }
+            if (m_ControlsHintLabel != null) { m_ControlsHintLabel.Delete(); m_ControlsHintLabel = null; }
+            if (m_ControlsActionHintLabel != null) { m_ControlsActionHintLabel.Delete(); m_ControlsActionHintLabel = null; }
             if (m_TargetLine != null) { m_TargetLine.Delete(); m_TargetLine = null; }
             if (m_StopLine != null) { m_StopLine.Delete(); m_StopLine = null; }
             if (m_EmergencyLabel != null) { m_EmergencyLabel.Delete(); m_EmergencyLabel = null; }
@@ -499,9 +502,6 @@ namespace PowerLanguage.Strategy
                 StartShiftProjectionEntry(tickSize);
                 if (ShowHUD && m_HudDisplayEnabled) UpdateHUD();
             }
-            else if (IsAltClick(arg.keys)) {
-                AdvanceProfitTargetOneRange(tickSize);
-            }
             else if (m_DraggingTarget) {
                 m_ProfitTargetPrice = Math.Round(arg.point.Price / tickSize) * tickSize;
                 m_DraggingTarget = false;
@@ -511,19 +511,13 @@ namespace PowerLanguage.Strategy
                 // MultiCharts' broker-order badge directly.
                 SubmitActiveExitOrders(StrategyInfo.MarketPosition);
             }
-            else if (m_DraggingStop) {
-                m_ProtectiveStopPrice = Math.Round(arg.point.Price / tickSize) * tickSize;
-                m_DraggingStop = false;
-                UpdateStopLine();
-                SubmitActiveExitOrders(StrategyInfo.MarketPosition);
-            }
             else if (m_ProfitTargetPrice > 0 && Math.Abs(arg.point.Price - m_ProfitTargetPrice) <= (ProximityTicks * tickSize)) {
                 m_DraggingTarget = true;
                 SetTargetLineSelected(true);
             }
-            else if (m_ProtectiveStopPrice > 0 && Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (ProximityTicks * tickSize)) {
-                m_DraggingStop = true;
-                SetStopLineSelected(true);
+            else if (StrategyInfo.MarketPosition != 0 && m_ProtectiveStopPrice > 0 &&
+                     Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (ProximityTicks * tickSize)) {
+                MoveProtectiveStopToBreakEven(StrategyInfo.MarketPosition, tickSize);
             }
         }
 
@@ -616,7 +610,7 @@ namespace PowerLanguage.Strategy
             m_StopPrice = m_LastSentPrice = 0;
             m_ProtectiveStopPrice = m_ProfitTargetPrice = 0;
             m_AutoProtectiveStopMoved = false;
-            m_DraggingTarget = m_DraggingStop = false;
+            m_DraggingTarget = false;
             ClearTradingDrawings();
         }
 
@@ -895,7 +889,7 @@ namespace PowerLanguage.Strategy
             if (m_PinProjectionBroken ||
                 !CanStillFormPinBar(direction, m_PinProjectionTailTicks, bodyTicks,
                                      tickSize)) {
-                // A 3/2 pin can extend to 4/1, then to a 5/0 all-tail pin.
+                // A 2/3 pin can extend to 3/2, then to 4/1 or a 5/0 all-tail pin.
                 // Advance to the next valid shape while preserving the same
                 // live bar and staged order.
                 bool foundNextShape = false;
@@ -1551,25 +1545,42 @@ namespace PowerLanguage.Strategy
                     m_BrokerStatusLabel.Delete();
                     m_BrokerStatusLabel = null;
                 }
+                if (m_ControlsHintLabel != null) {
+                    m_ControlsHintLabel.Delete();
+                    m_ControlsHintLabel = null;
+                }
+                if (m_ControlsActionHintLabel != null) {
+                    m_ControlsActionHintLabel.Delete();
+                    m_ControlsActionHintLabel = null;
+                }
             } else if (ShowHUD) {
                 UpdateHUD();
             }
         }
 
-        private void AdvanceProfitTargetOneRange(double tickSize) {
-            int currentPosition = StrategyInfo.MarketPosition;
-            if (currentPosition == 0 || m_ProfitTargetPrice <= 0) return;
+        private void MoveProtectiveStopToBreakEven(int currentPosition, double tickSize) {
+            double entryPrice = StrategyInfo.AvgEntryPrice != 0
+                ? StrategyInfo.AvgEntryPrice
+                : Bars.Close[0];
 
-            double rangeTicks = GetActiveRangeTicks(tickSize);
-            if (rangeTicks <= 0) return;
+            // Match the existing automatic break-even convention: protect at
+            // entry with one tick of permitted loss on range-bar trades.
+            double breakEvenStop = currentPosition > 0
+                ? RoundToTick(entryPrice - tickSize, tickSize)
+                : RoundToTick(entryPrice + tickSize, tickSize);
 
-            // Advance farther in the profitable direction: up for a long and
-            // down for a short. With the default five-tick range, each Alt-click
-            // moves the target exactly five ticks.
-            double direction = currentPosition > 0 ? 1.0 : -1.0;
-            m_ProfitTargetPrice = Math.Round((m_ProfitTargetPrice + (direction * rangeTicks * tickSize)) / tickSize) * tickSize;
-            m_DraggingTarget = false;
-            UpdateTargetLine();
+            if (currentPosition > 0) {
+                if (m_ProtectiveStopPrice <= 0 ||
+                    m_ProtectiveStopPrice < breakEvenStop)
+                    m_ProtectiveStopPrice = breakEvenStop;
+            } else {
+                if (m_ProtectiveStopPrice <= 0 ||
+                    m_ProtectiveStopPrice > breakEvenStop)
+                    m_ProtectiveStopPrice = breakEvenStop;
+            }
+
+            m_AutoProtectiveStopMoved = true;
+            UpdateStopLine();
             SubmitActiveExitOrders(currentPosition);
         }
 
@@ -1614,7 +1625,11 @@ namespace PowerLanguage.Strategy
             // MultiCharts confirms the fill on the calculation following the
             // actual fill bar.  Use that completed bar for both markers rather
             // than Bars[0], which may already be a new forming range bar.
-            int barsBack = Bars.CurrentBar > 1 ? 1 : 0;
+            // EMA-bounce fills are marked on the live bounce bar. Other entry
+            // types retain the prior completed-bar placement used historically.
+            int barsBack = entrySetup == EEntrySetup.Ema24Bounce
+                ? 0
+                : (Bars.CurrentBar > 1 ? 1 : 0);
 
             // Leave one tick of white space beyond the tail.  This keeps the
             // arrow close to, but never inside, the entry candle.
@@ -1631,19 +1646,23 @@ namespace PowerLanguage.Strategy
             m_TradeEntryMarkers.Add(directionMarker);
             m_ActiveTradeEntryArrow = directionMarker;
 
-            string entryType = entrySetup == EEntrySetup.PinBar ? "PB" :
+            string entryType = entrySetup == EEntrySetup.PinBar ? "P" :
                                entrySetup == EEntrySetup.Ema24Bounce ? "B" :
                                entrySetup == EEntrySetup.ShiftProjection ? "M" :
-                               "M";
-            // "Below" means directly underneath the arrow for both long and
-            // short entries, rather than above a short-entry arrow.
-            double entryTypePrice = directionPrice - (2 * tickSize);
+                               "?";
+            // Keep the type marker outside the tail: below a long tail and
+            // above a short tail, with two ticks of separation from the arrow.
+            double entryTypePrice = currentPosition > 0
+                ? directionPrice - (2 * tickSize)
+                : directionPrice + (2 * tickSize);
             ITextObject entryTypeMarker = DrwText.Create(
                 new ChartPoint(Bars.Time[barsBack], entryTypePrice), entryType);
             entryTypeMarker.Color = Color.Black;
             entryTypeMarker.Size = 6;
             entryTypeMarker.HStyle = ETextStyleH.Center;
-            entryTypeMarker.VStyle = ETextStyleV.Below;
+            entryTypeMarker.VStyle = currentPosition > 0
+                ? ETextStyleV.Below
+                : ETextStyleV.Above;
             m_TradeEntryMarkers.Add(entryTypeMarker);
 
             // A plain ASCII chevron is used here because it renders reliably
@@ -1676,23 +1695,6 @@ namespace PowerLanguage.Strategy
                 ? Color.LimeGreen
                 : Color.Red;
             m_ActiveTradeEntryArrow = null;
-        }
-
-        private bool IsAltClick(Keys keys) {
-            // MultiCharts can report a left/right Alt click as LMenu/RMenu
-            // rather than setting the generic Alt modifier bit. Some chart
-            // drawing clicks report no modifier in arg.keys at all, so also
-            // read the live WinForms modifier state.
-            Keys liveModifiers = System.Windows.Forms.Control.ModifierKeys;
-            Keys keyCode = keys & Keys.KeyCode;
-            Keys liveKeyCode = liveModifiers & Keys.KeyCode;
-            return ((keys | liveModifiers) & Keys.Alt) == Keys.Alt ||
-                   keyCode == Keys.Menu ||
-                   keyCode == Keys.LMenu ||
-                   keyCode == Keys.RMenu ||
-                   liveKeyCode == Keys.Menu ||
-                   liveKeyCode == Keys.LMenu ||
-                   liveKeyCode == Keys.RMenu;
         }
 
         private bool IsShiftClick(Keys keys) {
@@ -1762,10 +1764,6 @@ namespace PowerLanguage.Strategy
 
         private void SetTargetLineSelected(bool selected) {
             if (m_TargetLine != null) m_TargetLine.Color = selected ? Color.Orange : Color.LimeGreen;
-        }
-
-        private void SetStopLineSelected(bool selected) {
-            if (m_StopLine != null) m_StopLine.Color = selected ? Color.Orange : Color.Red;
         }
 
         private double GetActiveRangeTicks(double tickSize) {
@@ -1896,15 +1894,17 @@ namespace PowerLanguage.Strategy
             if (m_AutoEntryArmed)
                 status = m_ArmedDirection > 0 ? "ARMED BUY" : "ARMED SELL";
             if (m_BuyOrderActive)
-                status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ? "24 EMA ENTRY BUY" :
+                status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce
+                    ? (m_AutoEntryArmed ? "ARMED | 24 EMA ENTRY BUY" : "24 EMA ENTRY BUY") :
                     m_ActiveEntrySetup == EEntrySetup.ShiftProjection
                         ? (m_AutoEntryArmed ? "SHIFT ENTRY BUY" : "UNARMED SHIFT ENTRY BUY")
-                        : "PIN ENTRY BUY";
+                        : (m_AutoEntryArmed ? "ARMED | PIN ENTRY BUY" : "PIN ENTRY BUY");
             if (m_SellOrderActive)
-                status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ? "24 EMA ENTRY SELL" :
+                status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce
+                    ? (m_AutoEntryArmed ? "ARMED | 24 EMA ENTRY SELL" : "24 EMA ENTRY SELL") :
                     m_ActiveEntrySetup == EEntrySetup.ShiftProjection
                         ? (m_AutoEntryArmed ? "SHIFT ENTRY SELL" : "UNARMED SHIFT ENTRY SELL")
-                        : "PIN ENTRY SELL";
+                        : (m_AutoEntryArmed ? "ARMED | PIN ENTRY SELL" : "PIN ENTRY SELL");
             if (StrategyInfo.MarketPosition != 0) status = "IN TRADE";
             if (m_KillModeActive) status = m_FlattenRequested ? "FLATTENING" : "UNARMED";
             string text = string.Format("{0} | Session PnL: {1:C2}", status, pnl);
@@ -1922,6 +1922,7 @@ namespace PowerLanguage.Strategy
             m_HUDLabel.Text = text; m_HUDLabel.Color = Color.Black;
             m_HUDLabel.Location = hudPoint;
             UpdateBrokerStatusLabel(tickSize);
+            UpdateControlsHintLabel(tickSize);
         }
 
         private ChartPoint GetStatusLabelPoint(double tickSize, int offsetTicks) {
@@ -2007,6 +2008,46 @@ namespace PowerLanguage.Strategy
             m_BrokerStatusLabel.Location = point;
             m_BrokerStatusLabel.Text = text;
             m_BrokerStatusLabel.Color = color;
+        }
+
+        private void UpdateControlsHintLabel(double tickSize) {
+            const string controlText = "L-click stop marker: Break-even\nShift+click:\nCtrl+click:\nF11+click:\nF12+click:";
+            // MultiCharts trims ordinary leading spaces. Non-breaking spaces
+            // preserve the action-column offset and keep every action aligned.
+            const string actionPadding =
+                "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0" +
+                "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0" +
+                "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0" +
+                "\u00A0\u00A0\u00A0\u00A0";
+            // The first row is intentionally self-contained in controlText.
+            // The remaining rows retain their shared action-column alignment.
+            const string actionText = actionPadding + "\n" +
+                                      actionPadding + "Manual\n" +
+                                      actionPadding + "Arm/Disarm\n" +
+                                      actionPadding + "Toggle HUD\n" +
+                                      actionPadding + "Flatten";
+            ChartPoint point = GetStatusLabelPoint(tickSize, 9);
+            if (m_ControlsHintLabel == null) {
+                m_ControlsHintLabel = DrwText.Create(point, controlText);
+            }
+            m_ControlsHintLabel.Size = 8;
+            // Right alignment in MultiCharts places the visible left edge at
+            // the chart point, matching the paper-trader status label.
+            m_ControlsHintLabel.HStyle = ETextStyleH.Right;
+            m_ControlsHintLabel.VStyle = ETextStyleV.Above;
+            m_ControlsHintLabel.Location = point;
+            m_ControlsHintLabel.Text = controlText;
+            m_ControlsHintLabel.Color = Color.DarkSlateGray;
+
+            if (m_ControlsActionHintLabel == null) {
+                m_ControlsActionHintLabel = DrwText.Create(point, actionText);
+            }
+            m_ControlsActionHintLabel.Size = 8;
+            m_ControlsActionHintLabel.HStyle = ETextStyleH.Right;
+            m_ControlsActionHintLabel.VStyle = ETextStyleV.Above;
+            m_ControlsActionHintLabel.Location = point;
+            m_ControlsActionHintLabel.Text = actionText;
+            m_ControlsActionHintLabel.Color = Color.DarkSlateGray;
         }
 
         private string GetBrokerStatusName() {
