@@ -123,6 +123,7 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_ShiftLowerLine;
         private ITrendLineObject m_ShiftUpperLine;
         private ITextObject m_ShiftCompletionLabel;
+        private ITrendLineObject m_PinBarTailLine;
         private ITrendLineObject m_PinBarCompletionLine;
         private ITrendLineObject m_PinBarEntryLine;
         private ITextObject m_PinBarLabel;
@@ -916,11 +917,13 @@ namespace PowerLanguage.Strategy
                 }
             }
 
+            double tailPrice = direction > 0 ? projectedLow : projectedHigh;
             double completionPrice = direction > 0 ? projectedHigh : projectedLow;
             double entryPrice = direction > 0
                 ? RoundToTick(completionPrice + (EntryOffsetTicks * tickSize), tickSize)
                 : RoundToTick(completionPrice - (EntryOffsetTicks * tickSize), tickSize);
             bool projectionActive = m_PinProjectionTailReached && pinSetupEligible;
+            UpdatePinBarTailProjectionLine(tailPrice);
             UpdatePinBarProjectionLine(ref m_PinBarCompletionLine, completionPrice,
                                        direction, projectionActive, false);
             UpdatePinBarProjectionLine(ref m_PinBarEntryLine, entryPrice,
@@ -1469,16 +1472,32 @@ namespace PowerLanguage.Strategy
             // right guarantees both horizontal pin projections remain visible
             // when the future endpoint maps to the current bar on the chart.
             line.ExtRight = true;
-            line.Color = active
-                ? (direction > 0
-                    ? (isEntryLine ? Color.RoyalBlue : Color.DodgerBlue)
-                    : (isEntryLine ? Color.Red : Color.OrangeRed))
-                : (isEntryLine ? Color.DarkGray : Color.Gray);
-            line.Style = ETLStyle.ToolDashed;
+            line.Color = isEntryLine
+                ? Color.Green
+                : (active
+                    ? (direction > 0 ? Color.DodgerBlue : Color.OrangeRed)
+                    : Color.Gray);
+            line.Style = isEntryLine ? ETLStyle.ToolSolid : ETLStyle.ToolDashed;
             line.Size = isEntryLine ? 2 : 1;
         }
 
+        private void UpdatePinBarTailProjectionLine(double price) {
+            ChartPoint begin = new ChartPoint(Bars.Time[0], price);
+            ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
+            if (m_PinBarTailLine == null) {
+                m_PinBarTailLine = DrwTrendLine.Create(begin, end);
+            } else {
+                m_PinBarTailLine.Begin = begin;
+                m_PinBarTailLine.End = end;
+            }
+            m_PinBarTailLine.ExtRight = true;
+            m_PinBarTailLine.Color = Color.Gray;
+            m_PinBarTailLine.Style = ETLStyle.ToolDashed;
+            m_PinBarTailLine.Size = 1;
+        }
+
         private void ClearPinBarProjectionLines() {
+            if (m_PinBarTailLine != null) { m_PinBarTailLine.Delete(); m_PinBarTailLine = null; }
             if (m_PinBarCompletionLine != null) { m_PinBarCompletionLine.Delete(); m_PinBarCompletionLine = null; }
             if (m_PinBarEntryLine != null) { m_PinBarEntryLine.Delete(); m_PinBarEntryLine = null; }
             if (m_PinBarLabel != null) { m_PinBarLabel.Delete(); m_PinBarLabel = null; }
