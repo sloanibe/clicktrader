@@ -123,8 +123,8 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_ShiftLowerLine;
         private ITrendLineObject m_ShiftUpperLine;
         private ITextObject m_ShiftCompletionLabel;
-        private ITrendLineObject m_PinBarLowerLine;
-        private ITrendLineObject m_PinBarUpperLine;
+        private ITrendLineObject m_PinBarCompletionLine;
+        private ITrendLineObject m_PinBarEntryLine;
         private ITextObject m_PinBarLabel;
         private ITrendLineObject m_EmaBounceLowerLine;
         private ITrendLineObject m_EmaBounceUpperLine;
@@ -259,7 +259,6 @@ namespace PowerLanguage.Strategy
             UpdatePinBarProjection(tickSize, currentPosition);
             UpdateEmaBounceProjection(tickSize, currentPosition);
             ReconcileAutomaticEntryCandidates(tickSize, currentPosition);
-            ApplyProjectionDisplayPriority();
             UpdateShiftProjectionEntry(tickSize, currentPosition);
 
             // Highest-priority execution path, modeled after RenkoTailTrading's
@@ -585,7 +584,6 @@ namespace PowerLanguage.Strategy
             UpdatePinBarProjection(tickSize, StrategyInfo.MarketPosition);
             UpdateEmaBounceProjection(tickSize, StrategyInfo.MarketPosition);
             ReconcileAutomaticEntryCandidates(tickSize, StrategyInfo.MarketPosition);
-            ApplyProjectionDisplayPriority();
         }
 
         private void ActivateKillMode(int currentPosition) {
@@ -851,8 +849,8 @@ namespace PowerLanguage.Strategy
             }
 
             // An armed direction is deliberately persistent. While unarmed,
-            // choose one informational projection per new bar from the same
-            // 24 EMA slope rule so the chart never shows four competing lines.
+            // choose one informational pin shape per new bar from the same
+            // 24 EMA slope rule.
             if (m_PinProjectionBar != Bars.CurrentBar) {
                 m_PinProjectionBar = Bars.CurrentBar;
                 m_PinProjectionDirection = m_AutoEntryArmed
@@ -872,11 +870,10 @@ namespace PowerLanguage.Strategy
                 return;
             }
 
-            if (!m_PinProjectionOpenAligned) {
-                ClearPinBarProjectionLines();
-                ClearPinBarEntryIfActive();
-                return;
-            }
+            // Open alignment is an order-eligibility rule, not a visualization
+            // rule. Keep showing the geometric projection after arming even if
+            // the EMA-side gate prevents this bar from staging an entry.
+            bool pinSetupEligible = m_PinProjectionOpenAligned;
 
             double projectedLow;
             double projectedHigh;
@@ -901,6 +898,7 @@ namespace PowerLanguage.Strategy
                         continue;
 
                     m_PinProjectionTailTicks = nextTail;
+                    bodyTicks = nextBody;
                     m_PinProjectionBroken = false;
                     GetPinBarProjectionPrices(direction, nextTail, nextBody, tickSize,
                                                out projectedLow, out projectedHigh);
@@ -918,29 +916,30 @@ namespace PowerLanguage.Strategy
                 }
             }
 
-            UpdatePinBarProjectionLine(ref m_PinBarLowerLine, projectedLow, direction,
-                                       m_PinProjectionTailReached);
-            UpdatePinBarProjectionLine(ref m_PinBarUpperLine, projectedHigh, direction,
-                                       m_PinProjectionTailReached);
-            UpdatePinBarProjectionLabel(projectedHigh, direction,
-                                        m_PinProjectionTailReached);
+            double completionPrice = direction > 0 ? projectedHigh : projectedLow;
+            double entryPrice = direction > 0
+                ? RoundToTick(completionPrice + (EntryOffsetTicks * tickSize), tickSize)
+                : RoundToTick(completionPrice - (EntryOffsetTicks * tickSize), tickSize);
+            bool projectionActive = m_PinProjectionTailReached && pinSetupEligible;
+            UpdatePinBarProjectionLine(ref m_PinBarCompletionLine, completionPrice,
+                                       direction, projectionActive, false);
+            UpdatePinBarProjectionLine(ref m_PinBarEntryLine, entryPrice,
+                                       direction, projectionActive, true);
+            UpdatePinBarProjectionLabel(completionPrice, direction,
+                                        projectionActive, bodyTicks);
 
-            // Keep the projected entry price available for visual priority
-            // even before the pin tail is reached.  Order staging still uses
+            // Keep the projected entry price available for setup arbitration
+            // even before the pin tail is reached. Order staging still uses
             // m_PinEntryCandidateValid below, so this does not arm early.
             m_PinEntryCandidateDirection = direction;
-            m_PinEntryCandidatePrice = direction > 0
-                ? RoundToTick(projectedHigh + (EntryOffsetTicks * tickSize), tickSize)
-                : RoundToTick(projectedLow - (EntryOffsetTicks * tickSize), tickSize);
+            m_PinEntryCandidatePrice = entryPrice;
 
             // A pin becomes an actionable entry candidate only after its tail
             // is reached. Until then it cannot displace an EMA order.
-            if (m_PinProjectionTailReached) {
+            if (m_PinProjectionTailReached && pinSetupEligible) {
                 m_PinEntryCandidateValid = true;
                 m_PinEntryCandidateDirection = direction;
-                m_PinEntryCandidatePrice = direction > 0
-                    ? RoundToTick(projectedHigh + (EntryOffsetTicks * tickSize), tickSize)
-                    : RoundToTick(projectedLow - (EntryOffsetTicks * tickSize), tickSize);
+                m_PinEntryCandidatePrice = entryPrice;
             } else {
                 ClearPinBarEntryIfActive();
             }
@@ -1205,27 +1204,6 @@ namespace PowerLanguage.Strategy
                 m_EmaBounceOrderBar = Bars.CurrentBar;
         }
 
-        private void ApplyProjectionDisplayPriority() {
-            bool pinProjectionAvailable = m_PinEntryCandidateDirection != 0 &&
-                                           m_PinEntryCandidatePrice > 0 &&
-                                           !m_PinProjectionBroken;
-            bool emaProjectionAvailable = m_EmaEntryCandidateDirection != 0 &&
-                                           m_EmaEntryCandidatePrice > 0;
-
-            if (pinProjectionAvailable && emaProjectionAvailable) {
-                double pinDistance = Math.Abs(m_PinEntryCandidatePrice - Bars.Close[0]);
-                double emaDistance = Math.Abs(m_EmaEntryCandidatePrice - Bars.Close[0]);
-                if (emaDistance <= pinDistance)
-                    ClearPinBarProjectionLines();
-                else
-                    ClearEmaBounceProjectionLines();
-            } else if (emaProjectionAvailable) {
-                ClearPinBarProjectionLines();
-            } else if (pinProjectionAvailable) {
-                ClearEmaBounceProjectionLines();
-            }
-        }
-
         private bool TryGetEmaBounceProjectionPrices(int direction, double tickSize,
                                                       out double projectedLow,
                                                       out double projectedHigh) {
@@ -1478,42 +1456,48 @@ namespace PowerLanguage.Strategy
 
         private void UpdatePinBarProjectionLine(ref ITrendLineObject line,
                                                 double price, int direction,
-                                                bool active) {
+                                                bool active, bool isEntryLine) {
             ChartPoint begin = new ChartPoint(Bars.Time[0], price);
             ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
             if (line == null) {
                 line = DrwTrendLine.Create(begin, end);
-                line.ExtRight = false;
             } else {
                 line.Begin = begin;
                 line.End = end;
             }
+            // Range bars do not have predictable future timestamps. Extending
+            // right guarantees both horizontal pin projections remain visible
+            // when the future endpoint maps to the current bar on the chart.
+            line.ExtRight = true;
             line.Color = active
-                ? (direction > 0 ? Color.DodgerBlue : Color.OrangeRed)
-                : Color.Gray;
+                ? (direction > 0
+                    ? (isEntryLine ? Color.RoyalBlue : Color.DodgerBlue)
+                    : (isEntryLine ? Color.Red : Color.OrangeRed))
+                : (isEntryLine ? Color.DarkGray : Color.Gray);
             line.Style = ETLStyle.ToolDashed;
-            line.Size = 2;
+            line.Size = isEntryLine ? 2 : 1;
         }
 
         private void ClearPinBarProjectionLines() {
-            if (m_PinBarLowerLine != null) { m_PinBarLowerLine.Delete(); m_PinBarLowerLine = null; }
-            if (m_PinBarUpperLine != null) { m_PinBarUpperLine.Delete(); m_PinBarUpperLine = null; }
+            if (m_PinBarCompletionLine != null) { m_PinBarCompletionLine.Delete(); m_PinBarCompletionLine = null; }
+            if (m_PinBarEntryLine != null) { m_PinBarEntryLine.Delete(); m_PinBarEntryLine = null; }
             if (m_PinBarLabel != null) { m_PinBarLabel.Delete(); m_PinBarLabel = null; }
         }
 
         private void UpdatePinBarProjectionLabel(double price, int direction,
-                                                 bool active) {
+                                                 bool active, int bodyTicks) {
             // Keep the label inside the visible pane by extending its text left
             // from the current bar rather than placing it at a future time.
             ChartPoint point = new ChartPoint(Bars.Time[0], price);
+            string text = "Pin bar " + bodyTicks;
             if (m_PinBarLabel == null) {
-                m_PinBarLabel = DrwText.Create(point, "pinbar");
+                m_PinBarLabel = DrwText.Create(point, text);
                 m_PinBarLabel.Size = 10;
                 m_PinBarLabel.HStyle = ETextStyleH.Right;
                 m_PinBarLabel.VStyle = ETextStyleV.Above;
             }
             m_PinBarLabel.Location = point;
-            m_PinBarLabel.Text = "pinbar";
+            m_PinBarLabel.Text = text;
             m_PinBarLabel.Color = active
                 ? (direction > 0 ? Color.DodgerBlue : Color.OrangeRed)
                 : Color.Gray;
@@ -1772,6 +1756,13 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdateProjectedEntryLine() {
+            // Pin bars own a dedicated completion line and one-tick entry line.
+            // Do not cover the dedicated entry projection with the generic
+            // pending-entry drawing when the native stop order is staged.
+            if (m_ActiveEntrySetup == EEntrySetup.PinBar) {
+                ClearProjectedEntryLine();
+                return;
+            }
             if (m_StopPrice <= 0 || (!m_BuyOrderActive && !m_SellOrderActive)) return;
             ChartPoint begin = new ChartPoint(Bars.Time[0], m_StopPrice);
             ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), m_StopPrice);
