@@ -36,6 +36,9 @@ namespace PowerLanguage.Strategy
         [Input] public bool AutoProtectiveStopOn1BarProfit { get; set; }
         [Input] public bool EnablePinBarTrading { get; set; }
         [Input] public bool Enable24EMABounceTrading { get; set; }
+        // Set true on the ask chart and false on the bid chart. Entry routing
+        // is restricted to the corresponding buy-only or sell-only direction.
+        [Input] public bool IsAskChart { get; set; }
 
         // Fixed internal behavior; these are intentionally not exposed in the
         // Strategy Properties dialog.
@@ -93,6 +96,8 @@ namespace PowerLanguage.Strategy
         private bool m_PinEntryCandidateValid = false;
         private int m_PinEntryCandidateDirection = 0;
         private double m_PinEntryCandidatePrice = 0;
+        private int m_PinEntryCandidateBodyTicks = 0;
+        private int m_StagedPinBodyTicks = 0;
         private bool m_EmaEntryCandidateValid = false;
         private int m_EmaEntryCandidateDirection = 0;
         private double m_EmaEntryCandidatePrice = 0;
@@ -152,6 +157,7 @@ namespace PowerLanguage.Strategy
             AutoProtectiveStopOn1BarProfit = true;
             EnablePinBarTrading = true;
             Enable24EMABounceTrading = true;
+            IsAskChart = true;
         }
 
         protected override void Create()
@@ -212,6 +218,15 @@ namespace PowerLanguage.Strategy
                 ClearEmergencyIndicator();
 
             int currentPosition = StrategyInfo.MarketPosition;
+
+            // A chart-role change must also cancel an already-staged entry
+            // that is no longer permitted before it can be transmitted.
+            if (currentPosition == 0 &&
+                ((m_BuyOrderActive && !IsEntryDirectionAllowed(1)) ||
+                 (m_SellOrderActive && !IsEntryDirectionAllowed(-1)))) {
+                CancelWorkingEntryOrders();
+                ClearPendingEntry();
+            }
 
             if (!EnablePinBarTrading) {
                 m_PinProjectionBar = -1;
@@ -309,6 +324,7 @@ namespace PowerLanguage.Strategy
                 double stopDist = ProtectiveStopLossTicks * tickSize;
                 double targetDist = ProfitTargetTicks * tickSize;
                 EEntrySetup filledEntrySetup = m_ActiveEntrySetup;
+                int filledPinBodyTicks = m_StagedPinBodyTicks;
                 m_ClosedEquityAtEntry = StrategyInfo.ClosedEquity;
 
                 if (currentPosition > 0) {
@@ -328,25 +344,33 @@ namespace PowerLanguage.Strategy
                 if (m_GoSignalMarker != null) m_GoSignalMarker.Delete();
                 ClearProjectedEntryLine(); UpdateTargetLine(); UpdateStopLine();
                 DrawFilledEntryMarkers(currentPosition, entryPrice, tickSize,
-                                       filledEntrySetup);
+                                       filledEntrySetup, filledPinBodyTicks);
+                m_StagedPinBodyTicks = 0;
             }
 
             UpdateAutoProtectiveStopOnOneBarProfit(currentPosition, tickSize);
 
             if (currentPosition == 0) {
                 int currentQty = OrderQuantity;
-                if (m_BuyOrderActive && m_StopPrice > 0) {
+                if (m_BuyOrderActive && m_StopPrice > 0 &&
+                    IsEntryDirectionAllowed(1)) {
                     // Re-send on every IOG calculation so the native order remains
                     // active between ticks. A pin uses its completed-bar price;
                     // an EMA bounce updates its stop from the live projection.
                     if (Bars.LastBarOnChart) { m_BuyStop.Send(m_StopPrice, currentQty); m_LastSentPrice = m_StopPrice; }
                     UpdateProjectedEntryLine();
-                } else if (m_SellOrderActive && m_StopPrice > 0) {
+                } else if (m_SellOrderActive && m_StopPrice > 0 &&
+                           IsEntryDirectionAllowed(-1)) {
                     // Re-send on every IOG calculation so the native order remains
                     // active between ticks. A pin uses its completed-bar price;
                     // an EMA bounce updates its stop from the live projection.
                     if (Bars.LastBarOnChart) { m_SellStop.Send(m_StopPrice, currentQty); m_LastSentPrice = m_StopPrice; }
                     UpdateProjectedEntryLine();
+                } else if (m_BuyOrderActive || m_SellOrderActive) {
+                    // Final transmission guard: no future entry path can send
+                    // a stop on the chart's prohibited side.
+                    CancelWorkingEntryOrders();
+                    ClearPendingEntry();
                 } else {
                     ClearProjectedEntryLine();
                 }
@@ -464,6 +488,16 @@ namespace PowerLanguage.Strategy
         protected override void OnMouseEvent(MouseClickArgs arg) {
             MarkChartActive();
 
+            // Escape plus left-click is an alternate emergency control for
+            // chart configurations that consume the middle-wheel click.
+            if (arg.buttons == MouseButtons.Left &&
+                IsEscapeHeld(arg.keys)) {
+                m_HudDisplayEnabled = true;
+                ActivateEmergencyFlatten(true);
+                if (ShowHUD) UpdateHUD();
+                return;
+            }
+
             // Some MultiCharts chart configurations omit F12 from arg.keys,
             // so also check its physical Windows key state.
             if (arg.buttons == MouseButtons.Left &&
@@ -564,6 +598,11 @@ namespace PowerLanguage.Strategy
             // falling 24 EMA is bearish. The direction remains latched until
             // the trader disarms with Ctrl-click.
             m_ArmedDirection = m_SlowEMA[0] >= m_SlowEMA[1] ? 1 : -1;
+            if (!IsEntryDirectionAllowed(m_ArmedDirection)) {
+                m_AutoEntryArmed = false;
+                m_ArmedDirection = 0;
+                return;
+            }
             m_PinProjectionBar = Bars.CurrentBar;
             m_PinProjectionDirection = m_ArmedDirection;
             m_PinProjectionTailReached = false;
@@ -874,6 +913,14 @@ namespace PowerLanguage.Strategy
                 return;
             }
 
+            // Each chart is a one-sided workspace: ask charts display only
+            // buy setups and bid charts display only sell setups.
+            if (!IsEntryDirectionAllowed(direction)) {
+                ClearPinBarProjectionLines();
+                ClearPinBarEntryIfActive();
+                return;
+            }
+
             // A pin-bar projection is only meaningful when the fast EMA is
             // visibly separated from the 24 EMA and is sloping in the trade
             // direction.  Treat this as a visualization and order-eligibility
@@ -950,6 +997,7 @@ namespace PowerLanguage.Strategy
             // m_PinEntryCandidateValid below, so this does not arm early.
             m_PinEntryCandidateDirection = direction;
             m_PinEntryCandidatePrice = entryPrice;
+            m_PinEntryCandidateBodyTicks = bodyTicks;
 
             // A pin becomes an actionable entry candidate only after its tail
             // is reached. Until then it cannot displace an EMA order.
@@ -957,6 +1005,7 @@ namespace PowerLanguage.Strategy
                 m_PinEntryCandidateValid = true;
                 m_PinEntryCandidateDirection = direction;
                 m_PinEntryCandidatePrice = entryPrice;
+                m_PinEntryCandidateBodyTicks = bodyTicks;
             } else {
                 ClearPinBarEntryIfActive();
             }
@@ -1053,10 +1102,14 @@ namespace PowerLanguage.Strategy
                    Bars.High[0] <= projectedHigh + tolerance;
         }
 
+        private bool IsEntryDirectionAllowed(int direction) {
+            return direction > 0 ? IsAskChart : direction < 0 && !IsAskChart;
+        }
+
         private void ArmOrUpdateProjectedPinBarEntry(int direction, double projectedLow,
                                                      double projectedHigh, double tickSize) {
             if (!m_AutoEntryArmed || StrategyInfo.MarketPosition != 0 ||
-                direction == 0) return;
+                direction == 0 || !IsEntryDirectionAllowed(direction)) return;
 
             // EMA Bounce owns the single entry order whenever both setups are
             // available. A pin can only create or update its own pending order.
@@ -1065,6 +1118,8 @@ namespace PowerLanguage.Strategy
 
             m_ActiveEntrySetup = EEntrySetup.PinBar;
             m_PinBarOrderBar = Bars.CurrentBar;
+            m_StagedPinBodyTicks = Math.Max(0,
+                                             PinBarRangeTicks - m_PinProjectionTailTicks);
             m_BuyOrderActive = direction > 0;
             m_SellOrderActive = direction < 0;
             m_StopPrice = direction > 0
@@ -1101,6 +1156,11 @@ namespace PowerLanguage.Strategy
                 return;
             }
             m_EmaBounceProjectionDirection = qualifyingDirection;
+            if (!IsEntryDirectionAllowed(qualifyingDirection)) {
+                ClearEmaBounceProjectionLines();
+                ClearEmaBounceEntryIfActive();
+                return;
+            }
 
             double projectedLow;
             double projectedHigh;
@@ -1176,6 +1236,7 @@ namespace PowerLanguage.Strategy
             m_PinEntryCandidateValid = false;
             m_PinEntryCandidateDirection = 0;
             m_PinEntryCandidatePrice = 0;
+            m_PinEntryCandidateBodyTicks = 0;
             m_EmaEntryCandidateValid = false;
             m_EmaEntryCandidateDirection = 0;
             m_EmaEntryCandidatePrice = 0;
@@ -1222,6 +1283,15 @@ namespace PowerLanguage.Strategy
                 return;
             }
 
+            if (!IsEntryDirectionAllowed(selectedDirection)) {
+                if (m_ActiveEntrySetup == EEntrySetup.PinBar ||
+                    m_ActiveEntrySetup == EEntrySetup.Ema24Bounce) {
+                    CancelWorkingEntryOrders();
+                    ClearPendingEntry();
+                }
+                return;
+            }
+
             bool setupChanged = m_ActiveEntrySetup != EEntrySetup.None &&
                                 m_ActiveEntrySetup != selectedSetup;
             bool directionChanged = (m_BuyOrderActive && selectedDirection < 0) ||
@@ -1237,9 +1307,14 @@ namespace PowerLanguage.Strategy
             m_StopPrice = selectedPrice;
             m_LastSentPrice = 0;
             if (selectedSetup == EEntrySetup.PinBar)
+            {
                 m_PinBarOrderBar = Bars.CurrentBar;
-            else
+                m_StagedPinBodyTicks = m_PinEntryCandidateBodyTicks;
+            }
+            else {
                 m_EmaBounceOrderBar = Bars.CurrentBar;
+                m_StagedPinBodyTicks = 0;
+            }
         }
 
         private bool TryGetEmaBounceProjectionPrices(int direction, double tickSize,
@@ -1288,7 +1363,7 @@ namespace PowerLanguage.Strategy
                                                         double projectedHigh,
                                                         double tickSize) {
             if (!m_AutoEntryArmed || StrategyInfo.MarketPosition != 0 ||
-                direction == 0) return;
+                direction == 0 || !IsEntryDirectionAllowed(direction)) return;
 
             // The strategy owns one pending entry at a time. An EMA bounce has
             // priority, so it replaces a still-working pin-bar entry; a current
@@ -1387,6 +1462,8 @@ namespace PowerLanguage.Strategy
         }
 
         private void ClearPendingEntry() {
+            if (m_ActiveEntrySetup == EEntrySetup.PinBar)
+                m_StagedPinBodyTicks = 0;
             m_BuyOrderActive = m_SellOrderActive = false;
             m_ActiveEntrySetup = EEntrySetup.None;
             m_StopPrice = m_LastSentPrice = 0;
@@ -1395,6 +1472,12 @@ namespace PowerLanguage.Strategy
 
         private void StartShiftProjectionEntry(double tickSize) {
             if (StrategyInfo.MarketPosition != 0) return;
+
+            int direction = m_FastEMA[0] > m_SlowEMA[0] ? 1 :
+                            m_FastEMA[0] < m_SlowEMA[0] ? -1 : 0;
+            // Reject a wrong-side manual request before it can cancel an
+            // already-working permitted entry.
+            if (direction != 0 && !IsEntryDirectionAllowed(direction)) return;
 
             // Shift replaces a pending entry with a single manually requested
             // projection. It does not arm the automatic pin/EMA setups.
@@ -1425,6 +1508,10 @@ namespace PowerLanguage.Strategy
                     CancelWorkingEntryOrders();
                     ClearPendingEntry();
                 }
+                return;
+            }
+            if (!IsEntryDirectionAllowed(direction)) {
+                ClearShiftProjectionEntry();
                 return;
             }
 
@@ -1587,6 +1674,15 @@ namespace PowerLanguage.Strategy
             }
         }
 
+        private bool IsEscapeHeld(Keys eventKeys) {
+            if ((eventKeys & Keys.KeyCode) == Keys.Escape) return true;
+            try {
+                return (GetAsyncKeyState((int)Keys.Escape) & 0x8000) != 0;
+            } catch {
+                return false;
+            }
+        }
+
         private bool IsF11Held(Keys eventKeys) {
             if ((eventKeys & Keys.KeyCode) == Keys.F11) return true;
             try {
@@ -1680,15 +1776,13 @@ namespace PowerLanguage.Strategy
         }
 
         private void DrawFilledEntryMarkers(int currentPosition, double entryPrice,
-                                            double tickSize, EEntrySetup entrySetup) {
-            // MultiCharts confirms the fill on the calculation following the
-            // actual fill bar.  Use that completed bar for both markers rather
-            // than Bars[0], which may already be a new forming range bar.
-            // EMA-bounce fills are marked on the live bounce bar. Other entry
-            // types retain the prior completed-bar placement used historically.
-            int barsBack = entrySetup == EEntrySetup.Ema24Bounce
-                ? 0
-                : (Bars.CurrentBar > 1 ? 1 : 0);
+                                            double tickSize, EEntrySetup entrySetup,
+                                            int pinBodyTicks) {
+            // With intrabar order generation, the position transition is
+            // observed on the fill calculation of the live range bar. Anchor
+            // every marker to that bar, rather than placing pin and manual
+            // entries one completed bar early.
+            const int barsBack = 0;
 
             // Leave one tick of white space beyond the tail.  This keeps the
             // arrow close to, but never inside, the entry candle.
@@ -1705,15 +1799,21 @@ namespace PowerLanguage.Strategy
             m_TradeEntryMarkers.Add(directionMarker);
             m_ActiveTradeEntryArrow = directionMarker;
 
-            string entryType = entrySetup == EEntrySetup.PinBar ? "P" :
+            string entryType = entrySetup == EEntrySetup.PinBar
+                ? "P" + Math.Max(0, pinBodyTicks)
+                :
                                entrySetup == EEntrySetup.Ema24Bounce ? "B" :
                                entrySetup == EEntrySetup.ShiftProjection ? "M" :
                                "?";
-            // Keep the type marker outside the tail: below a long tail and
-            // above a short tail, with two ticks of separation from the arrow.
-            double entryTypePrice = currentPosition > 0
-                ? directionPrice - (2 * tickSize)
-                : directionPrice + (2 * tickSize);
+            // Pin annotations are two ticks outside the tail itself. Other
+            // entry types retain their existing two-tick spacing from arrow.
+            double entryTypePrice = entrySetup == EEntrySetup.PinBar
+                ? (currentPosition > 0
+                    ? Bars.Low[barsBack] - (2 * tickSize)
+                    : Bars.High[barsBack] + (2 * tickSize))
+                : (currentPosition > 0
+                    ? directionPrice - (2 * tickSize)
+                    : directionPrice + (2 * tickSize));
             ITextObject entryTypeMarker = DrwText.Create(
                 new ChartPoint(Bars.Time[barsBack], entryTypePrice), entryType);
             entryTypeMarker.Color = Color.Black;
@@ -1725,8 +1825,7 @@ namespace PowerLanguage.Strategy
             m_TradeEntryMarkers.Add(entryTypeMarker);
 
             // A plain ASCII chevron is used here because it renders reliably
-            // in MultiCharts chart fonts. The prior bar's time places it just
-            // to the left of the fill bar at the actual average execution price.
+            // in MultiCharts chart fonts at the actual average execution price.
             ITextObject fillMarker = DrwText.Create(
                 new ChartPoint(Bars.Time[barsBack], entryPrice), ">");
             fillMarker.Color = Color.Black;
@@ -1974,7 +2073,9 @@ namespace PowerLanguage.Strategy
                         : (m_AutoEntryArmed ? "ARMED | PIN ENTRY SELL" : "PIN ENTRY SELL");
             if (StrategyInfo.MarketPosition != 0) status = "IN TRADE";
             if (m_KillModeActive) status = m_FlattenRequested ? "FLATTENING" : "UNARMED";
-            string text = string.Format("{0} | Session PnL: {1:C2}", status, pnl);
+            string chartRole = IsAskChart ? "ASK / BUY ONLY" : "BID / SELL ONLY";
+            string text = string.Format("{0} | {1} | Session PnL: {2:C2}",
+                                        status, chartRole, pnl);
             // Keep the session line immediately below the broker line as one
             // compact, unobtrusive status block.
             ChartPoint hudPoint = GetStatusLabelPoint(tickSize, 4);
@@ -2069,6 +2170,10 @@ namespace PowerLanguage.Strategy
             if (m_BrokerStatusLabel == null) {
                 m_BrokerStatusLabel = DrwText.Create(point, text);
             }
+            // MultiCharts can temporarily decline to create a drawing while a
+            // chart is loading or redrawing. Skip this HUD refresh and retry
+            // on the next calculation rather than dereferencing a null object.
+            if (m_BrokerStatusLabel == null) return;
             // Match the HUD so the two lines read as a single status block.
             m_BrokerStatusLabel.Size = 11;
             m_BrokerStatusLabel.HStyle = ETextStyleH.Right;
@@ -2079,7 +2184,7 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdateControlsHintLabel(double tickSize) {
-            const string controlText = "L-click stop marker: Break-even\nShift+click:\nCtrl+click:\nF11+click:\nF12+click:";
+            const string controlText = "L-click stop marker: Break-even\nShift+click:\nCtrl+click:\nF11+click:\nEsc+click:";
             // MultiCharts trims ordinary leading spaces. Non-breaking spaces
             // preserve the action-column offset and keep every action aligned.
             const string actionPadding =
