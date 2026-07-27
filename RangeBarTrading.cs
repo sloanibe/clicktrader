@@ -1910,7 +1910,8 @@ namespace PowerLanguage.Strategy
             // at the shared chart point; Left aligns the right edges instead.
             m_HUDLabel.HStyle = ETextStyleH.Right;
             m_HUDLabel.VStyle = ETextStyleV.Above;
-            m_HUDLabel.Text = text; m_HUDLabel.Color = Color.Black;
+            m_HUDLabel.Text = text;
+            m_HUDLabel.Color = m_AutoEntryArmed ? Color.Green : Color.Black;
             m_HUDLabel.Location = hudPoint;
             UpdateBrokerStatusLabel(tickSize);
             UpdateControlsHintLabel(tickSize);
