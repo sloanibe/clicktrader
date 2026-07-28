@@ -63,8 +63,12 @@ namespace PowerLanguage.Strategy
 
         private IOrderPriced m_BuyStop;
         private IOrderPriced m_SellStop;
+        private IOrderMarket m_BuyEntryThisBar;
+        private IOrderMarket m_SellEntryThisBar;
         private IOrderPriced m_BuyExitStop;
         private IOrderPriced m_SellExitStop;
+        private IOrderPriced m_ColorTrailLongStop;
+        private IOrderPriced m_ColorTrailShortStop;
         private IOrderPriced m_BuyExitLimit;
         private IOrderPriced m_SellExitLimit;
         private IOrderMarket m_CloseLongNextBar;
@@ -85,7 +89,9 @@ namespace PowerLanguage.Strategy
         private double m_ClosedEquityAtEntry = 0;
         private bool m_RecoveryModeActive = false;
         private bool m_ColorCloseExitRequested = false;
+        private bool m_OppositeColorProfitArmed = false;
         private double m_RecoverySessionPnlAtEntry = 0;
+        private double m_OppositeColorStopPrice = 0;
         private bool m_HasFlatSessionPnlSnapshot = false;
         private double m_FlatSessionPnlSnapshot = 0;
         
@@ -130,6 +136,7 @@ namespace PowerLanguage.Strategy
         private DateTime m_EmergencyMessageExpiresAt = DateTime.MinValue;
         private readonly List<int> m_EmergencyCancelOrderIds = new List<int>();
         private bool m_EmergencyCancellationPending = false;
+        private int m_EntryMarketOrderBar = -1;
         private string m_StrategyBrokerProfile = string.Empty;
         private string m_StrategyBrokerAccount = string.Empty;
         private string m_StrategyBrokerSymbol = string.Empty;
@@ -176,16 +183,20 @@ namespace PowerLanguage.Strategy
             m_FastEMA = new XAverage(this); m_SlowEMA = new XAverage(this); m_MasterEMA = new XAverage(this);
             m_BuyStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "RangeBuy", EOrderAction.Buy));
             m_SellStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "RangeSell", EOrderAction.SellShort));
+            m_BuyEntryThisBar = OrderCreator.MarketThisBar(new SOrderParameters(Contracts.Default, "RangeBuyClose", EOrderAction.Buy));
+            m_SellEntryThisBar = OrderCreator.MarketThisBar(new SOrderParameters(Contracts.Default, "RangeSellClose", EOrderAction.SellShort));
             // Match the proven RenkoTailTrading exit-order construction. These
             // actions are only emitted while the matching position is active.
             m_BuyExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectLong", EOrderAction.Sell));
             m_SellExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectShort", EOrderAction.BuyToCover));
+            m_ColorTrailLongStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ColorTrailLong", EOrderAction.Sell));
+            m_ColorTrailShortStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ColorTrailShort", EOrderAction.BuyToCover));
             m_BuyExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitLong", EOrderAction.Sell));
             m_SellExitLimit = OrderCreator.Limit(new SOrderParameters(Contracts.Default, "ProfitShort", EOrderAction.BuyToCover));
             m_CloseLongNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergLong", EOrderAction.Sell));
             m_CloseShortNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "EmergShort", EOrderAction.BuyToCover));
-            m_ColorCloseLongNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "ColorCloseLong", EOrderAction.Sell));
-            m_ColorCloseShortNextBar = OrderCreator.MarketNextBar(new SOrderParameters(Contracts.Default, "ColorCloseShort", EOrderAction.BuyToCover));
+            m_ColorCloseLongNextBar = OrderCreator.MarketThisBar(new SOrderParameters(Contracts.Default, "ColorCloseLong", EOrderAction.Sell));
+            m_ColorCloseShortNextBar = OrderCreator.MarketThisBar(new SOrderParameters(Contracts.Default, "ColorCloseShort", EOrderAction.BuyToCover));
         }
 
         protected override void StartCalc()
@@ -220,6 +231,9 @@ namespace PowerLanguage.Strategy
         {
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize <= 0) tickSize = 0.25;
+
+            if (m_EntryMarketOrderBar != Bars.CurrentBar)
+                m_EntryMarketOrderBar = -1;
 
             if (Bars.Status == EBarState.Close || m_AutoRangeTicks <= 0) m_AutoRangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
             // Do not create drawings or query the broker during historical
@@ -355,6 +369,7 @@ namespace PowerLanguage.Strategy
                 m_ClosedEquityAtEntry = StrategyInfo.ClosedEquity;
                 m_RecoverySessionPnlAtEntry = sessionPnlAtEntry;
                 m_RecoveryModeActive = sessionPnlAtEntry < 0;
+                m_OppositeColorStopPrice = 0;
                 ClearRecoveryColorStopProjection();
 
                 if (currentPosition > 0) {
@@ -372,6 +387,7 @@ namespace PowerLanguage.Strategy
                 m_AutoEntryArmed = false;
                 m_ArmedDirection = 0;
                 m_ColorCloseExitRequested = false;
+                m_OppositeColorProfitArmed = false;
                 m_ActiveEntrySetup = EEntrySetup.None;
                 m_EmaBounceOrderBar = -1;
                 m_PinBarOrderBar = -1;
@@ -387,20 +403,31 @@ namespace PowerLanguage.Strategy
             UpdateOppositeColorExitManagement(currentPosition, tickSize);
 
             if (currentPosition == 0) {
-                int currentQty = OrderQuantity;
                 if (m_BuyOrderActive && m_StopPrice > 0 &&
                     IsEntryDirectionAllowed(1)) {
-                    // Re-send on every IOG calculation so the native order remains
-                    // active between ticks. A pin uses its completed-bar price;
-                    // an EMA bounce updates its stop from the live projection.
-                    if (Bars.LastBarOnChart) { m_BuyStop.Send(m_StopPrice, currentQty); m_LastSentPrice = m_StopPrice; }
+                    if (Bars.Status == EBarState.Close &&
+                        m_EntryMarketOrderBar != Bars.CurrentBar &&
+                        HasReachedEntryCompletion(1, tickSize)) {
+                        CancelWorkingEntryOrders();
+                        m_BuyEntryThisBar.Send();
+                        m_EntryMarketOrderBar = Bars.CurrentBar;
+                        m_BuyOrderActive = m_SellOrderActive = false;
+                        m_ActiveEntrySetup = EEntrySetup.None;
+                        m_StopPrice = m_LastSentPrice = 0;
+                    }
                     UpdateProjectedEntryLine();
                 } else if (m_SellOrderActive && m_StopPrice > 0 &&
                            IsEntryDirectionAllowed(-1)) {
-                    // Re-send on every IOG calculation so the native order remains
-                    // active between ticks. A pin uses its completed-bar price;
-                    // an EMA bounce updates its stop from the live projection.
-                    if (Bars.LastBarOnChart) { m_SellStop.Send(m_StopPrice, currentQty); m_LastSentPrice = m_StopPrice; }
+                    if (Bars.Status == EBarState.Close &&
+                        m_EntryMarketOrderBar != Bars.CurrentBar &&
+                        HasReachedEntryCompletion(-1, tickSize)) {
+                        CancelWorkingEntryOrders();
+                        m_SellEntryThisBar.Send();
+                        m_EntryMarketOrderBar = Bars.CurrentBar;
+                        m_BuyOrderActive = m_SellOrderActive = false;
+                        m_ActiveEntrySetup = EEntrySetup.None;
+                        m_StopPrice = m_LastSentPrice = 0;
+                    }
                     UpdateProjectedEntryLine();
                 } else if (m_BuyOrderActive || m_SellOrderActive) {
                     // Final transmission guard: no future entry path can send
@@ -441,7 +468,9 @@ namespace PowerLanguage.Strategy
                 m_LastSentPrice = 0; 
                 m_RecoveryModeActive = false;
                 m_ColorCloseExitRequested = false;
+                m_OppositeColorProfitArmed = false;
                 m_RecoverySessionPnlAtEntry = 0;
+                m_OppositeColorStopPrice = 0;
                 ClearTradingDrawings(); 
             }
             m_LastMarketPosition = currentPosition;
@@ -857,7 +886,9 @@ namespace PowerLanguage.Strategy
         private bool IsThisStrategyOrder(string strategyName, string orderName) {
             if (!string.Equals(strategyName, GetType().Name, StringComparison.OrdinalIgnoreCase)) return false;
             return orderName == "RangeBuy" || orderName == "RangeSell" ||
+                   orderName == "RangeBuyClose" || orderName == "RangeSellClose" ||
                    orderName == "ProtectLong" || orderName == "ProtectShort" ||
+                   orderName == "ColorTrailLong" || orderName == "ColorTrailShort" ||
                    orderName == "ProfitLong" || orderName == "ProfitShort" ||
                    orderName == "ColorCloseLong" ||
                    orderName == "ColorCloseShort";
@@ -1491,6 +1522,13 @@ namespace PowerLanguage.Strategy
             ClearProjectedEntryLine();
         }
 
+        private bool HasReachedEntryCompletion(int direction, double tickSize) {
+            double tolerance = tickSize * 0.1;
+            return direction > 0
+                ? Bars.High[0] >= m_StopPrice - tolerance
+                : Bars.Low[0] <= m_StopPrice + tolerance;
+        }
+
         private void StartShiftProjectionEntry(double tickSize) {
             if (StrategyInfo.MarketPosition != 0) return;
 
@@ -1590,7 +1628,8 @@ namespace PowerLanguage.Strategy
 
                 foreach (var order in orders) {
                     if (!IsThisStrategyOrder(order.StrategyName, order.Name) ||
-                        (order.Name != "RangeBuy" && order.Name != "RangeSell") ||
+                        (order.Name != "RangeBuy" && order.Name != "RangeSell" &&
+                         order.Name != "RangeBuyClose" && order.Name != "RangeSellClose") ||
                         !IsWorkingOrder((int)order.State)) continue;
 
                     foreach (var tradingProfile in tradeManager.TradingProfiles) {
@@ -1771,36 +1810,47 @@ namespace PowerLanguage.Strategy
             bool colorCloseExitActive = m_RecoveryModeActive ||
                                         UseOppositeColorExitForProfits;
             if (!colorCloseExitActive || currentPosition == 0) {
+                m_OppositeColorStopPrice = 0;
                 ClearRecoveryColorStopProjection();
                 return;
             }
 
-            // Keep projecting the first price at which the chart itself will
-            // visibly change color, but do not place a broker stop there.
-            double colorTurnPrice = currentPosition > 0
-                ? RoundToTick(Bars.Open[0] - tickSize, tickSize)
-                : RoundToTick(Bars.Open[0] + tickSize, tickSize);
-            UpdateRecoveryColorStopProjection(colorTurnPrice, currentPosition);
-
-            // A temporary intrabar color change is not an exit. Wait for the
-            // range candle to complete, then act only if its final color is
-            // opposite the open position.
-            if (Bars.Status != EBarState.Close) return;
-
-            double tolerance = tickSize * 0.1;
-            bool barClosedAgainstTrade = currentPosition > 0
-                ? Bars.Close[0] <= colorTurnPrice + tolerance
-                : Bars.Close[0] >= colorTurnPrice - tolerance;
             double entryPrice = StrategyInfo.AvgEntryPrice != 0
                 ? StrategyInfo.AvgEntryPrice
                 : Bars.Close[0];
-            double tradeProfit = currentPosition > 0
-                ? Bars.Close[0] - entryPrice
-                : entryPrice - Bars.Close[0];
-            bool minimumProfitReached = tradeProfit >=
-                (OppositeColorExitMinimumProfitTicks * tickSize) - tolerance;
-            if (barClosedAgainstTrade && minimumProfitReached)
-                m_ColorCloseExitRequested = true;
+            double favorableExtremeProfit = currentPosition > 0
+                ? Bars.High[0] - entryPrice
+                : entryPrice - Bars.Low[0];
+            double tolerance = tickSize * 0.1;
+            if (!m_OppositeColorProfitArmed &&
+                favorableExtremeProfit >=
+                (OppositeColorExitMinimumProfitTicks * tickSize) - tolerance) {
+                m_OppositeColorProfitArmed = true;
+            }
+            if (!m_OppositeColorProfitArmed) {
+                m_OppositeColorStopPrice = 0;
+                ClearRecoveryColorStopProjection();
+                return;
+            }
+
+            // Project the price where the forming range bar could complete
+            // after reversing into the opposite direction. This price is
+            // also submitted as the native trailing stop below.
+            double range = GetActiveRangeTicks(tickSize) * tickSize;
+            double projectedOppositeClose = currentPosition > 0
+                ? RoundToTick(Bars.High[0] - range, tickSize)
+                : RoundToTick(Bars.Low[0] + range, tickSize);
+            if (currentPosition > 0) {
+                if (m_OppositeColorStopPrice <= 0 ||
+                    projectedOppositeClose > m_OppositeColorStopPrice)
+                    m_OppositeColorStopPrice = projectedOppositeClose;
+            } else {
+                if (m_OppositeColorStopPrice <= 0 ||
+                    projectedOppositeClose < m_OppositeColorStopPrice)
+                    m_OppositeColorStopPrice = projectedOppositeClose;
+            }
+            UpdateRecoveryColorStopProjection(m_OppositeColorStopPrice,
+                                               currentPosition);
         }
 
         private void DrawFilledEntryMarkers(int currentPosition, double entryPrice,
@@ -1812,12 +1862,11 @@ namespace PowerLanguage.Strategy
             // entries one completed bar early.
             const int barsBack = 0;
 
-            // Leave one tick of white space beyond the tail.  This keeps the
-            // arrow close to, but never inside, the entry candle.
-            double tailOffset = tickSize;
-            double directionPrice = currentPosition > 0
-                ? Bars.Low[barsBack] - tailOffset
-                : Bars.High[barsBack] + tailOffset;
+            // Put the entry arrow at the actual fill price on the completing
+            // range bar. The old version offset short entries one tick above
+            // the bar high (and longs one tick below the low), which made the
+            // marker look like it belonged to the next price level.
+            double directionPrice = RoundToTick(entryPrice, tickSize);
             IArrowObject directionMarker = DrwArrow.Create(
                 new ChartPoint(Bars.Time[barsBack], directionPrice), currentPosition < 0);
             // The result is not known until the position closes.  It is then
@@ -1936,20 +1985,20 @@ namespace PowerLanguage.Strategy
                 m_RecoveryColorStopLine.Begin = begin;
                 m_RecoveryColorStopLine.End = end;
             }
-            m_RecoveryColorStopLine.Color = Color.DarkOrange;
+            m_RecoveryColorStopLine.Color = Color.DodgerBlue;
             m_RecoveryColorStopLine.Style = ETLStyle.ToolDashed;
             m_RecoveryColorStopLine.Size = 2;
 
             ChartPoint labelPoint = new ChartPoint(Bars.Time[0], price);
             if (m_RecoveryColorStopLabel == null) {
                 m_RecoveryColorStopLabel = DrwText.Create(
-                    labelPoint, "OPPOSITE CLOSE EXIT >= 5T");
+                    labelPoint, "PROJECTED OPPOSITE CLOSE >= 5T");
                 m_RecoveryColorStopLabel.Size = 9;
                 m_RecoveryColorStopLabel.HStyle = ETextStyleH.Right;
-                m_RecoveryColorStopLabel.Color = Color.DarkOrange;
+                m_RecoveryColorStopLabel.Color = Color.DodgerBlue;
             }
             m_RecoveryColorStopLabel.Location = labelPoint;
-            m_RecoveryColorStopLabel.Text = "OPPOSITE CLOSE EXIT >= 5T";
+            m_RecoveryColorStopLabel.Text = "PROJECTED OPPOSITE CLOSE >= 5T";
             m_RecoveryColorStopLabel.VStyle = currentPosition > 0
                 ? ETextStyleV.Above
                 : ETextStyleV.Below;
@@ -1967,21 +2016,16 @@ namespace PowerLanguage.Strategy
         }
 
         private void SubmitActiveExitOrders(int currentPosition) {
-            if (m_ColorCloseExitRequested) {
-                // Once the active chart has visibly changed against the
-                // position, stop renewing the limit/protective pair and
-                // issue the dedicated market exit on each IOG calculation
-                // until MultiCharts confirms the position is flat.
-                if (currentPosition > 0) m_ColorCloseLongNextBar.Send();
-                else if (currentPosition < 0) m_ColorCloseShortNextBar.Send();
-                return;
-            }
             if (currentPosition > 0) {
                 if (m_ProtectiveStopPrice > 0) m_BuyExitStop.Send(m_ProtectiveStopPrice);
                 if (m_ProfitTargetPrice > 0) m_BuyExitLimit.Send(m_ProfitTargetPrice);
+                if (m_OppositeColorProfitArmed && m_OppositeColorStopPrice > 0)
+                    m_ColorTrailLongStop.Send(m_OppositeColorStopPrice);
             } else if (currentPosition < 0) {
                 if (m_ProtectiveStopPrice > 0) m_SellExitStop.Send(m_ProtectiveStopPrice);
                 if (m_ProfitTargetPrice > 0) m_SellExitLimit.Send(m_ProfitTargetPrice);
+                if (m_OppositeColorProfitArmed && m_OppositeColorStopPrice > 0)
+                    m_ColorTrailShortStop.Send(m_OppositeColorStopPrice);
             }
         }
 
