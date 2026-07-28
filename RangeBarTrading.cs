@@ -51,6 +51,7 @@ namespace PowerLanguage.Strategy
         private const int ProximityTicks = 5;
         private const int RecoverySessionProfitGoalTicks = 5;
         private const int OppositeColorExitMinimumProfitTicks = 5;
+        private const int OneBarProfitTargetTicks = 5;
         private const bool ShowHUD = true;
         private const int PinBarRangeTicks = 5;
         private const int PinBarMinTailTicks = 2;
@@ -405,9 +406,16 @@ namespace PowerLanguage.Strategy
             if (currentPosition == 0) {
                 if (m_BuyOrderActive && m_StopPrice > 0 &&
                     IsEntryDirectionAllowed(1)) {
-                    if (Bars.Status == EBarState.Close &&
+                    if (!UseOppositeColorExitForProfits) {
+                        // Five-tick-profit mode keeps a visible native buy
+                        // stop at the projected completion price.
+                        if (Bars.LastBarOnChart) {
+                            m_BuyStop.Send(m_StopPrice, OrderQuantity);
+                            m_LastSentPrice = m_StopPrice;
+                        }
+                    } else if (Bars.Status == EBarState.Close &&
                         m_EntryMarketOrderBar != Bars.CurrentBar &&
-                        HasReachedEntryCompletion(1, tickSize)) {
+                        HasReachedEntryCompletion(tickSize)) {
                         CancelWorkingEntryOrders();
                         m_BuyEntryThisBar.Send();
                         m_EntryMarketOrderBar = Bars.CurrentBar;
@@ -418,9 +426,16 @@ namespace PowerLanguage.Strategy
                     UpdateProjectedEntryLine();
                 } else if (m_SellOrderActive && m_StopPrice > 0 &&
                            IsEntryDirectionAllowed(-1)) {
-                    if (Bars.Status == EBarState.Close &&
+                    if (!UseOppositeColorExitForProfits) {
+                        // Mirror the long path with a visible native sell
+                        // stop at the projected completion price.
+                        if (Bars.LastBarOnChart) {
+                            m_SellStop.Send(m_StopPrice, OrderQuantity);
+                            m_LastSentPrice = m_StopPrice;
+                        }
+                    } else if (Bars.Status == EBarState.Close &&
                         m_EntryMarketOrderBar != Bars.CurrentBar &&
-                        HasReachedEntryCompletion(-1, tickSize)) {
+                        HasReachedEntryCompletion(tickSize)) {
                         CancelWorkingEntryOrders();
                         m_SellEntryThisBar.Send();
                         m_EntryMarketOrderBar = Bars.CurrentBar;
@@ -552,8 +567,9 @@ namespace PowerLanguage.Strategy
             }
         }
 
-        protected override void OnMouseEvent(MouseClickArgs arg) {
+    protected override void OnMouseEvent(MouseClickArgs arg) {
             MarkChartActive();
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale; if (tickSize <= 0) tickSize = 0.25;
 
             // Escape plus left-click is an alternate emergency control for
             // chart configurations that consume the middle-wheel click.
@@ -583,8 +599,13 @@ namespace PowerLanguage.Strategy
                 return;
             }
 
+            if (arg.buttons == MouseButtons.Left && IsF2Held(arg.keys)) {
+                ToggleProfitManagementMode(tickSize);
+                if (ShowHUD && m_HudDisplayEnabled) UpdateHUD();
+                return;
+            }
+
             if (arg.buttons != MouseButtons.Left) return;
-            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale; if (tickSize <= 0) tickSize = 0.25;
             if ((arg.keys & Keys.Control) == Keys.Control) {
                 int currentPosition = StrategyInfo.MarketPosition;
                 if (currentPosition != 0 || HasWorkingStrategyOrders()) {
@@ -1522,11 +1543,15 @@ namespace PowerLanguage.Strategy
             ClearProjectedEntryLine();
         }
 
-        private bool HasReachedEntryCompletion(int direction, double tickSize) {
+        private bool HasReachedEntryCompletion(double tickSize) {
             double tolerance = tickSize * 0.1;
-            return direction > 0
-                ? Bars.High[0] >= m_StopPrice - tolerance
-                : Bars.Low[0] <= m_StopPrice + tolerance;
+            // Every market-entry setup—pin, 24 EMA bounce, and Shift/manual—
+            // must wait for its projected range bar to finish at the intended
+            // completion boundary. An intrabar high/low touch is insufficient:
+            // it can reverse back through the tail and must not generate a
+            // market entry there. This same equality works for both long and
+            // short entries because m_StopPrice is their directional boundary.
+            return Math.Abs(Bars.Close[0] - m_StopPrice) <= tolerance;
         }
 
         private void StartShiftProjectionEntry(double tickSize) {
@@ -1741,6 +1766,53 @@ namespace PowerLanguage.Strategy
             }
         }
 
+        private bool IsF2Held(Keys eventKeys) {
+            if ((eventKeys & Keys.KeyCode) == Keys.F2) return true;
+            try {
+                return (GetAsyncKeyState((int)Keys.F2) & 0x8000) != 0;
+            } catch {
+                return false;
+            }
+        }
+
+        private void ToggleProfitManagementMode(double tickSize) {
+            UseOppositeColorExitForProfits = !UseOppositeColorExitForProfits;
+            // A pending entry may have been submitted as a native stop in
+            // five-tick mode. Re-stage it on the next calculation using the
+            // newly selected entry behavior.
+            CancelWorkingEntryOrders();
+
+            if (StrategyInfo.MarketPosition == 0) return;
+
+            if (UseOppositeColorExitForProfits) {
+                // Let-it-run mode: remove the fixed target and let the
+                // opposite-color trailing stop arm from live price action.
+                m_ProfitTargetPrice = 0;
+                if (m_TargetLine != null) {
+                    m_TargetLine.Delete();
+                    m_TargetLine = null;
+                }
+                m_OppositeColorProfitArmed = false;
+                m_OppositeColorStopPrice = 0;
+                ClearRecoveryColorStopProjection();
+            } else {
+                // Five-tick mode: remove the running stop and install a fixed
+                // five-tick target immediately for the open trade.
+                m_OppositeColorProfitArmed = false;
+                m_OppositeColorStopPrice = 0;
+                ClearRecoveryColorStopProjection();
+                double entryPrice = StrategyInfo.AvgEntryPrice != 0
+                    ? StrategyInfo.AvgEntryPrice
+                    : Bars.Close[0];
+                m_ProfitTargetPrice = StrategyInfo.MarketPosition > 0
+                    ? RoundToTick(entryPrice + OneBarProfitTargetTicks * tickSize, tickSize)
+                    : RoundToTick(entryPrice - OneBarProfitTargetTicks * tickSize, tickSize);
+                UpdateTargetLine();
+            }
+
+            SubmitActiveExitOrders(StrategyInfo.MarketPosition);
+        }
+
         private void ToggleHudDisplay() {
             m_HudDisplayEnabled = !m_HudDisplayEnabled;
             if (!m_HudDisplayEnabled) {
@@ -1790,25 +1862,12 @@ namespace PowerLanguage.Strategy
         private int GetProfitTargetTicksForNewTrade(double sessionPnlAtEntry,
                                                      double tickSize) {
             if (UseOppositeColorExitForProfits) return 0;
-            if (ProfitTargetTicks <= 0 || sessionPnlAtEntry >= 0)
-                return ProfitTargetTicks;
-
-            // In recovery mode, let the trade run far enough to erase the
-            // session deficit and finish five ticks positive.  Round upward so
-            // the target never leaves the combined result short of that goal.
-            double tickValue = tickSize * Bars.Info.BigPointValue * OrderQuantity;
-            if (tickValue <= 0) return ProfitTargetTicks;
-
-            double desiredSessionPnl = RecoverySessionProfitGoalTicks * tickValue;
-            double requiredTradeProfit = desiredSessionPnl - sessionPnlAtEntry;
-            int requiredTicks = (int)Math.Ceiling(requiredTradeProfit / tickValue);
-            return Math.Max(ProfitTargetTicks, requiredTicks);
+            return OneBarProfitTargetTicks;
         }
 
         private void UpdateOppositeColorExitManagement(int currentPosition,
                                                        double tickSize) {
-            bool colorCloseExitActive = m_RecoveryModeActive ||
-                                        UseOppositeColorExitForProfits;
+            bool colorCloseExitActive = UseOppositeColorExitForProfits;
             if (!colorCloseExitActive || currentPosition == 0) {
                 m_OppositeColorStopPrice = 0;
                 ClearRecoveryColorStopProjection();
@@ -2161,18 +2220,17 @@ namespace PowerLanguage.Strategy
                         ? (m_AutoEntryArmed ? "SHIFT ENTRY SELL" : "UNARMED SHIFT ENTRY SELL")
                         : (m_AutoEntryArmed ? "ARMED | PIN ENTRY SELL" : "PIN ENTRY SELL");
             if (StrategyInfo.MarketPosition != 0) {
-                status = m_ColorCloseExitRequested
-                    ? "EXITING | COLOR CLOSE"
-                    : UseOppositeColorExitForProfits
-                        ? "IN TRADE | COLOR CLOSE EXIT"
-                        : m_RecoveryModeActive
-                            ? "IN TRADE | RECOVERY"
-                            : "IN TRADE";
+                status = UseOppositeColorExitForProfits
+                    ? "IN TRADE | LET PROFITS RUN"
+                    : "IN TRADE | 5-TICK PROFIT";
             }
             if (m_KillModeActive) status = m_FlattenRequested ? "FLATTENING" : "UNARMED";
             string chartRole = IsAskChart ? "ASK / BUY ONLY" : "BID / SELL ONLY";
-            string text = string.Format("{0} | {1} | Session PnL: {2:C2}",
-                                        status, chartRole, pnl);
+            string profitMode = UseOppositeColorExitForProfits
+                ? "LET RUN"
+                : "5T PROFIT";
+            string text = string.Format("{0} | {1} | {2} | Session PnL: {3:C2}",
+                                        status, chartRole, profitMode, pnl);
             // Keep the session line immediately below the broker line as one
             // compact, unobtrusive status block.
             ChartPoint hudPoint = GetStatusLabelPoint(tickSize, 4);
@@ -2301,7 +2359,7 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdateControlsHintLabel(double tickSize) {
-            const string controlText = "L-click stop marker: Break-even\nShift+click:\nCtrl+click:\nF11+click:\nEsc+click:\nTrades run:";
+            const string controlText = "L-click stop marker: Break-even\nShift+click:\nCtrl+click:\nF2+click:\nF11+click:\nEsc+click:\nProfit mode:";
             // MultiCharts trims ordinary leading spaces. Non-breaking spaces
             // preserve the action-column offset and keep every action aligned.
             const string actionPadding =
@@ -2314,10 +2372,13 @@ namespace PowerLanguage.Strategy
             string actionText = actionPadding + "\n" +
                                 actionPadding + "Manual\n" +
                                 actionPadding + "Arm/Disarm\n" +
+                                actionPadding + "Toggle Profit\n" +
                                 actionPadding + "Toggle HUD\n" +
                                 actionPadding + "Flatten\n" +
                                 actionPadding +
-                                (UseOppositeColorExitForProfits ? "True" : "False");
+                                (UseOppositeColorExitForProfits
+                                    ? "LET RUN"
+                                    : "5T PROFIT");
             ChartPoint point = GetStatusLabelPoint(tickSize, 9);
             if (m_ControlsHintLabel == null) {
                 m_ControlsHintLabel = DrwText.Create(point, controlText);
