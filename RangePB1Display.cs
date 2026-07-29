@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using PowerLanguage;
 using PowerLanguage.Function;
@@ -18,13 +19,17 @@ namespace PowerLanguage.Indicator
         // Match the strategy's one-sided workspaces: true for the ask/buy
         // chart and false for the bid/sell chart.
         [Input] public bool IsAskChart { get; set; }
+        [Input] public bool ShowDisplay { get; set; }
 
         private XAverage m_FastEMA;
         private XAverage m_SlowEMA;
+        private readonly List<IDrawObject> m_DisplayDrawings =
+            new List<IDrawObject>();
 
         public RangePB1Display(object ctx) : base(ctx)
         {
             IsAskChart = true;
+            ShowDisplay = true;
         }
 
         protected override void Create()
@@ -35,6 +40,7 @@ namespace PowerLanguage.Indicator
 
         protected override void StartCalc()
         {
+            ClearDisplayDrawings();
             m_FastEMA.Length = FastEmaLength;
             m_FastEMA.Price = Bars.Close;
             m_SlowEMA.Length = SlowEmaLength;
@@ -43,6 +49,12 @@ namespace PowerLanguage.Indicator
 
         protected override void CalcBar()
         {
+            if (!ShowDisplay)
+            {
+                ClearDisplayDrawings();
+                return;
+            }
+
             // Historical bars arrive as closed bars, and this prevents a
             // forming live range bar from being marked repeatedly or early.
             if (Bars.Status != EBarState.Close || Bars.CurrentBar < 2) return;
@@ -132,6 +144,7 @@ namespace PowerLanguage.Indicator
             {
                 arrow.Color = Color.LightGray;
                 arrow.Size = 3;
+                m_DisplayDrawings.Add(arrow);
             }
 
             double price = direction > 0
@@ -146,6 +159,18 @@ namespace PowerLanguage.Indicator
             label.Size = 9;
             label.HStyle = ETextStyleH.Right;
             label.VStyle = direction > 0 ? ETextStyleV.Below : ETextStyleV.Above;
+            m_DisplayDrawings.Add(label);
+        }
+
+        private void ClearDisplayDrawings()
+        {
+            foreach (IDrawObject drawing in m_DisplayDrawings)
+            {
+                if (drawing == null) continue;
+                try { drawing.Delete(); }
+                catch { }
+            }
+            m_DisplayDrawings.Clear();
         }
 
         private int ToTicks(double priceDistance, double tickSize)
