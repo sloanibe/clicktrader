@@ -1750,22 +1750,33 @@ namespace PowerLanguage.Strategy
 
         private void UpdatePinBarProjectionLabel(double price, int direction,
                                                  bool active, int bodyTicks) {
-            // Keep the label inside the visible pane by extending its text left
-            // from the current bar rather than placing it at a future time.
-            ChartPoint point = new ChartPoint(Bars.Time[0], price);
-            string text = "Pin bar " + bodyTicks;
-            if (m_PinBarLabel == null) {
-                m_PinBarLabel = DrwText.Create(point, text);
-                if (m_PinBarLabel == null) return;
-                m_PinBarLabel.Size = 10;
-                m_PinBarLabel.HStyle = ETextStyleH.Right;
-                m_PinBarLabel.VStyle = ETextStyleV.Above;
+            try {
+                // Keep the label inside the visible pane by extending its text
+                // left from the current bar rather than placing it at a future
+                // time. MultiCharts can dispose/rebuild a drawing between
+                // ticks, so use a local reference and treat that as transient.
+                ChartPoint point = new ChartPoint(Bars.Time[0], price);
+                string text = "Pin bar " + bodyTicks;
+                ITextObject label = m_PinBarLabel;
+                if (label == null) {
+                    label = DrwText.Create(point, text);
+                    if (label == null) return;
+                    m_PinBarLabel = label;
+                    label.Size = 10;
+                    label.HStyle = ETextStyleH.Right;
+                    label.VStyle = ETextStyleV.Above;
+                }
+                label.Location = point;
+                label.Text = text;
+                label.Color = active
+                    ? (direction > 0 ? Color.DodgerBlue : Color.OrangeRed)
+                    : Color.Gray;
+            } catch (NullReferenceException) {
+                // A drawing may disappear while the chart is being rebuilt.
+                // Retry creation on the next calculation instead of stopping
+                // the strategy's order-management loop.
+                m_PinBarLabel = null;
             }
-            m_PinBarLabel.Location = point;
-            m_PinBarLabel.Text = text;
-            m_PinBarLabel.Color = active
-                ? (direction > 0 ? Color.DodgerBlue : Color.OrangeRed)
-                : Color.Gray;
         }
 
         private bool IsF12Held(Keys eventKeys) {
