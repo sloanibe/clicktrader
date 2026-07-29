@@ -1709,37 +1709,49 @@ namespace PowerLanguage.Strategy
 
         private void UpdatePinBarProjectionLine(ref ITrendLineObject line,
                                                 double price, bool active) {
-            ChartPoint begin = new ChartPoint(Bars.Time[0], price);
-            ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
-            if (line == null) {
-                line = DrwTrendLine.Create(begin, end);
-                if (line == null) return;
-            } else {
-                line.Begin = begin;
-                line.End = end;
+            try {
+                ChartPoint begin = new ChartPoint(Bars.Time[0], price);
+                ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
+                ITrendLineObject target = line;
+                if (target == null) {
+                    target = DrwTrendLine.Create(begin, end);
+                    if (target == null) return;
+                    line = target;
+                } else {
+                    target.Begin = begin;
+                    target.End = end;
+                }
+                // Completion is also the actionable entry level. Range bars do
+                // not have predictable future timestamps, so extend the line.
+                target.ExtRight = true;
+                target.Color = active ? Color.Green : Color.Gray;
+                target.Style = ETLStyle.ToolSolid;
+                target.Size = 2;
+            } catch (NullReferenceException) {
+                line = null;
             }
-            // Completion is also the actionable entry level. Range bars do not
-            // have predictable future timestamps, so extend the single line.
-            line.ExtRight = true;
-            line.Color = active ? Color.Green : Color.Gray;
-            line.Style = ETLStyle.ToolSolid;
-            line.Size = 2;
         }
 
         private void UpdatePinBarTailProjectionLine(double price) {
-            ChartPoint begin = new ChartPoint(Bars.Time[0], price);
-            ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
-            if (m_PinBarTailLine == null) {
-                m_PinBarTailLine = DrwTrendLine.Create(begin, end);
-                if (m_PinBarTailLine == null) return;
-            } else {
-                m_PinBarTailLine.Begin = begin;
-                m_PinBarTailLine.End = end;
+            try {
+                ChartPoint begin = new ChartPoint(Bars.Time[0], price);
+                ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
+                ITrendLineObject target = m_PinBarTailLine;
+                if (target == null) {
+                    target = DrwTrendLine.Create(begin, end);
+                    if (target == null) return;
+                    m_PinBarTailLine = target;
+                } else {
+                    target.Begin = begin;
+                    target.End = end;
+                }
+                target.ExtRight = true;
+                target.Color = Color.Gray;
+                target.Style = ETLStyle.ToolDashed;
+                target.Size = 1;
+            } catch (NullReferenceException) {
+                m_PinBarTailLine = null;
             }
-            m_PinBarTailLine.ExtRight = true;
-            m_PinBarTailLine.Color = Color.Gray;
-            m_PinBarTailLine.Style = ETLStyle.ToolDashed;
-            m_PinBarTailLine.Size = 1;
         }
 
         private void ClearPinBarProjectionLines() {
@@ -2224,18 +2236,25 @@ namespace PowerLanguage.Strategy
         private void UpdateShiftProjectionLine(ref ITrendLineObject line,
                                                double price, Color color,
                                                ETLStyle style, int size) {
-            ChartPoint begin = new ChartPoint(Bars.Time[0], price);
-            ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
-            if (line == null)
-                line = DrwTrendLine.Create(begin, end);
-            else {
-                line.Begin = begin;
-                line.End = end;
+            try {
+                ChartPoint begin = new ChartPoint(Bars.Time[0], price);
+                ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
+                ITrendLineObject target = line;
+                if (target == null)
+                    target = DrwTrendLine.Create(begin, end);
+                else {
+                    target.Begin = begin;
+                    target.End = end;
+                }
+                if (target == null) return;
+                line = target;
+                target.ExtRight = true;
+                target.Color = color;
+                target.Style = style;
+                target.Size = size;
+            } catch (NullReferenceException) {
+                line = null;
             }
-            line.ExtRight = true;
-            line.Color = color;
-            line.Style = style;
-            line.Size = size;
         }
 
         private void ClearShiftProjectionLines() {
