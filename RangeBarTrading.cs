@@ -101,6 +101,8 @@ namespace PowerLanguage.Strategy
         private bool m_SellOrderActive = false;
         private bool m_AutoEntryArmed = false;
         private int m_ArmedDirection = 0;
+        private int m_ActiveStopLossTicks = 12;
+        private bool m_StopLossSettingInitialized = false;
         // Holding F1 while left-clicking toggles this stricter, exclusive
         // PinBar mode.
         // It deliberately remains separate from the armed state: the trader
@@ -217,6 +219,10 @@ namespace PowerLanguage.Strategy
             m_FastEMA.Length = 8; m_FastEMA.Price = Bars.Close;
             m_SlowEMA.Length = 24; m_SlowEMA.Price = Bars.Close;
             m_MasterEMA.Length = MasterTrendPeriod; m_MasterEMA.Price = Bars.Close;
+            if (!m_StopLossSettingInitialized) {
+                m_ActiveStopLossTicks = ProtectiveStopLossTicks == 7 ? 7 : 12;
+                m_StopLossSettingInitialized = true;
+            }
             // Do not reset live execution state here. MultiCharts may call
             // StartCalc again during a broker/order-triggered recalculation. The
             // RenkoTail strategy preserves its state across those recalculations;
@@ -368,7 +374,7 @@ namespace PowerLanguage.Strategy
 
             if (currentPosition != 0 && m_LastMarketPosition == 0) {
                 double entryPrice = StrategyInfo.AvgEntryPrice != 0 ? StrategyInfo.AvgEntryPrice : Bars.Close[0];
-                double stopDist = ProtectiveStopLossTicks * tickSize;
+                double stopDist = m_ActiveStopLossTicks * tickSize;
                 double sessionPnlAtEntry = m_HasFlatSessionPnlSnapshot
                     ? m_FlatSessionPnlSnapshot
                     : UpdateAndGetGlobalPnL(StrategyInfo.OpenEquity);
@@ -384,10 +390,10 @@ namespace PowerLanguage.Strategy
                 ClearRecoveryColorStopProjection();
 
                 if (currentPosition > 0) {
-                    m_ProtectiveStopPrice = ProtectiveStopLossTicks > 0 ? entryPrice - stopDist : 0;
+                    m_ProtectiveStopPrice = m_ActiveStopLossTicks > 0 ? entryPrice - stopDist : 0;
                     m_ProfitTargetPrice = activeProfitTargetTicks > 0 ? entryPrice + targetDist : 0;
                 } else {
-                    m_ProtectiveStopPrice = ProtectiveStopLossTicks > 0 ? entryPrice + stopDist : 0;
+                    m_ProtectiveStopPrice = m_ActiveStopLossTicks > 0 ? entryPrice + stopDist : 0;
                     m_ProfitTargetPrice = activeProfitTargetTicks > 0 ? entryPrice - targetDist : 0;
                 }
                 m_BuyOrderActive = m_SellOrderActive = false; m_StopPrice = m_LastSentPrice = 0;
@@ -590,6 +596,12 @@ namespace PowerLanguage.Strategy
 
             if (arg.buttons == MouseButtons.Left && IsF2Held(arg.keys)) {
                 ToggleProfitManagementMode(tickSize);
+                if (ShowHUD && m_HudDisplayEnabled) UpdateHUD(true);
+                return;
+            }
+
+            if (arg.buttons == MouseButtons.Left && IsF3Held(arg.keys)) {
+                ToggleStopLossMode(tickSize);
                 if (ShowHUD && m_HudDisplayEnabled) UpdateHUD(true);
                 return;
             }
@@ -1837,6 +1849,34 @@ namespace PowerLanguage.Strategy
             }
         }
 
+        private bool IsF3Held(Keys eventKeys) {
+            if ((eventKeys & Keys.KeyCode) == Keys.F3) return true;
+            try {
+                return (GetAsyncKeyState((int)Keys.F3) & 0x8000) != 0;
+            } catch {
+                return false;
+            }
+        }
+
+        private void ToggleStopLossMode(double tickSize) {
+            m_ActiveStopLossTicks = m_ActiveStopLossTicks == 7 ? 12 : 7;
+
+            // Apply the new protective distance immediately to an open trade;
+            // future trades use the same active setting through the normal
+            // fill-initialization path.
+            if (StrategyInfo.MarketPosition != 0) {
+                double entryPrice = StrategyInfo.AvgEntryPrice != 0
+                    ? StrategyInfo.AvgEntryPrice
+                    : Bars.Close[0];
+                double stopDistance = m_ActiveStopLossTicks * tickSize;
+                m_ProtectiveStopPrice = StrategyInfo.MarketPosition > 0
+                    ? RoundToTick(entryPrice - stopDistance, tickSize)
+                    : RoundToTick(entryPrice + stopDistance, tickSize);
+                UpdateStopLine();
+                SubmitActiveExitOrders(StrategyInfo.MarketPosition);
+            }
+        }
+
         private void ToggleProfitManagementMode(double tickSize) {
             UseOppositeColorExitForProfits = !UseOppositeColorExitForProfits;
             // A pending entry may have been submitted as a native stop in
@@ -2320,6 +2360,7 @@ namespace PowerLanguage.Strategy
                 status = m_FlattenRequested
                     ? "FLATTENING"
                     : (m_PinBarOneMode ? "UNARMED | PINBAR 1" : "UNARMED");
+            status += " | STOP " + m_ActiveStopLossTicks + "T";
             string chartRole = IsAskChart ? "ASK / BUY ONLY" : "BID / SELL ONLY";
             string profitMode = UseOppositeColorExitForProfits
                 ? "LET RUN"
@@ -2490,7 +2531,7 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdateControlsHintLabel(double tickSize, bool layoutChanged) {
-            const string controlText = "L-click stop marker: Break-even\nF1+Click:\nShift+click:\nCtrl+click:\nF2+click:\nF11+click:\nEsc+click:\nProfit mode:";
+            const string controlText = "L-click stop marker: Break-even\nF1+Click:\nShift+click:\nCtrl+click:\nF2+click:\nF3+click:\nF11+click:\nEsc+click:\nProfit mode:";
             // MultiCharts trims ordinary leading spaces. Non-breaking spaces
             // preserve the action-column offset and keep every action aligned.
             const string actionPadding =
@@ -2505,6 +2546,7 @@ namespace PowerLanguage.Strategy
                                 actionPadding + "Manual\n" +
                                 actionPadding + "Arm/Disarm\n" +
                                 actionPadding + "Toggle Profit\n" +
+                                actionPadding + "STOP " + m_ActiveStopLossTicks + "T\n" +
                                 actionPadding + "Toggle HUD\n" +
                                 actionPadding + "Flatten\n" +
                                 actionPadding +
