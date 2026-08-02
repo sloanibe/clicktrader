@@ -16,7 +16,7 @@ namespace PowerLanguage.Strategy
     // before this signal is permitted to transmit an order.
     public class RangeBarTradingV3 : SignalObject
     {
-        private enum EEntrySetup { None, PinBar, Ema24Bounce, ShiftProjection }
+        private enum EEntrySetup { None, PinBar, Ema24Bounce, Ema8Bounce, ShiftProjection }
 
         [DllImport("user32.dll")]
         private static extern short GetAsyncKeyState(int virtualKey);
@@ -38,6 +38,7 @@ namespace PowerLanguage.Strategy
         [Input] public bool AutoProtectiveStopOn1BarProfit { get; set; }
         [Input] public bool EnablePinBarTrading { get; set; }
         [Input] public bool Enable24EMABounceTrading { get; set; }
+        [Input] public bool Enable8EMABounceTrading { get; set; }
         // Set true on the ask chart and false on the bid chart. Entry routing
         // is restricted to the corresponding buy-only or sell-only direction.
         [Input] public bool IsAskChart { get; set; }
@@ -62,6 +63,14 @@ namespace PowerLanguage.Strategy
         private const int MinExpansionTicks = 25;
         private const int MinBreadth_15_60 = 5;
         private const int MinBreadth_5_15 = 4;
+        // Mirrors RangeEMA8Bounce's provisional visual detector.
+        private const double Ema8MinSeparationTicks = 4.5;
+        private const double Ema8MinFastSlopeDegrees = 45.0;
+        private const double Ema8MinSlowSlopeDegrees = 40.0;
+        private const double Ema8MinSlopeLeadDegrees = 3.0;
+        private const double Ema8MinPenetrationTicks = 1.0;
+        private const double Ema8MaxPenetrationTicks = 3.5;
+        private const double Ema8MinLocalDisplacementTicks = 1.0;
 
         private IOrderPriced m_BuyStop;
         private IOrderPriced m_SellStop;
@@ -118,6 +127,7 @@ namespace PowerLanguage.Strategy
         private int m_EmaBounceProjectionBar = -1;
         private int m_EmaBounceProjectionDirection = 0;
         private int m_EmaBounceOrderBar = -1;
+        private int m_Ema8BounceOrderBar = -1;
         private bool m_PinEntryCandidateValid = false;
         private int m_PinEntryCandidateDirection = 0;
         private double m_PinEntryCandidatePrice = 0;
@@ -126,6 +136,9 @@ namespace PowerLanguage.Strategy
         private bool m_EmaEntryCandidateValid = false;
         private int m_EmaEntryCandidateDirection = 0;
         private double m_EmaEntryCandidatePrice = 0;
+        private bool m_Ema8EntryCandidateValid = false;
+        private int m_Ema8EntryCandidateDirection = 0;
+        private double m_Ema8EntryCandidatePrice = 0;
         private bool m_ShiftProjectionActive = false;
         private int m_ShiftProjectionBar = -1;
         private EEntrySetup m_ActiveEntrySetup = EEntrySetup.None;
@@ -172,6 +185,9 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_EmaBounceTailLine;
         private ITrendLineObject m_EmaBounceCompletionLine;
         private ITextObject m_EmaBounceLabel;
+        private ITrendLineObject m_Ema8BounceTailLine;
+        private ITrendLineObject m_Ema8BounceCompletionLine;
+        private ITextObject m_Ema8BounceLabel;
         private ITrendLineObject m_GoSignalMarker;
         private ITextObject m_HUDLabel;
         private ITextObject m_BrokerStatusLabel;
@@ -191,6 +207,7 @@ namespace PowerLanguage.Strategy
             AutoProtectiveStopOn1BarProfit = true;
             EnablePinBarTrading = true;
             Enable24EMABounceTrading = true;
+            Enable8EMABounceTrading = true;
             IsAskChart = true;
             UseOppositeColorExitForProfits = true;
         }
@@ -243,6 +260,7 @@ namespace PowerLanguage.Strategy
             ClearProjectedEntryLine();
             ClearPinBarProjectionLines();
             ClearEmaBounceProjectionLines();
+            ClearEma8BounceProjectionLines();
             if (m_GoSignalMarker != null) { m_GoSignalMarker.Delete(); m_GoSignalMarker = null; }
         }
 
@@ -299,7 +317,15 @@ namespace PowerLanguage.Strategy
                     ClearEmaBounceEntryIfActive();
             }
 
-            if (!EnablePinBarTrading && !Enable24EMABounceTrading &&
+            if (!Enable8EMABounceTrading) {
+                ClearEma8BounceProjectionLines();
+                if (m_ActiveEntrySetup == EEntrySetup.Ema8Bounce && currentPosition == 0) {
+                    CancelWorkingEntryOrders();
+                    ClearPendingEntry();
+                }
+            }
+
+            if (!EnablePinBarTrading && !Enable24EMABounceTrading && !Enable8EMABounceTrading &&
                 currentPosition == 0) {
                 m_AutoEntryArmed = false;
                 m_ArmedDirection = 0;
@@ -311,6 +337,12 @@ namespace PowerLanguage.Strategy
             if (m_ActiveEntrySetup == EEntrySetup.Ema24Bounce &&
                 currentPosition == 0 && m_EmaBounceOrderBar != Bars.CurrentBar)
                 ClearEmaBounceEntryIfActive();
+
+            if (m_ActiveEntrySetup == EEntrySetup.Ema8Bounce &&
+                currentPosition == 0 && m_Ema8BounceOrderBar != Bars.CurrentBar) {
+                CancelWorkingEntryOrders();
+                ClearPendingEntry();
+            }
 
             // A staged pin order is also valid only for the bar that formed its
             // tail. A new bar starts a new, independent pin-bar evaluation.
@@ -330,6 +362,7 @@ namespace PowerLanguage.Strategy
             ResetAutomaticEntryCandidates();
             UpdatePinBarProjection(tickSize, currentPosition);
             UpdateEmaBounceProjection(tickSize, currentPosition);
+            UpdateEma8BounceProjection(tickSize, currentPosition);
             ReconcileAutomaticEntryCandidates(tickSize, currentPosition);
             UpdateShiftProjectionEntry(tickSize, currentPosition);
 
@@ -624,7 +657,7 @@ namespace PowerLanguage.Strategy
                 } else if (m_AutoEntryArmed) {
                     // No working order exists, so this is only a disarm.
                     ActivateKillMode(currentPosition);
-                } else if (EnablePinBarTrading || Enable24EMABounceTrading) {
+                } else if (EnablePinBarTrading || Enable24EMABounceTrading || Enable8EMABounceTrading) {
                     // Flat and unarmed: latch the 24 EMA direction and begin
                     // waiting persistently for an enabled automated setup.
                     ArmAutomatedEntryMode(tickSize);
@@ -722,6 +755,7 @@ namespace PowerLanguage.Strategy
             ResetAutomaticEntryCandidates();
             UpdatePinBarProjection(tickSize, StrategyInfo.MarketPosition);
             UpdateEmaBounceProjection(tickSize, StrategyInfo.MarketPosition);
+            UpdateEma8BounceProjection(tickSize, StrategyInfo.MarketPosition);
             ReconcileAutomaticEntryCandidates(tickSize, StrategyInfo.MarketPosition);
         }
 
@@ -744,14 +778,16 @@ namespace PowerLanguage.Strategy
             ResetAutomaticEntryCandidates();
             UpdatePinBarProjection(tickSize, StrategyInfo.MarketPosition);
             UpdateEmaBounceProjection(tickSize, StrategyInfo.MarketPosition);
+            UpdateEma8BounceProjection(tickSize, StrategyInfo.MarketPosition);
             ReconcileAutomaticEntryCandidates(tickSize, StrategyInfo.MarketPosition);
         }
 
         private int GetInitialPinBarTailTicks() {
-            // A five-tick PinBar with a one-tick body has a four-tick tail.
-            // PinBar 1 mode then permits only its all-tail (zero-body)
-            // extension; normal mode retains the existing 2/3 starting shape.
-            return m_PinBarOneMode ? PinBarRangeTicks - 1 : PinBarMinTailTicks;
+            // PB1 accepts compact continuation bodies only: 2/3, 1/4, or
+            // 0/5 (body/tail). Starting at its three-tick tail lets the
+            // existing progression advance only toward 4/1 and 5/0.
+            // Normal mode retains the existing 3/2 starting shape.
+            return m_PinBarOneMode ? PinBarRangeTicks - 2 : PinBarMinTailTicks;
         }
 
         private void ActivateKillMode(int currentPosition) {
@@ -1356,6 +1392,116 @@ namespace PowerLanguage.Strategy
                 : Bars.High[0] >= projectedHigh - tolerance;
         }
 
+        // Live counterpart of RangeEMA8Bounce: project the range bar that
+        // could finish as a qualifying 8 EMA bounce, then stage its breakout
+        // only after the projected tail has actually been reached.
+        private void UpdateEma8BounceProjection(double tickSize, int currentPosition) {
+            if (!Enable8EMABounceTrading || currentPosition != 0 ||
+                m_ShiftProjectionActive) {
+                ClearEma8BounceProjectionLines();
+                return;
+            }
+            int direction = GetEma8BounceDirection(tickSize);
+            if (direction == 0 || !IsEntryDirectionAllowed(direction)) {
+                ClearEma8BounceProjectionLines();
+                return;
+            }
+            double projectedLow, projectedHigh;
+            if (!TryGetEma8BounceProjectionPrices(direction, tickSize,
+                                                    out projectedLow, out projectedHigh)) {
+                ClearEma8BounceProjectionLines();
+                return;
+            }
+            bool tailReached = direction > 0
+                ? Bars.Low[0] <= projectedLow + tickSize * 0.1
+                : Bars.High[0] >= projectedHigh - tickSize * 0.1;
+            double tail = direction > 0 ? projectedLow : projectedHigh;
+            double completion = direction > 0 ? projectedHigh : projectedLow;
+            UpdateEma8BounceLine(ref m_Ema8BounceTailLine, tail, Color.Gray,
+                                  ETLStyle.ToolDashed, 1);
+            UpdateEma8BounceLine(ref m_Ema8BounceCompletionLine, completion,
+                                  tailReached ? Color.MediumSeaGreen : Color.Gray,
+                                  ETLStyle.ToolSolid, 2);
+            UpdateEma8BounceLabel(completion, direction, tailReached);
+            if (!tailReached) return;
+            m_Ema8EntryCandidateValid = true;
+            m_Ema8EntryCandidateDirection = direction;
+            m_Ema8EntryCandidatePrice = RoundToTick(completion, tickSize);
+        }
+
+        private int GetEma8BounceDirection(double tickSize) {
+            if (Bars.CurrentBar < 9) return 0;
+            int direction = m_FastEMA[0] > m_SlowEMA[0] ? 1 :
+                            m_FastEMA[0] < m_SlowEMA[0] ? -1 : 0;
+            if (direction == 0 || Math.Abs(m_FastEMA[0] - m_SlowEMA[0]) / tickSize < Ema8MinSeparationTicks)
+                return 0;
+            double fastBest = GetBestDirectionalEmaSlope(m_FastEMA, direction, tickSize);
+            double slowBest = GetBestDirectionalEmaSlope(m_SlowEMA, direction, tickSize);
+            bool slopes = direction > 0
+                ? fastBest >= Ema8MinFastSlopeDegrees && slowBest >= Ema8MinSlowSlopeDegrees
+                : fastBest <= -Ema8MinFastSlopeDegrees && slowBest <= -Ema8MinSlowSlopeDegrees;
+            double lead = direction > 0 ? fastBest - slowBest : Math.Abs(fastBest) - Math.Abs(slowBest);
+            return slopes && lead >= Ema8MinSlopeLeadDegrees ? direction : 0;
+        }
+
+        private double GetBestDirectionalEmaSlope(XAverage ema, int direction, double tickSize) {
+            double best = direction > 0 ? Double.NegativeInfinity : Double.PositiveInfinity;
+            for (int barsBack = 0; barsBack <= 6; barsBack++) {
+                double angle = GetAngle(ema[barsBack], ema[barsBack + 3], 3, tickSize);
+                best = direction > 0 ? Math.Max(best, angle) : Math.Min(best, angle);
+            }
+            return best;
+        }
+
+        private bool TryGetEma8BounceProjectionPrices(int direction, double tickSize,
+                                                        out double projectedLow, out double projectedHigh) {
+            double range = GetActiveRangeTicks(tickSize) * tickSize;
+            double ema = m_FastEMA[0];
+            double localReference = direction > 0 ? Math.Min(Bars.Low[1], Bars.Low[2]) :
+                                                    Math.Max(Bars.High[1], Bars.High[2]);
+            projectedLow = projectedHigh = 0;
+            if (direction > 0) {
+                double lower = Math.Max(Bars.High[0] - range, ema - Ema8MaxPenetrationTicks * tickSize);
+                double upper = Math.Min(Bars.Low[0], ema - Ema8MinPenetrationTicks * tickSize);
+                upper = Math.Min(upper, localReference - Ema8MinLocalDisplacementTicks * tickSize);
+                if (lower > upper) return false;
+                projectedLow = RoundDownToTick(upper, tickSize);
+                projectedHigh = projectedLow + range;
+                return projectedHigh > Bars.Open[0] && projectedHigh >= ema;
+            }
+            double highLower = Math.Max(Bars.High[0], ema + Ema8MinPenetrationTicks * tickSize);
+            highLower = Math.Max(highLower, localReference + Ema8MinLocalDisplacementTicks * tickSize);
+            double highUpper = Math.Min(Bars.Low[0] + range, ema + Ema8MaxPenetrationTicks * tickSize);
+            if (highLower > highUpper) return false;
+            projectedHigh = RoundUpToTick(highLower, tickSize);
+            projectedLow = projectedHigh - range;
+            return projectedLow < Bars.Open[0] && projectedLow <= ema;
+        }
+
+        private void UpdateEma8BounceLine(ref ITrendLineObject line, double price, Color color,
+                                          ETLStyle style, int size) {
+            ChartPoint begin = new ChartPoint(Bars.Time[0], price);
+            ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), price);
+            if (line == null) line = DrwTrendLine.Create(begin, end);
+            if (line == null) return;
+            line.Begin = begin; line.End = end; line.ExtRight = true;
+            line.Color = color; line.Style = style; line.Size = size;
+        }
+
+        private void UpdateEma8BounceLabel(double price, int direction, bool active) {
+            ChartPoint point = new ChartPoint(Bars.Time[0], price);
+            if (m_Ema8BounceLabel == null) { m_Ema8BounceLabel = DrwText.Create(point, "8 EMA Bounce"); m_Ema8BounceLabel.Size = 10; m_Ema8BounceLabel.HStyle = ETextStyleH.Right; }
+            m_Ema8BounceLabel.Location = point; m_Ema8BounceLabel.Text = "8 EMA Bounce";
+            m_Ema8BounceLabel.Color = active ? (direction > 0 ? Color.MediumSeaGreen : Color.DarkViolet) : Color.Gray;
+            m_Ema8BounceLabel.VStyle = direction > 0 ? ETextStyleV.Above : ETextStyleV.Below;
+        }
+
+        private void ClearEma8BounceProjectionLines() {
+            if (m_Ema8BounceTailLine != null) { m_Ema8BounceTailLine.Delete(); m_Ema8BounceTailLine = null; }
+            if (m_Ema8BounceCompletionLine != null) { m_Ema8BounceCompletionLine.Delete(); m_Ema8BounceCompletionLine = null; }
+            if (m_Ema8BounceLabel != null) { m_Ema8BounceLabel.Delete(); m_Ema8BounceLabel = null; }
+        }
+
         private int GetEmaBounceDirection() {
             // Arming is the trader's slope/angle decision. A live bounce only
             // needs the 8/24 stack to identify its long or short direction.
@@ -1374,6 +1520,9 @@ namespace PowerLanguage.Strategy
             m_EmaEntryCandidateValid = false;
             m_EmaEntryCandidateDirection = 0;
             m_EmaEntryCandidatePrice = 0;
+            m_Ema8EntryCandidateValid = false;
+            m_Ema8EntryCandidateDirection = 0;
+            m_Ema8EntryCandidatePrice = 0;
         }
 
         private void ReconcileAutomaticEntryCandidates(double tickSize,
@@ -1385,7 +1534,11 @@ namespace PowerLanguage.Strategy
             EEntrySetup selectedSetup = EEntrySetup.None;
             int selectedDirection = 0;
             double selectedPrice = 0;
-            if (m_PinEntryCandidateValid && m_EmaEntryCandidateValid) {
+            if (m_Ema8EntryCandidateValid) {
+                selectedSetup = EEntrySetup.Ema8Bounce;
+                selectedDirection = m_Ema8EntryCandidateDirection;
+                selectedPrice = m_Ema8EntryCandidatePrice;
+            } else if (m_PinEntryCandidateValid && m_EmaEntryCandidateValid) {
                 double pinDistance = Math.Abs(m_PinEntryCandidatePrice - Bars.Close[0]);
                 double emaDistance = Math.Abs(m_EmaEntryCandidatePrice - Bars.Close[0]);
                 // A tie uses the EMA setup for a stable, deterministic result.
@@ -1410,7 +1563,8 @@ namespace PowerLanguage.Strategy
 
             if (selectedSetup == EEntrySetup.None) {
                 if (m_ActiveEntrySetup == EEntrySetup.PinBar ||
-                    m_ActiveEntrySetup == EEntrySetup.Ema24Bounce) {
+                    m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ||
+                    m_ActiveEntrySetup == EEntrySetup.Ema8Bounce) {
                     CancelWorkingEntryOrders();
                     ClearPendingEntry();
                 }
@@ -1419,7 +1573,8 @@ namespace PowerLanguage.Strategy
 
             if (!IsEntryDirectionAllowed(selectedDirection)) {
                 if (m_ActiveEntrySetup == EEntrySetup.PinBar ||
-                    m_ActiveEntrySetup == EEntrySetup.Ema24Bounce) {
+                    m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ||
+                    m_ActiveEntrySetup == EEntrySetup.Ema8Bounce) {
                     CancelWorkingEntryOrders();
                     ClearPendingEntry();
                 }
@@ -1445,8 +1600,11 @@ namespace PowerLanguage.Strategy
                 m_PinBarOrderBar = Bars.CurrentBar;
                 m_StagedPinBodyTicks = m_PinEntryCandidateBodyTicks;
             }
-            else {
+            else if (selectedSetup == EEntrySetup.Ema24Bounce) {
                 m_EmaBounceOrderBar = Bars.CurrentBar;
+                m_StagedPinBodyTicks = 0;
+            } else {
+                m_Ema8BounceOrderBar = Bars.CurrentBar;
                 m_StagedPinBodyTicks = 0;
             }
         }
@@ -2049,6 +2207,7 @@ namespace PowerLanguage.Strategy
                 ? "P" + Math.Max(0, pinBodyTicks)
                 :
                                entrySetup == EEntrySetup.Ema24Bounce ? "B" :
+                               entrySetup == EEntrySetup.Ema8Bounce ? "B8" :
                                entrySetup == EEntrySetup.ShiftProjection ? "M" :
                                "?";
             // Pin annotations are two ticks outside the tail itself. Other
@@ -2217,7 +2376,8 @@ namespace PowerLanguage.Strategy
             // completion/entry line. Do not cover it with the generic pending
             // entry drawing when the native stop order is staged.
             if (m_ActiveEntrySetup == EEntrySetup.PinBar ||
-                m_ActiveEntrySetup == EEntrySetup.Ema24Bounce) {
+                m_ActiveEntrySetup == EEntrySetup.Ema24Bounce ||
+                m_ActiveEntrySetup == EEntrySetup.Ema8Bounce) {
                 ClearProjectedEntryLine();
                 return;
             }
