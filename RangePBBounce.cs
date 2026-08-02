@@ -19,6 +19,7 @@ namespace PowerLanguage.Indicator
         private const int MinimumEmaSeparationTicks = 3;
         private const int EmaSlopeBars = 3;
         private const double MinimumFastEmaSlopeDegrees = 20.0;
+        private const int RangeClearanceLookbackBars = 8;
         // Each displayed PB1 is treated as a virtual entry.  Another signal
         // is not shown until this virtual trade exits on a later bar.
         private const int ReentryProfitTargetTicks = 5;
@@ -70,7 +71,7 @@ namespace PowerLanguage.Indicator
             // Historical bars arrive as closed bars, and this prevents a
             // forming live range bar from being marked repeatedly or early.
             if (Bars.Status != EBarState.Close ||
-                Bars.CurrentBar < EmaSlopeBars) return;
+                Bars.CurrentBar < RangeClearanceLookbackBars) return;
 
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize <= 0) tickSize = 0.25;
@@ -87,6 +88,7 @@ namespace PowerLanguage.Indicator
             if (!IsPB1EmaOrderValid(direction) ||
                 !IsPB1TrendFilterValid(direction, tickSize) ||
                 !IsCloseBeyondPreviousBarRange(direction) ||
+                !HasRangeClearance(direction) ||
                 !IsOpenOnCorrectEmaSide(direction, tickSize))
                 return;
 
@@ -131,6 +133,23 @@ namespace PowerLanguage.Indicator
             return direction > 0
                 ? Bars.Close[0] > Bars.High[1]
                 : Bars.Close[0] < Bars.Low[1];
+        }
+
+        // The rejection tail establishes the PB shape, while the close must
+        // clear the full ranges of the preceding eight bars in the bounce
+        // direction. Strict comparison rejects an equal high/low because it
+        // does not create the requested chart whitespace.
+        private bool HasRangeClearance(int direction)
+        {
+            for (int barsBack = 1; barsBack <= RangeClearanceLookbackBars;
+                 barsBack++)
+            {
+                if (direction > 0 && Bars.Close[0] <= Bars.High[barsBack])
+                    return false;
+                if (direction < 0 && Bars.Close[0] >= Bars.Low[barsBack])
+                    return false;
+            }
+            return true;
         }
 
         private bool IsOpenOnCorrectEmaSide(int direction, double tickSize)
