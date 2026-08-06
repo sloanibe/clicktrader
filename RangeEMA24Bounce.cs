@@ -1,29 +1,24 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Runtime.InteropServices;
-using System.Windows.Forms;
 using PowerLanguage;
 using PowerLanguage.Function;
 
 namespace PowerLanguage.Indicator
 {
     // Historical/display-only 24 EMA bounce visualizer. It has no trading,
-    // projections, or order-management code; mouse input is diagnostics only.
+    // projections, or order-management code.
     [SameAsSymbol(true)]
     [RecoverDrawings(false)]
-    [MouseEvents(true)]
     public class RangeEMA24Bounce : IndicatorObject
     {
-        [DllImport("user32.dll")]
-        private static extern short GetAsyncKeyState(int virtualKey);
-
         private const int FastEmaLength = 8;
         private const int SlowEmaLength = 24;
+        private const int ProfileEmaLength = 50;
         private const int SlopeBars = 3;
         private const int SlopeLookbackBars = 6;
         private const double MinimumSlopeDegrees = 20.0;
-        private const double EmaTouchToleranceTicks = 1.25;
+        private const double EmaTouchToleranceTicks = 0.25;
         private const double MinimumEmaSeparationTicks = 2.0;
         private const double MinimumCurrentEmaSeparationTicks = 1.5;
         // Treat each displayed arrow as a completed virtual entry.  A new
@@ -31,15 +26,22 @@ namespace PowerLanguage.Indicator
         // of these exits on a later completed bar.
         private const int ReentryProfitTargetTicks = 5;
         private const int ReentryStopLossTicks = 10;
+        private const int ProfilePersistenceBars = 4;
+        private const double ProfileMinFastSlowSeparationTicks = 3.0;
+        private const double ProfileMinSlowTrendSeparationTicks = 2.0;
+        private const double ProfileMinFastTrendSeparationTicks = 5.0;
+        private const double ProfileMinFastSlopeDegrees = 20.0;
+        private const double ProfileMinSlowSlopeDegrees = 20.0;
+        private const double ProfileMinTrendSlopeDegrees = 10.0;
+        private const double ProfileMaximumCompressionTicks = 1.0;
 
         [Input] public bool ShowDisplay { get; set; }
 
         private XAverage m_FastEMA;
         private XAverage m_SlowEMA;
+        private XAverage m_ProfileEMA;
         private readonly List<IDrawObject> m_DisplayDrawings =
             new List<IDrawObject>();
-        private readonly Dictionary<DateTime, BounceDiagnostic> m_DiagnosticsByTime =
-            new Dictionary<DateTime, BounceDiagnostic>();
         private bool m_VirtualTradeActive;
         private int m_VirtualTradeDirection;
         private double m_VirtualTradeEntryPrice;
@@ -71,17 +73,19 @@ namespace PowerLanguage.Indicator
         {
             m_FastEMA = new XAverage(this);
             m_SlowEMA = new XAverage(this);
+            m_ProfileEMA = new XAverage(this);
         }
 
         protected override void StartCalc()
         {
             ClearDisplayDrawings();
-            m_DiagnosticsByTime.Clear();
             ResetVirtualTrade();
             m_FastEMA.Length = FastEmaLength;
             m_FastEMA.Price = Bars.Close;
             m_SlowEMA.Length = SlowEmaLength;
             m_SlowEMA.Price = Bars.Close;
+            m_ProfileEMA.Length = ProfileEmaLength;
+            m_ProfileEMA.Price = Bars.Close;
         }
 
         protected override void CalcBar()
@@ -100,24 +104,13 @@ namespace PowerLanguage.Indicator
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize <= 0) tickSize = 0.25;
 
-            // This is deliberately evaluated before looking for a new setup.
-            // It also consumes the bar that completes the virtual trade, so
-            // that one bar cannot both close a trade and open another one.
-            if (m_VirtualTradeActive)
-            {
-                UpdateVirtualTrade(tickSize);
-                return;
-            }
-
             BounceDiagnostic diagnostic = BuildDiagnostic(tickSize);
-            m_DiagnosticsByTime[Bars.Time[0]] = diagnostic;
             if (!diagnostic.SeparationPass || !diagnostic.SlopePass ||
                 !diagnostic.TouchPass || !diagnostic.ClosePass ||
                 !diagnostic.BarColorPass)
                 return;
 
             DrawBounceArrow(diagnostic.Direction, tickSize);
-            StartVirtualTrade(diagnostic.Direction, Bars.Close[0]);
         }
 
         private void StartVirtualTrade(int direction, double entryPrice)
@@ -155,34 +148,6 @@ namespace PowerLanguage.Indicator
             m_VirtualTradeActive = false;
             m_VirtualTradeDirection = 0;
             m_VirtualTradeEntryPrice = 0;
-        }
-
-        protected override void OnMouseEvent(MouseClickArgs arg)
-        {
-            // Alt+D + left-click any historical bar to see the exact values and
-            // pass/fail gates used for that bar. This remains display-only.
-            if (arg.buttons != MouseButtons.Left || !IsAltHeld(arg.keys) ||
-                !IsDHeld(arg.keys))
-                return;
-
-            BounceDiagnostic diagnostic;
-            if (!m_DiagnosticsByTime.TryGetValue(arg.point.Time, out diagnostic))
-                return;
-            ShowDiagnosticPopup(arg.point.Time, diagnostic);
-        }
-
-        private bool IsDHeld(Keys eventKeys)
-        {
-            if ((eventKeys & Keys.KeyCode) == Keys.D) return true;
-            try { return (GetAsyncKeyState((int)Keys.D) & 0x8000) != 0; }
-            catch { return false; }
-        }
-
-        private bool IsAltHeld(Keys eventKeys)
-        {
-            if ((eventKeys & Keys.Alt) == Keys.Alt) return true;
-            try { return (GetAsyncKeyState((int)Keys.Menu) & 0x8000) != 0; }
-            catch { return false; }
         }
 
         private int GetTrendDirection()
@@ -270,37 +235,50 @@ namespace PowerLanguage.Indicator
             return best;
         }
 
-        private void ShowDiagnosticPopup(DateTime time, BounceDiagnostic diagnostic)
+        private double GetBestPriorDirectionalSlowSlope(int direction, double tickSize)
         {
-            string direction = diagnostic.Direction > 0 ? "LONG" :
-                diagnostic.Direction < 0 ? "SHORT" : "FLAT";
-            string text = string.Format(
-                "24 EMA BOUNCE DIAGNOSTIC ({0})\n" +
-                "8/24: {1:F2} / {2:F2}\n" +
-                "8/24 separation now: {3:F2}t / {4:F2}t [{5}]\n" +
-                "Best separation (0-6): {6:F2}t / {7:F2}t [{8}]\n" +
-                "Best 24 slope (0-6): {9:F1} degrees [{10}]\n" +
-                "24 EMA-to-bar gap: {11:F2}t / {12:F2}t [{13}]\n" +
-                "Close on trend side: [{14}]\n" +
-                "Bar color matches direction: [{15}]",
-                direction, diagnostic.FastEma, diagnostic.SlowEma,
-                diagnostic.SeparationTicks, MinimumCurrentEmaSeparationTicks,
-                diagnostic.CurrentSeparationPass ? "PASS" : "FAIL",
-                diagnostic.BestSeparationTicks, diagnostic.RequiredSeparationTicks,
-                diagnostic.SeparationPass ? "PASS" : "FAIL",
-                diagnostic.BestSlopeDegrees,
-                diagnostic.SlopePass ? "PASS" : "FAIL",
-                diagnostic.EmaRangeGapTicks,
-                EmaTouchToleranceTicks,
-                diagnostic.TouchPass ? "PASS" : "FAIL",
-                diagnostic.ClosePass ? "PASS" : "FAIL",
-                diagnostic.BarColorPass ? "PASS" : "FAIL");
-            try
+            if (direction == 0) return 0;
+            double best = direction > 0 ? Double.NegativeInfinity : Double.PositiveInfinity;
+            for (int barsBack = 1; barsBack <= SlopeLookbackBars; barsBack++)
             {
-                MessageBox.Show(text, "24 EMA Bounce: " + time.ToString("yyyy-MM-dd HH:mm:ss"),
-                                MessageBoxButtons.OK, MessageBoxIcon.Information);
+                double angle = GetAngle(m_SlowEMA[barsBack],
+                                        m_SlowEMA[barsBack + SlopeBars],
+                                        SlopeBars, tickSize);
+                best = direction > 0 ? Math.Max(best, angle) : Math.Min(best, angle);
             }
-            catch { }
+            return best;
+        }
+
+        private bool HasTradeProfileDirection(int direction, double tickSize)
+        {
+            return direction != 0 && HasTradeProfileDirectionAt(direction, 0, tickSize);
+        }
+
+        private bool HasTradeProfileDirectionAt(int direction, int barsBack,
+                                                 double tickSize)
+        {
+            double fast = m_FastEMA[barsBack];
+            double slow = m_SlowEMA[barsBack];
+            double trend = m_ProfileEMA[barsBack];
+            bool ordered = direction > 0 ? fast > slow && slow > trend :
+                           fast < slow && slow < trend;
+            if (!ordered ||
+                Math.Abs(fast - slow) / tickSize < ProfileMinFastSlowSeparationTicks ||
+                Math.Abs(slow - trend) / tickSize < ProfileMinSlowTrendSeparationTicks ||
+                Math.Abs(fast - trend) / tickSize < ProfileMinFastTrendSeparationTicks)
+                return false;
+            // A 24-EMA pullback can flatten its current slope. Retain the
+            // trend if the 24 EMA reached the required slope anywhere in the
+            // most recent six completed range bars.
+            double slowSlope = GetBestPriorDirectionalSlowSlope(direction, tickSize);
+            double trendSlope = GetAngle(m_ProfileEMA[barsBack],
+                                         m_ProfileEMA[barsBack + SlopeBars],
+                                         SlopeBars, tickSize);
+            return direction > 0
+                ? slowSlope >= ProfileMinSlowSlopeDegrees &&
+                  trendSlope >= ProfileMinTrendSlopeDegrees
+                : slowSlope <= -ProfileMinSlowSlopeDegrees &&
+                  trendSlope <= -ProfileMinTrendSlopeDegrees;
         }
 
         private void DrawBounceArrow(int direction, double tickSize)
@@ -355,7 +333,6 @@ namespace PowerLanguage.Indicator
         protected override void Destroy()
         {
             ClearDisplayDrawings();
-            m_DiagnosticsByTime.Clear();
             ResetVirtualTrade();
         }
     }

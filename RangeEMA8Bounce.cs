@@ -1,32 +1,27 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Runtime.InteropServices;
-using System.Windows.Forms;
+using System.IO;
+using System.Text;
 using PowerLanguage;
 using PowerLanguage.Function;
 
 namespace PowerLanguage.Indicator
 {
-    // Visual-only 8 EMA bounce detector. Its thresholds are provisional and
-    // can be refined from the Alt+W diagnostics.
+    // Visual-only 8 EMA bounce detector.
     [SameAsSymbol(true)]
     [RecoverDrawings(false)]
-    [MouseEvents(true)]
     public class RangeEMA8Bounce : IndicatorObject
     {
-        [DllImport("user32.dll")]
-        private static extern short GetAsyncKeyState(int virtualKey);
-
         private const int FastEmaLength = 8;
         private const int SlowEmaLength = 24;
+        private const int ProfileEmaLength = 50;
         private const int SlopeBars = 3;
         private const int SlopeLookbackBars = 6;
         private const int DisplacementLookbackBars = 2;
         private const double MinimumSeparationTicks = 4.5;
-        private const double MinimumFastSlopeDegrees = 45.0;
+        private const double MinimumFastSlopeDegrees = 40.0;
         private const double MinimumSlowSlopeDegrees = 40.0;
-        private const double MinimumFastSlopeLeadDegrees = 2.5;
         private const double MinimumPenetrationTicks = 1.0;
         private const double MaximumPenetrationTicks = 3.5;
         // EMA values are fractional-price values while range-bar highs/lows
@@ -40,18 +35,30 @@ namespace PowerLanguage.Indicator
         // of these exits on a later completed bar.
         private const int ReentryProfitTargetTicks = 5;
         private const int ReentryStopLossTicks = 10;
+        private const int ProfileSlopeBars = 3;
+        private const int ProfilePersistenceBars = 4;
+        private const double ProfileMinFastSlowSeparationTicks = 3.0;
+        private const double ProfileMinSlowTrendSeparationTicks = 2.0;
+        private const double ProfileMinFastTrendSeparationTicks = 5.0;
+        private const double ProfileMinFastSlopeDegrees = 20.0;
+        private const double ProfileMinSlowSlopeDegrees = 20.0;
+        private const double ProfileMinTrendSlopeDegrees = 10.0;
+        private const double ProfileMaximumCompressionTicks = 1.0;
 
         private XAverage m_FastEMA;
         private XAverage m_SlowEMA;
+        private XAverage m_ProfileEMA;
         private readonly List<IDrawObject> m_DisplayDrawings =
             new List<IDrawObject>();
-        private readonly Dictionary<DateTime, BounceDiagnostic> m_DiagnosticsByTime =
-            new Dictionary<DateTime, BounceDiagnostic>();
+        private readonly HashSet<DateTime> m_AuditedSignalTimes =
+            new HashSet<DateTime>();
         private bool m_VirtualTradeActive;
         private int m_VirtualTradeDirection;
         private double m_VirtualTradeEntryPrice;
 
         [Input] public bool ShowDisplay { get; set; }
+        [Input] public string AuditDirectory { get; set; }
+        [Input] public string AuditLabel { get; set; }
 
         private class BounceDiagnostic
         {
@@ -82,6 +89,8 @@ namespace PowerLanguage.Indicator
             public bool SlowSlopePass;
             public bool SlopeLeadPass;
             public bool PenetrationPass;
+            public bool TwoBarPullbackPass;
+            public bool ShallowTouchPass;
             public bool BarColorPass;
             public bool LocalDisplacementPass;
             public bool SignalPass;
@@ -90,23 +99,28 @@ namespace PowerLanguage.Indicator
         public RangeEMA8Bounce(object ctx) : base(ctx)
         {
             ShowDisplay = true;
+            AuditDirectory = @"C:\rangebar_diagnostics";
+            AuditLabel = "Unlabeled";
         }
 
         protected override void Create()
         {
             m_FastEMA = new XAverage(this);
             m_SlowEMA = new XAverage(this);
+            m_ProfileEMA = new XAverage(this);
         }
 
         protected override void StartCalc()
         {
             ClearDisplayDrawings();
-            m_DiagnosticsByTime.Clear();
             ResetVirtualTrade();
+            m_AuditedSignalTimes.Clear();
             m_FastEMA.Length = FastEmaLength;
             m_FastEMA.Price = Bars.Close;
             m_SlowEMA.Length = SlowEmaLength;
             m_SlowEMA.Price = Bars.Close;
+            m_ProfileEMA.Length = ProfileEmaLength;
+            m_ProfileEMA.Price = Bars.Close;
         }
 
         protected override void CalcBar()
@@ -124,20 +138,63 @@ namespace PowerLanguage.Indicator
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize <= 0) tickSize = 0.25;
 
-            // Evaluate any open virtual trade before looking for a new setup.
-            // The exit bar is consumed, so it cannot also be a new entry.
-            if (m_VirtualTradeActive)
-            {
-                UpdateVirtualTrade(tickSize);
-                return;
-            }
-
             BounceDiagnostic diagnostic = BuildDiagnostic(tickSize);
-            m_DiagnosticsByTime[Bars.Time[0]] = diagnostic;
             if (diagnostic.SignalPass)
             {
+                AppendSignalAudit(diagnostic, tickSize);
                 DrawBounceArrow(diagnostic.Direction, tickSize);
-                StartVirtualTrade(diagnostic.Direction, Bars.Close[0]);
+            }
+        }
+
+        private void AppendSignalAudit(BounceDiagnostic diagnostic, double tickSize)
+        {
+            // A closed range bar may be recalculated more than once. Keep one
+            // audit entry per bar during this indicator instance's lifetime.
+            if (m_AuditedSignalTimes.Contains(Bars.Time[0])) return;
+            m_AuditedSignalTimes.Add(Bars.Time[0]);
+
+            try
+            {
+                string directory = string.IsNullOrWhiteSpace(AuditDirectory)
+                    ? @"C:\rangebar_diagnostics" : AuditDirectory;
+                Directory.CreateDirectory(directory);
+                string path = Path.Combine(directory, "RangeEMA8Bounce_Audit.log");
+                double comparablePenetration = RoundToIncrement(
+                    diagnostic.PenetrationTicks, PenetrationComparisonIncrementTicks);
+
+                StringBuilder text = new StringBuilder();
+                text.AppendLine("8E SIGNAL AUDIT");
+                text.AppendFormat("Source: {0} | audit label: {1}\r\n",
+                    Bars.Info.Name, string.IsNullOrWhiteSpace(AuditLabel)
+                        ? "Unlabeled" : AuditLabel);
+                text.AppendFormat("Time: {0:yyyy-MM-dd HH:mm:ss.fff} | direction: {1}\r\n",
+                    Bars.Time[0], diagnostic.Direction > 0 ? "LONG" : "SHORT");
+                text.AppendFormat("OHLC: {0:F4} / {1:F4} / {2:F4} / {3:F4}\r\n",
+                    diagnostic.Open, diagnostic.High, diagnostic.Low, diagnostic.Close);
+                text.AppendFormat("EMA 8/24: {0:F4} / {1:F4} | separation: {2:F2}t\r\n",
+                    diagnostic.FastEma, diagnostic.SlowEma, diagnostic.SeparationTicks);
+                text.AppendFormat("Best slopes 8/24: {0:F2} / {1:F2} | lead: {2:F2}\r\n",
+                    diagnostic.BestFastSlope, diagnostic.BestSlowSlope,
+                    diagnostic.SlopeLeadDegrees);
+                text.AppendFormat("Crosses 8: {0} | penetration raw/comparable: {1:F2}t / {2:F2}t\r\n",
+                    diagnostic.RangeCrossesFast, diagnostic.PenetrationTicks,
+                    comparablePenetration);
+                text.AppendFormat("Close side: {0} | bar color: {1} | displacement: {2:F2}t\r\n",
+                    diagnostic.CloseOnTrendSide, diagnostic.Body,
+                    diagnostic.LocalDisplacementTicks);
+                text.AppendFormat("Gates: separation={0}; 8slope={1}; 24slope={2}; lead={3}; " +
+                    "penetration={4}; two-bar pullback={5}; shallow touch={6}; color={7}; " +
+                    "displacement={8}; final={9}\r\n\r\n",
+                    diagnostic.SeparationPass, diagnostic.FastSlopePass,
+                    diagnostic.SlowSlopePass, diagnostic.SlopeLeadPass,
+                    diagnostic.PenetrationPass, diagnostic.TwoBarPullbackPass,
+                    diagnostic.ShallowTouchPass, diagnostic.BarColorPass,
+                    diagnostic.LocalDisplacementPass, diagnostic.SignalPass);
+                File.AppendAllText(path, text.ToString());
+            }
+            catch
+            {
+                // Logging must never interrupt chart calculation or signals.
             }
         }
 
@@ -175,34 +232,6 @@ namespace PowerLanguage.Indicator
             m_VirtualTradeActive = false;
             m_VirtualTradeDirection = 0;
             m_VirtualTradeEntryPrice = 0;
-        }
-
-        protected override void OnMouseEvent(MouseClickArgs arg)
-        {
-            // Alt+W + left-click a completed range bar to inspect the 8 EMA
-            // bounce geometry and trend relationship for that exact bar.
-            if (arg.buttons != MouseButtons.Left || !IsAltHeld(arg.keys) ||
-                !IsWHeld(arg.keys))
-                return;
-
-            BounceDiagnostic diagnostic;
-            if (!m_DiagnosticsByTime.TryGetValue(arg.point.Time, out diagnostic))
-                return;
-            ShowDiagnosticPopup(arg.point.Time, diagnostic);
-        }
-
-        private bool IsWHeld(Keys eventKeys)
-        {
-            if ((eventKeys & Keys.KeyCode) == Keys.W) return true;
-            try { return (GetAsyncKeyState((int)Keys.W) & 0x8000) != 0; }
-            catch { return false; }
-        }
-
-        private bool IsAltHeld(Keys eventKeys)
-        {
-            if ((eventKeys & Keys.Alt) == Keys.Alt) return true;
-            try { return (GetAsyncKeyState((int)Keys.Menu) & 0x8000) != 0; }
-            catch { return false; }
         }
 
         private BounceDiagnostic BuildDiagnostic(double tickSize)
@@ -266,13 +295,25 @@ namespace PowerLanguage.Indicator
                 ? result.BestSlowSlope >= MinimumSlowSlopeDegrees
                 : result.Direction < 0 &&
                   result.BestSlowSlope <= -MinimumSlowSlopeDegrees;
-            result.SlopeLeadPass = result.SlopeLeadDegrees >=
-                                   MinimumFastSlopeLeadDegrees;
+            // A steep 8 EMA is sufficient; the 24 EMA may be rising at a
+            // similar or slightly faster rate during a healthy continuation.
+            result.SlopeLeadPass = true;
             double comparablePenetration = RoundToIncrement(
                 result.PenetrationTicks, PenetrationComparisonIncrementTicks);
-            result.PenetrationPass = result.RangeCrossesFast &&
+            bool normalPenetrationPass = result.RangeCrossesFast &&
                 comparablePenetration >= MinimumPenetrationTicks &&
                 comparablePenetration <= MaximumPenetrationTicks;
+            // A steep trend may make a shallow two-bar pullback a valid
+            // rejection. In that variation the bar must still actually touch
+            // the 8 EMA, but its raw penetration may be below one tick.
+            result.TwoBarPullbackPass = HasTwoBarCounterTrendPullback(
+                result.Direction);
+            result.ShallowTouchPass = result.RangeCrossesFast &&
+                result.PenetrationTicks >= 0 &&
+                result.PenetrationTicks < MinimumPenetrationTicks &&
+                result.TwoBarPullbackPass;
+            result.PenetrationPass = normalPenetrationPass ||
+                                     result.ShallowTouchPass;
             result.BarColorPass = result.Direction > 0
                 ? result.Close > result.Open
                 : result.Direction < 0 && result.Close <= result.Open;
@@ -319,6 +360,16 @@ namespace PowerLanguage.Indicator
                 : (Bars.High[0] - reference) / tickSize;
         }
 
+        private bool HasTwoBarCounterTrendPullback(int direction)
+        {
+            return direction > 0
+                ? Bars.Close[1] < Bars.Open[1] &&
+                  Bars.Close[2] < Bars.Open[2]
+                : direction < 0 &&
+                  Bars.Close[1] > Bars.Open[1] &&
+                  Bars.Close[2] > Bars.Open[2];
+        }
+
         private double GetBestDirectionalSlope(XAverage ema, int direction,
                                                double tickSize)
         {
@@ -334,49 +385,40 @@ namespace PowerLanguage.Indicator
             return best;
         }
 
-        private void ShowDiagnosticPopup(DateTime time, BounceDiagnostic d)
+        private bool HasTradeProfileDirection(int direction, double tickSize)
         {
-            string direction = d.Direction > 0 ? "LONG CONTEXT" :
-                               d.Direction < 0 ? "SHORT CONTEXT" : "FLAT";
-            string text = string.Format(
-                "8 EMA BOUNCE DIAGNOSTIC ({0})\n" +
-                "8 / 24 EMA: {1:F2} / {2:F2}  [{3}]\n" +
-                "8/24 separation now: {4:F2}t | best (0-6): {5:F2}t\n" +
-                "8 slope now / best: {6:F1}\u00B0 / {7:F1}\u00B0\n" +
-                "24 slope now / best: {8:F1}\u00B0 / {9:F1}\u00B0\n" +
-                "8 slope lead over 24 (best): {10:F1}\u00B0\n" +
-                "OHLC: {11:F2} / {12:F2} / {13:F2} / {14:F2} [{15}]\n" +
-                "Bar vs 8 EMA -- low: {16:F2}t, high: {17:F2}t, close: {18:F2}t\n" +
-                "Pierces / penetration: [{19}] / {20:F2}t [{21}]\n" +
-                "Close on trend side: [{22}] | Bar color: [{23}]\n" +
-                "PROVISIONAL 8 EMA BOUNCE: [{24}]\n" +
-                "Rules -- separation >= 4.5t [{25}], 8 slope >= 45\u00B0 [{26}], " +
-                "24 slope >= 40\u00B0 [{27}], 8 lead >= 2.5\u00B0 [{28}], " +
-                "penetration 1-3.5t.\n" +
-                "Local displacement vs prior 2 bars: {29:F2}t [{30}] (min 1t).",
-                time.ToString("yyyy-MM-dd HH:mm:ss"), d.FastEma, d.SlowEma,
-                direction, d.SeparationTicks, d.BestSeparationTicks,
-                d.FastSlopeNow, d.BestFastSlope, d.SlowSlopeNow, d.BestSlowSlope,
-                d.SlopeLeadDegrees, d.Open, d.High, d.Low, d.Close, d.Body,
-                d.LowToFastTicks, d.HighToFastTicks, d.CloseToFastTicks,
-                d.RangeCrossesFast ? "YES" : "NO",
-                d.PenetrationTicks, d.PenetrationPass ? "PASS" : "FAIL",
-                d.CloseOnTrendSide ? "PASS" : "FAIL",
-                d.BarColorPass ? "PASS" : "FAIL",
-                d.SignalPass ? "PASS" : "FAIL",
-                d.SeparationPass ? "PASS" : "FAIL",
-                d.FastSlopePass ? "PASS" : "FAIL",
-                d.SlowSlopePass ? "PASS" : "FAIL",
-                d.SlopeLeadPass ? "PASS" : "FAIL",
-                d.LocalDisplacementTicks,
-                d.LocalDisplacementPass ? "PASS" : "FAIL");
-            try
-            {
-                MessageBox.Show(text, "Range 8 EMA Bounce: " +
-                                time.ToString("yyyy-MM-dd HH:mm:ss"),
-                                MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-            catch { }
+            return direction != 0 && HasTradeProfileDirectionAt(direction, 0, tickSize);
+        }
+
+        private bool HasTradeProfileDirectionAt(int direction, int barsBack,
+                                                 double tickSize)
+        {
+            double fast = m_FastEMA[barsBack];
+            double slow = m_SlowEMA[barsBack];
+            double trend = m_ProfileEMA[barsBack];
+            bool ordered = direction > 0 ? fast > slow && slow > trend :
+                           fast < slow && slow < trend;
+            if (!ordered ||
+                Math.Abs(fast - slow) / tickSize < ProfileMinFastSlowSeparationTicks ||
+                Math.Abs(slow - trend) / tickSize < ProfileMinSlowTrendSeparationTicks ||
+                Math.Abs(fast - trend) / tickSize < ProfileMinFastTrendSeparationTicks)
+                return false;
+            double fastSlope = GetAngle(m_FastEMA[barsBack],
+                                        m_FastEMA[barsBack + ProfileSlopeBars],
+                                        ProfileSlopeBars, tickSize);
+            double slowSlope = GetAngle(m_SlowEMA[barsBack],
+                                        m_SlowEMA[barsBack + ProfileSlopeBars],
+                                        ProfileSlopeBars, tickSize);
+            double trendSlope = GetAngle(m_ProfileEMA[barsBack],
+                                         m_ProfileEMA[barsBack + ProfileSlopeBars],
+                                         ProfileSlopeBars, tickSize);
+            return direction > 0
+                ? fastSlope >= ProfileMinFastSlopeDegrees &&
+                  slowSlope >= ProfileMinSlowSlopeDegrees &&
+                  trendSlope >= ProfileMinTrendSlopeDegrees
+                : fastSlope <= -ProfileMinFastSlopeDegrees &&
+                  slowSlope <= -ProfileMinSlowSlopeDegrees &&
+                  trendSlope <= -ProfileMinTrendSlopeDegrees;
         }
 
         private double GetAngle(double valueCurrent, double valueOld,
@@ -400,8 +442,6 @@ namespace PowerLanguage.Indicator
                 new ChartPoint(Bars.Time[0], price), direction < 0);
             if (arrow != null)
             {
-                // Green identifies the 8-EMA bounce family in either
-                // direction; arrow orientation carries the trade direction.
                 arrow.Color = Color.MediumSeaGreen;
                 arrow.Size = 4;
                 m_DisplayDrawings.Add(arrow);
@@ -416,7 +456,7 @@ namespace PowerLanguage.Indicator
 
             label.Color = Color.MediumSeaGreen;
             label.Size = 9;
-            label.HStyle = ETextStyleH.Right;
+            label.HStyle = ETextStyleH.Center;
             label.VStyle = direction > 0 ? ETextStyleV.Below : ETextStyleV.Above;
             m_DisplayDrawings.Add(label);
         }

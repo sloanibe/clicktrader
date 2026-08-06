@@ -6,6 +6,16 @@ using PowerLanguage.Function;
 
 namespace PowerLanguage.Indicator
 {
+    // The selected level is the largest permitted PB body size. Smaller
+    // bodies remain visible, so PB3 includes PB3/PB2/PB1/PB0.
+    public enum EPBDisplayLevel
+    {
+        PB0 = 0,
+        PB1 = 1,
+        PB2 = 2,
+        PB3 = 3
+    }
+
     // Historical/display-only companion to RangeBarTradingV3's PB1 mode.
     // It intentionally contains no mouse handling, arming, or order logic.
     [SameAsSymbol(true)]
@@ -15,49 +25,49 @@ namespace PowerLanguage.Indicator
         private const int PinBarRangeTicks = 5;
         private const int FastEmaLength = 8;
         private const int SlowEmaLength = 24;
+        private const int ProfileEmaLength = 50;
         // Keep PB1 markers out of flat, overlapping-EMA congestion.
         private const int MinimumEmaSeparationTicks = 3;
         private const int EmaSlopeBars = 3;
         private const double MinimumFastEmaSlopeDegrees = 20.0;
-        private const int RangeClearanceLookbackBars = 8;
-        // Each displayed PB1 is treated as a virtual entry.  Another signal
-        // is not shown until this virtual trade exits on a later bar.
-        private const int ReentryProfitTargetTicks = 5;
-        private const int ReentryStopLossTicks = 10;
-
-        // Retained only so existing chart-study settings continue to load.
-        // PB1 display is now direction-neutral, so this value is ignored.
+        private const double StrongContinuationFastSlopeDegrees = 40.0;
+        private const double StrongContinuationSlowSlopeDegrees = 15.0;
+        private const double StrongContinuationSeparationTicks = 3.0;
+        // Match RangeBarTrading's one-sided chart convention: ask charts show
+        // longs, and bid charts show shorts.
         [Input] public bool IsAskChart { get; set; }
         [Input] public bool ShowDisplay { get; set; }
+        [Input] public EPBDisplayLevel DisplayPBLevel { get; set; }
 
         private XAverage m_FastEMA;
         private XAverage m_SlowEMA;
+        private XAverage m_ProfileEMA;
         private readonly List<IDrawObject> m_DisplayDrawings =
             new List<IDrawObject>();
-        private bool m_VirtualTradeActive;
-        private int m_VirtualTradeDirection;
-        private double m_VirtualTradeEntryPrice;
 
         public RangePBBounce(object ctx) : base(ctx)
         {
             IsAskChart = true;
             ShowDisplay = true;
+            DisplayPBLevel = EPBDisplayLevel.PB2;
         }
 
         protected override void Create()
         {
             m_FastEMA = new XAverage(this);
             m_SlowEMA = new XAverage(this);
+            m_ProfileEMA = new XAverage(this);
         }
 
         protected override void StartCalc()
         {
             ClearDisplayDrawings();
-            ResetVirtualTrade();
             m_FastEMA.Length = FastEmaLength;
             m_FastEMA.Price = Bars.Close;
             m_SlowEMA.Length = SlowEmaLength;
             m_SlowEMA.Price = Bars.Close;
+            m_ProfileEMA.Length = ProfileEmaLength;
+            m_ProfileEMA.Price = Bars.Close;
         }
 
         protected override void CalcBar()
@@ -70,39 +80,78 @@ namespace PowerLanguage.Indicator
 
             // Historical bars arrive as closed bars, and this prevents a
             // forming live range bar from being marked repeatedly or early.
-            if (Bars.Status != EBarState.Close ||
-                Bars.CurrentBar < RangeClearanceLookbackBars) return;
+            if (Bars.Status != EBarState.Close || Bars.CurrentBar < 8) return;
 
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize <= 0) tickSize = 0.25;
 
-            // An exit bar is consumed by the virtual trade; it cannot also
-            // become a new PB1 entry marker.
-            if (m_VirtualTradeActive)
+            // PB1/PB0 continuations are governed only by their directional
+            // 8-EMA rule, not the general PB 24-EMA/lead-in filters.
+            int compactShortBodyTicks;
+            if (IsDisplayDirectionAllowed(-1) &&
+                TryGetCompletedPB1BodyTicks(-1, tickSize,
+                                             out compactShortBodyTicks) &&
+                compactShortBodyTicks <= 1 &&
+                IsSelectedPBBody(compactShortBodyTicks) &&
+                IsCompactShortPBContinuationValid(tickSize))
             {
-                UpdateVirtualTrade(tickSize);
+                DrawPB1Label(-1, compactShortBodyTicks, tickSize);
                 return;
             }
 
-            int direction = GetSlowEmaDirection();
-            if (!IsPB1EmaOrderValid(direction) ||
+            int compactLongBodyTicks;
+            if (IsDisplayDirectionAllowed(1) &&
+                TryGetCompletedPB1BodyTicks(1, tickSize,
+                                             out compactLongBodyTicks) &&
+                compactLongBodyTicks <= 1 &&
+                IsSelectedPBBody(compactLongBodyTicks) &&
+                IsCompactLongPBContinuationValid(tickSize))
+            {
+                DrawPB1Label(1, compactLongBodyTicks, tickSize);
+                return;
+            }
+
+            int direction = GetUnarmedPinBarDirection(tickSize);
+            if (!IsDisplayDirectionAllowed(direction) ||
+                !HasPriorBarTrendDirection(direction) ||
+                !HasDirectionalFastEmaSlopeForThreeBars(direction) ||
+                !IsCompletedPinBarTailOnFastEmaSide(direction) ||
+                !IsPB1EmaOrderValid(direction) ||
                 !IsPB1TrendFilterValid(direction, tickSize) ||
-                !IsCloseBeyondPreviousBarRange(direction) ||
-                !HasRangeClearance(direction) ||
+                !(HasPBLeadInStructure(direction) ||
+                  IsStrongTrendContinuationValid(direction, tickSize)) ||
                 !IsOpenOnCorrectEmaSide(direction, tickSize))
                 return;
 
             int bodyTicks;
-            if (!TryGetCompletedPB1BodyTicks(direction, tickSize, out bodyTicks))
+            if (!TryGetCompletedPB1BodyTicks(direction, tickSize, out bodyTicks) ||
+                !IsSelectedPBBody(bodyTicks))
+                return;
+
+            // PB0/PB1 are compact setups.  RangeBarTrading evaluates them
+            // only through the compact 8-EMA continuation rule above; they
+            // must never fall through to the PB2 rule set.
+            if (bodyTicks <= 1)
                 return;
 
             DrawPB1Label(direction, bodyTicks, tickSize);
-            StartVirtualTrade(direction, Bars.Close[0]);
+        }
+
+        private int GetUnarmedPinBarDirection(double tickSize)
+        {
+            if (HasSharplyMovingFastEma(1, tickSize)) return 1;
+            if (HasSharplyMovingFastEma(-1, tickSize)) return -1;
+            return GetSlowEmaDirection();
         }
 
         private int GetSlowEmaDirection()
         {
             return m_SlowEMA[0] >= m_SlowEMA[1] ? 1 : -1;
+        }
+
+        private bool IsDisplayDirectionAllowed(int direction)
+        {
+            return direction > 0 ? IsAskChart : direction < 0 && !IsAskChart;
         }
 
         private bool IsPB1EmaOrderValid(int direction)
@@ -128,28 +177,99 @@ namespace PowerLanguage.Indicator
                 : fastEmaSlope <= -MinimumFastEmaSlopeDegrees;
         }
 
-        private bool IsCloseBeyondPreviousBarRange(int direction)
+        private bool HasSharplyMovingFastEma(int direction, double tickSize)
         {
+            double slope = GetAngle(m_FastEMA[0], m_FastEMA[EmaSlopeBars],
+                                    EmaSlopeBars, tickSize);
             return direction > 0
-                ? Bars.Close[0] > Bars.High[1]
-                : Bars.Close[0] < Bars.Low[1];
+                ? slope >= MinimumFastEmaSlopeDegrees
+                : direction < 0 && slope <= -MinimumFastEmaSlopeDegrees;
         }
 
-        // The rejection tail establishes the PB shape, while the close must
-        // clear the full ranges of the preceding eight bars in the bounce
-        // direction. Strict comparison rejects an equal high/low because it
-        // does not create the requested chart whitespace.
-        private bool HasRangeClearance(int direction)
+        private bool HasDirectionalFastEmaSlopeForThreeBars(int direction)
         {
-            for (int barsBack = 1; barsBack <= RangeClearanceLookbackBars;
-                 barsBack++)
+            return direction > 0
+                ? m_FastEMA[0] > m_FastEMA[1] &&
+                  m_FastEMA[1] > m_FastEMA[2] &&
+                  m_FastEMA[2] > m_FastEMA[3]
+                : direction < 0 &&
+                  m_FastEMA[0] < m_FastEMA[1] &&
+                  m_FastEMA[1] < m_FastEMA[2] &&
+                  m_FastEMA[2] < m_FastEMA[3];
+        }
+
+        private bool HasPriorBarTrendDirection(int direction)
+        {
+            return direction > 0
+                ? Bars.Close[1] > Bars.Open[1]
+                : direction < 0 && Bars.Close[1] < Bars.Open[1];
+        }
+
+        private bool IsCompletedPinBarTailOnFastEmaSide(int direction)
+        {
+            return direction > 0
+                ? Bars.Low[0] >= m_FastEMA[0]
+                : direction < 0 && Bars.High[0] <= m_FastEMA[0];
+        }
+
+        // The two completed lead-in bars must advance consecutively.  For a
+        // long PB, each holds at/above the prior low, closes positively, and
+        // closes above the prior bar.  The current PB is deliberately not
+        // checked here: its lower rejection tail remains valid.
+        private bool HasPBLeadInStructure(int direction)
+        {
+            for (int barsBack = 1; barsBack <= 2; barsBack++)
             {
-                if (direction > 0 && Bars.Close[0] <= Bars.High[barsBack])
-                    return false;
-                if (direction < 0 && Bars.Close[0] >= Bars.Low[barsBack])
+                int priorBar = barsBack + 1;
+                bool passes = direction > 0
+                    ? Bars.Low[barsBack] >= Bars.Low[priorBar] &&
+                      Bars.Close[barsBack] > Bars.Open[barsBack] &&
+                      Bars.Close[barsBack] > Bars.Close[priorBar]
+                    : Bars.High[barsBack] <= Bars.High[priorBar] &&
+                      Bars.Close[barsBack] < Bars.Open[barsBack] &&
+                      Bars.Close[barsBack] < Bars.Close[priorBar];
+                if (!passes)
                     return false;
             }
             return true;
+        }
+
+        // In a sharply fanned 8/24/50 trend, a PB2 may be a healthy
+        // continuation even if the older of the two lead-in bars did not
+        // advance perfectly. The immediately prior bar must still advance,
+        // and the PB rejection tail must remain on the 8-EMA trend side.
+        private bool IsStrongTrendContinuationValid(int direction, double tickSize)
+        {
+            double fastSlope = GetAngle(m_FastEMA[0], m_FastEMA[EmaSlopeBars],
+                                        EmaSlopeBars, tickSize);
+            double slowSlope = GetAngle(m_SlowEMA[0], m_SlowEMA[EmaSlopeBars],
+                                        EmaSlopeBars, tickSize);
+            double separation = Math.Abs(m_FastEMA[0] - m_SlowEMA[0]) / tickSize;
+            return direction > 0
+                ? Bars.Close[1] > Bars.Open[1] && Bars.Low[0] >= m_FastEMA[0] &&
+                  separation >= StrongContinuationSeparationTicks &&
+                  fastSlope >= StrongContinuationFastSlopeDegrees &&
+                  slowSlope >= StrongContinuationSlowSlopeDegrees
+                : Bars.Close[1] < Bars.Open[1] && Bars.High[0] <= m_FastEMA[0] &&
+                  separation >= StrongContinuationSeparationTicks &&
+                  fastSlope <= -StrongContinuationFastSlopeDegrees &&
+                  slowSlope <= -StrongContinuationSlowSlopeDegrees;
+        }
+
+        private bool IsCompactShortPBContinuationValid(double tickSize)
+        {
+            return HasSharplyMovingFastEma(-1, tickSize) &&
+                   HasDirectionalFastEmaSlopeForThreeBars(-1) &&
+                   HasPriorBarTrendDirection(-1) &&
+                   IsCompletedPinBarTailOnFastEmaSide(-1);
+        }
+
+        private bool IsCompactLongPBContinuationValid(double tickSize)
+        {
+            return HasSharplyMovingFastEma(1, tickSize) &&
+                   HasDirectionalFastEmaSlopeForThreeBars(1) &&
+                   HasPriorBarTrendDirection(1) &&
+                   IsCompletedPinBarTailOnFastEmaSide(1);
         }
 
         private bool IsOpenOnCorrectEmaSide(int direction, double tickSize)
@@ -184,10 +304,15 @@ namespace PowerLanguage.Indicator
                 if (Math.Abs(close - low) > tolerance) return false;
             }
 
-            // Keep the historical display aligned with the strategy's PB1
-            // family: 2/3, 1/4, and 0/5 (body/tail).
-            return (bodyTicks == 0 || bodyTicks == 1 || bodyTicks == 2) &&
+            // The display supports PB3 through PB0: body/tail 3/2, 2/3,
+            // 1/4, and 0/5. DisplayPBLevel selects the largest shown body.
+            return bodyTicks >= 0 && bodyTicks <= 3 &&
                    tailTicks + bodyTicks == PinBarRangeTicks;
+        }
+
+        private bool IsSelectedPBBody(int bodyTicks)
+        {
+            return bodyTicks >= 0 && bodyTicks <= (int)DisplayPBLevel;
         }
 
         private void DrawPB1Label(int direction, int bodyTicks, double tickSize)
@@ -213,7 +338,7 @@ namespace PowerLanguage.Indicator
                 : Bars.High[0] + (4 * tickSize);
             ITextObject label = DrwText.Create(
                 new ChartPoint(Bars.Time[0], labelPrice),
-                bodyTicks == 2 ? "PB2" : bodyTicks == 1 ? "PB1" : "PB0");
+                "PB" + bodyTicks.ToString());
             if (label == null) return;
 
             label.Color = Color.DodgerBlue;
@@ -221,43 +346,6 @@ namespace PowerLanguage.Indicator
             label.HStyle = ETextStyleH.Center;
             label.VStyle = direction > 0 ? ETextStyleV.Below : ETextStyleV.Above;
             m_DisplayDrawings.Add(label);
-        }
-
-        private void StartVirtualTrade(int direction, double entryPrice)
-        {
-            m_VirtualTradeActive = direction != 0;
-            m_VirtualTradeDirection = direction;
-            m_VirtualTradeEntryPrice = entryPrice;
-        }
-
-        private void UpdateVirtualTrade(double tickSize)
-        {
-            double profitTarget = m_VirtualTradeDirection > 0
-                ? m_VirtualTradeEntryPrice + (ReentryProfitTargetTicks * tickSize)
-                : m_VirtualTradeEntryPrice - (ReentryProfitTargetTicks * tickSize);
-            double stopPrice = m_VirtualTradeDirection > 0
-                ? m_VirtualTradeEntryPrice - (ReentryStopLossTicks * tickSize)
-                : m_VirtualTradeEntryPrice + (ReentryStopLossTicks * tickSize);
-
-            bool targetReached = m_VirtualTradeDirection > 0
-                ? Bars.High[0] >= profitTarget
-                : Bars.Low[0] <= profitTarget;
-            bool stoppedOut = m_VirtualTradeDirection > 0
-                ? Bars.Low[0] <= stopPrice
-                : Bars.High[0] >= stopPrice;
-
-            // OHLC cannot reveal which threshold was touched first.  Treat a
-            // bar that reaches both as stopped out, rather than assuming it
-            // made the profit target first.
-            if (stoppedOut || targetReached)
-                ResetVirtualTrade();
-        }
-
-        private void ResetVirtualTrade()
-        {
-            m_VirtualTradeActive = false;
-            m_VirtualTradeDirection = 0;
-            m_VirtualTradeEntryPrice = 0;
         }
 
         private void ClearDisplayDrawings()
