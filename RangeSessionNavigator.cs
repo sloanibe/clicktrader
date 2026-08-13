@@ -24,6 +24,10 @@ namespace PowerLanguage.Indicator
         private DateTime m_LastMarkedSessionDate = DateTime.MinValue;
         private readonly List<int> m_SessionBarNumbers = new List<int>();
         private readonly List<DateTime> m_SessionTimes = new List<DateTime>();
+        // Retain references so MultiCharts keeps all historical day labels
+        // alive after the bar that created them has finished calculating.
+        private readonly List<ITextObject> m_SessionDayLabels =
+            new List<ITextObject>();
         private ITextObject m_StatusMessage;
 
         public RangeSessionNavigator(object ctx) : base(ctx)
@@ -37,6 +41,7 @@ namespace PowerLanguage.Indicator
             m_LastMarkedSessionDate = DateTime.MinValue;
             m_SessionBarNumbers.Clear();
             m_SessionTimes.Clear();
+            m_SessionDayLabels.Clear();
         }
 
         protected override void CalcBar()
@@ -203,6 +208,11 @@ namespace PowerLanguage.Indicator
             if (upperPrice <= lowerPrice)
                 upperPrice = lowerPrice + tickSize;
 
+            // Create the text independently of the line: MultiCharts can
+            // occasionally decline a trend-line creation while rebuilding a
+            // chart, but that must not suppress the day marker.
+            DrawSessionDayLabel(barTime, (lowerPrice + upperPrice) / 2.0);
+
             ITrendLineObject line = DrwTrendLine.Create(
                 new ChartPoint(barTime, lowerPrice),
                 new ChartPoint(barTime, upperPrice));
@@ -216,6 +226,42 @@ namespace PowerLanguage.Indicator
             line.ExtLeft = true;
             line.ExtRight = true;
             line.AnchorToBars = true;
+        }
+
+        private void DrawSessionDayLabel(DateTime barTime, double price)
+        {
+            ITextObject label = DrwText.Create(
+                new ChartPoint(barTime, price), GetSessionLabel(barTime));
+            if (label == null) return;
+
+            // Right alignment keeps the label's left edge just to the right
+            // of the session line.  The price midpoint keeps it visually
+            // centered on the marker rather than above or below the bars.
+            label.Color = Color.DarkViolet;
+            label.Size = 10;
+            label.HStyle = ETextStyleH.Right;
+            label.VStyle = ETextStyleV.Above;
+            m_SessionDayLabels.Add(label);
+        }
+
+        private string GetDayAbbreviation(DayOfWeek day)
+        {
+            switch (day)
+            {
+                case DayOfWeek.Monday: return "MON";
+                case DayOfWeek.Tuesday: return "TUE";
+                case DayOfWeek.Wednesday: return "WED";
+                case DayOfWeek.Thursday: return "THU";
+                case DayOfWeek.Friday: return "FRI";
+                case DayOfWeek.Saturday: return "SAT";
+                default: return "SUN";
+            }
+        }
+
+        private string GetSessionLabel(DateTime sessionTime)
+        {
+            return GetDayAbbreviation(sessionTime.DayOfWeek) + ": " +
+                sessionTime.ToString("M/d/yy");
         }
     }
 }
