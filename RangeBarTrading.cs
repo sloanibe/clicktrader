@@ -73,10 +73,10 @@ namespace PowerLanguage.Strategy
         private const double Ema8MinFastSlopeDegrees = 40.0;
         private const double Ema8MinSlowSlopeDegrees = 40.0;
         private const double Ema8MinPenetrationTicks = 1.0;
-        // A two-bar pullback may probe four ticks through the 8 EMA before
-        // rejecting; the prior 3.5-tick cap excluded otherwise clean MYM
+        // A two-bar pullback may probe four and a half ticks through the 8
+        // EMA before rejecting; tighter caps excluded otherwise clean MYM
         // eight-tick-bar examples.
-        private const double Ema8MaxPenetrationTicks = 4.0;
+        private const double Ema8MaxPenetrationTicks = 4.5;
         private const double Ema8MinLocalDisplacementTicks = 1.0;
         // Match RangeEMA8Bounce's half-tick penetration comparison.
         private const double Ema8PenetrationRoundingAllowanceTicks = 0.25;

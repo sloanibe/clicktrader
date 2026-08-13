@@ -23,9 +23,9 @@ namespace PowerLanguage.Indicator
         private const double MinimumFastSlopeDegrees = 40.0;
         private const double MinimumSlowSlopeDegrees = 40.0;
         private const double MinimumPenetrationTicks = 1.0;
-        // Match the live strategy: permit a four-tick two-bar pullback
-        // through the 8 EMA before the rejection bar resumes the trend.
-        private const double MaximumPenetrationTicks = 4.0;
+        // Match the live strategy: permit a four-and-a-half-tick two-bar
+        // pullback through the 8 EMA before the rejection resumes the trend.
+        private const double MaximumPenetrationTicks = 4.5;
         // EMA values are fractional-price values while range-bar highs/lows
         // are tick prices. Compare the measured penetration at half-tick
         // precision so EMA interpolation artifacts do not reject a valid

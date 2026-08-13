@@ -32,7 +32,7 @@ namespace PowerLanguage.Indicator
         private const double Ema8MinimumFastSlopeDegrees = 40.0;
         private const double Ema8MinimumSlowSlopeDegrees = 40.0;
         private const double Ema8MinimumPenetrationTicks = 1.0;
-        private const double Ema8MaximumPenetrationTicks = 4.0;
+        private const double Ema8MaximumPenetrationTicks = 4.5;
         private const double Ema24MinimumCurrentSeparationTicks = 1.5;
         private const double Ema24MinimumBestSeparationTicks = 2.0;
         private const double Ema24MinimumSlowSlopeDegrees = 20.0;
@@ -525,7 +525,7 @@ namespace PowerLanguage.Indicator
             text.AppendFormat("Separation >= 4.5t [{0}], 8 slope >= 40° [{1}], " +
                 "24 slope >= 40° [{2}], slope lead informational [{3}]\n", Pass(separationPass),
                 Pass(fastPass), Pass(slowPass), Pass(leadPass));
-            text.AppendFormat("Crosses 8 EMA [{0}], penetration {1:F2}t (1-4) [{2}], " +
+            text.AppendFormat("Crosses 8 EMA [{0}], penetration {1:F2}t (1-4.5) [{2}], " +
                 "close side [{3}], color [{4}], displacement {5:F2}t [{6}]\n",
                 Pass(crosses), comparablePenetration, Pass(penetrationPass),
                 Pass(closeSidePass), Pass(colorPass), displacement, Pass(displacementPass));
