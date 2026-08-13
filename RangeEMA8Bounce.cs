@@ -23,11 +23,13 @@ namespace PowerLanguage.Indicator
         private const double MinimumFastSlopeDegrees = 40.0;
         private const double MinimumSlowSlopeDegrees = 40.0;
         private const double MinimumPenetrationTicks = 1.0;
-        private const double MaximumPenetrationTicks = 3.5;
+        // Match the live strategy: permit a four-tick two-bar pullback
+        // through the 8 EMA before the rejection bar resumes the trend.
+        private const double MaximumPenetrationTicks = 4.0;
         // EMA values are fractional-price values while range-bar highs/lows
-        // are tick prices.  Compare the measured penetration at the same
-        // half-tick precision as the 3.5-tick rule so an EMA interpolation
-        // artifact (for example, 3.54t) does not reject a 3.5t pullback.
+        // are tick prices. Compare the measured penetration at half-tick
+        // precision so EMA interpolation artifacts do not reject a valid
+        // four-tick pullback at the boundary.
         private const double PenetrationComparisonIncrementTicks = 0.5;
         private const double MinimumLocalDisplacementTicks = 1.0;
         // Treat each displayed arrow as a completed virtual entry.  A new
@@ -321,6 +323,7 @@ namespace PowerLanguage.Indicator
                                            MinimumLocalDisplacementTicks;
             result.SignalPass = result.SeparationPass && result.FastSlopePass &&
                 result.SlowSlopePass && result.SlopeLeadPass &&
+                result.TwoBarPullbackPass &&
                 result.PenetrationPass && result.CloseOnTrendSide &&
                 result.BarColorPass && result.LocalDisplacementPass;
             return result;

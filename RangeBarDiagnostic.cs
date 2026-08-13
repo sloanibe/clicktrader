@@ -24,14 +24,15 @@ namespace PowerLanguage.Indicator
         private const int TrendEmaLength = 50;
         private const int SlopeBars = 3;
         private const int SlopeLookbackBars = 6;
-        private const int PinBarRangeTicks = 5;
+        private const int BasePinBarRangeTicks = 5;
+        private const int PBSlowEmaPersistenceBars = 4;
         private const double PBMinimumSeparationTicks = 3.0;
         private const double PBMinimumFastSlopeDegrees = 20.0;
         private const double Ema8MinimumSeparationTicks = 4.5;
         private const double Ema8MinimumFastSlopeDegrees = 40.0;
         private const double Ema8MinimumSlowSlopeDegrees = 40.0;
         private const double Ema8MinimumPenetrationTicks = 1.0;
-        private const double Ema8MaximumPenetrationTicks = 3.5;
+        private const double Ema8MaximumPenetrationTicks = 4.0;
         private const double Ema24MinimumCurrentSeparationTicks = 1.5;
         private const double Ema24MinimumBestSeparationTicks = 2.0;
         private const double Ema24MinimumSlowSlopeDegrees = 20.0;
@@ -189,7 +190,7 @@ namespace PowerLanguage.Indicator
         private string BuildReport(double tickSize)
         {
             StringBuilder text = new StringBuilder();
-            int direction = GetTrendDirection();
+            int direction = GetUnarmedPBDisplayDirection(tickSize);
             double fastSlope = GetAngle(m_FastEMA[0], m_FastEMA[SlopeBars],
                                         SlopeBars, tickSize);
             double slowSlope = GetAngle(m_SlowEMA[0], m_SlowEMA[SlopeBars],
@@ -251,48 +252,37 @@ namespace PowerLanguage.Indicator
             result.Report = report;
 
             int tail, body;
-            bool shortShape = TryGetPBShape(-1, tickSize, out tail, out body);
-            int compactShortClearanceBars =
-                IsStrongTrendContinuationValid(-1, tickSize) ? 1 : 5;
-            result.CompactShortPB = shortShape && body <= 1 &&
-                result.FastSlope <= -PBMinimumFastSlopeDegrees &&
-                Bars.Close[1] < Bars.Open[1] && Bars.High[0] <= result.FastEma &&
-                HasRangeClearance(-1, compactShortClearanceBars);
-            bool longShape = TryGetPBShape(1, tickSize, out tail, out body);
-            int compactLongClearanceBars =
-                IsStrongTrendContinuationValid(1, tickSize) ? 1 : 5;
-            result.CompactLongPB = longShape && body <= 1 &&
-                result.FastSlope >= PBMinimumFastSlopeDegrees &&
-                Bars.Close[1] > Bars.Open[1] && Bars.Low[0] >= result.FastEma &&
-                HasRangeClearance(1, compactLongClearanceBars);
+            result.CompactShortPB = IsCompactPBContinuationValid(-1, tickSize);
+            result.CompactLongPB = IsCompactPBContinuationValid(1, tickSize);
 
-            int direction = GetTrendDirection();
+            int direction = GetUnarmedPBDisplayDirection(tickSize);
             bool normalShape = TryGetPBShape(direction, tickSize, out tail, out body);
-            bool emaOrder = direction > 0 ? result.FastEma > result.SlowEma :
-                            direction < 0 && result.FastEma < result.SlowEma;
-            bool separation = direction != 0 &&
-                              result.Separation824 >= PBMinimumSeparationTicks;
-            bool slope = direction > 0 ? result.FastSlope >= PBMinimumFastSlopeDegrees :
-                         direction < 0 && result.FastSlope <= -PBMinimumFastSlopeDegrees;
-            bool closeBeyond = direction > 0 ? Bars.Close[0] > Bars.High[1] :
-                               direction < 0 && Bars.Close[0] < Bars.Low[1];
+            bool twoPriorCloses = HasTwoPriorPBTrendCloses(direction);
+            bool priorDirection = HasPriorPBTrendDirection(direction);
+            bool directionalFastSlope = HasDirectionalFastEmaSlopeForThreeBars(direction);
+            bool tailOnFastSide = IsCompletedPinBarTailOnFastEmaSide(direction);
+            bool emaOrder = IsPB1EmaOrderValid(direction);
+            bool trendFilter = IsPB1TrendFilterValid(direction, tickSize);
             bool openSide = direction > 0 ? Bars.Open[0] > result.SlowEma :
                             direction < 0 && Bars.Open[0] < result.SlowEma;
             bool leadIn = HasPBLeadInStructure(direction);
-            bool clearance8 = HasRangeClearance(direction, 8);
-            bool profile = direction != 0 &&
-                           HasTradeProfileDirectionAt(direction, 0, tickSize);
             bool strongContinuation = IsStrongTrendContinuationValid(direction, tickSize);
-            result.GeneralPB = normalShape && emaOrder && separation && slope &&
-                               (leadIn || strongContinuation) && closeBeyond &&
-                               clearance8 && openSide && profile;
+            // PB1/PB0 are evaluated only by the compact path above.  The
+            // regular PB path is PB2+ and follows RangePBBounce exactly.
+            result.GeneralPB = normalShape &&
+                               body > GetPB1BodyTicks(tickSize) && twoPriorCloses &&
+                               priorDirection && directionalFastSlope &&
+                               tailOnFastSide && emaOrder && trendFilter &&
+                               (leadIn || strongContinuation) && openSide;
             result.GeneralPBDetail = string.Format(
-                "shape {0}; order {1}; separation {2}; slope {3}; lead-in {4}; " +
-                "strong continuation {5}; close beyond {6}; 8-bar clearance {7}; " +
-                "open side {8}; profile {9}",
-                Pass(normalShape), Pass(emaOrder), Pass(separation), Pass(slope),
-                Pass(leadIn), Pass(strongContinuation), Pass(closeBeyond),
-                Pass(clearance8), Pass(openSide), Pass(profile));
+                "shape PB2+ {0}; two prior closes {1}; prior direction {2}; " +
+                "8 slope sequence {3}; tail side {4}; order {5}; trend {6}; " +
+                "lead-in {7}; strong continuation {8}; open side {9}",
+                Pass(normalShape && body > GetPB1BodyTicks(tickSize)),
+                Pass(twoPriorCloses),
+                Pass(priorDirection), Pass(directionalFastSlope),
+                Pass(tailOnFastSide), Pass(emaOrder), Pass(trendFilter),
+                Pass(leadIn), Pass(strongContinuation), Pass(openSide));
 
             double bestFast = GetBestDirectionalSlope(m_FastEMA, direction, tickSize);
             double bestSlow = GetBestDirectionalSlope(m_SlowEMA, direction, tickSize);
@@ -319,6 +309,7 @@ namespace PowerLanguage.Indicator
                 crossesFast &&
                 ((penetration >= Ema8MinimumPenetrationTicks &&
                   penetration <= Ema8MaximumPenetrationTicks) || shallowTouch) &&
+                twoBarPullback &&
                 closeFastSide && color &&
                 GetLocalDisplacement(direction, tickSize) >= 1.0;
 
@@ -432,73 +423,63 @@ namespace PowerLanguage.Indicator
             int shortTail, shortBody;
             bool shortShape = TryGetPBShape(-1, tickSize, out shortTail,
                                             out shortBody);
-            bool compactShort = shortShape && shortBody <= 1;
-            bool compactSlopePass = fastSlope <= -PBMinimumFastSlopeDegrees;
-            bool previousDownPass = Bars.Close[1] < Bars.Open[1];
-            bool below8Pass = Bars.High[0] <= m_FastEMA[0];
-            bool strongShortProfile = IsStrongTrendContinuationValid(-1, tickSize);
-            int shortClearanceBars = strongShortProfile ? 1 : 5;
-            bool clearance5Pass = HasRangeClearance(-1, shortClearanceBars);
-            bool compactPass = compactShort && compactSlopePass &&
-                               previousDownPass && below8Pass && clearance5Pass;
+            bool compactShort = shortShape && shortBody <= GetPB1BodyTicks(tickSize);
+            bool compactPass = IsCompactPBContinuationValid(-1, tickSize);
+            bool compactShortPriorPass =
+                HasCompactPBPriorTrendConfirmation(-1, tickSize);
 
             text.AppendLine("PB BOUNCE");
             text.AppendFormat("Short shape: tail {0}t / body {1}t [{2}]\n",
-                shortTail, shortBody, shortShape ? "VALID PB" : "NOT A 5T PB");
-            text.AppendFormat("Compact short PB1/PB0: shape [{0}], 8 slope <= -20° [{1}], " +
-                "prior bar down [{2}], high <= 8 EMA [{3}], {4}-bar clearance [{5}]\n",
-                Pass(compactShort), Pass(compactSlopePass), Pass(previousDownPass),
-                Pass(below8Pass), shortClearanceBars, Pass(clearance5Pass));
+                shortTail, shortBody, shortShape ? "VALID PB" : "NOT A PB SHAPE");
+            text.AppendFormat("Compact short PB1/PB0: shape [{0}], 8<24 + persistent 24 down, " +
+                "8/24 >= 3t, 8 slope/sequence down, close below prior 3, tail <= 8\n",
+                Pass(compactShort));
+            text.AppendFormat("Prior confirmation: down-close or directional PB0 [{0}]\n",
+                Pass(compactShortPriorPass));
             text.AppendFormat("Compact PB1/PB0 RESULT: [{0}]\n", Pass(compactPass));
 
             int longTail, longBody;
             bool longShape = TryGetPBShape(1, tickSize, out longTail, out longBody);
-            bool compactLong = longShape && longBody <= 1;
-            bool risingSlopePass = fastSlope >= PBMinimumFastSlopeDegrees;
-            bool previousUpPass = Bars.Close[1] > Bars.Open[1];
-            bool above8Pass = Bars.Low[0] >= m_FastEMA[0];
-            bool strongLongProfile = IsStrongTrendContinuationValid(1, tickSize);
-            int longClearanceBars = strongLongProfile ? 1 : 5;
-            bool longClearance5Pass = HasRangeClearance(1, longClearanceBars);
-            bool compactLongPass = compactLong && risingSlopePass &&
-                                   previousUpPass && above8Pass &&
-                                   longClearance5Pass;
-            text.AppendFormat("Compact long PB1/PB0: shape [{0}], 8 slope >= 20° [{1}], " +
-                "prior bar up [{2}], low >= 8 EMA [{3}], {4}-bar clearance [{5}]\n",
-                Pass(compactLong), Pass(risingSlopePass), Pass(previousUpPass),
-                Pass(above8Pass), longClearanceBars, Pass(longClearance5Pass));
+            bool compactLong = longShape && longBody <= GetPB1BodyTicks(tickSize);
+            bool compactLongPass = IsCompactPBContinuationValid(1, tickSize);
+            bool compactLongPriorPass =
+                HasCompactPBPriorTrendConfirmation(1, tickSize);
+            text.AppendFormat("Compact long PB1/PB0: shape [{0}], 8>24 + persistent 24 up, " +
+                "8/24 >= 3t, 8 slope/sequence up, close above prior 3, tail >= 8\n",
+                Pass(compactLong));
+            text.AppendFormat("Prior confirmation: up-close or directional PB0 [{0}]\n",
+                Pass(compactLongPriorPass));
             text.AppendFormat("Compact long PB1/PB0 RESULT: [{0}]\n",
                 Pass(compactLongPass));
 
             int tail, body;
             bool normalShape = TryGetPBShape(direction, tickSize, out tail, out body);
-            bool emaOrderPass = direction > 0 ? m_FastEMA[0] > m_SlowEMA[0] :
-                                direction < 0 && m_FastEMA[0] < m_SlowEMA[0];
-            bool separationPass = direction != 0 &&
-                                  separation >= PBMinimumSeparationTicks;
-            bool slopePass = direction > 0 ? fastSlope >= PBMinimumFastSlopeDegrees :
-                             direction < 0 && fastSlope <= -PBMinimumFastSlopeDegrees;
+            bool pb2PlusShape = normalShape &&
+                                body > GetPB1BodyTicks(tickSize);
+            bool twoPriorCloses = HasTwoPriorPBTrendCloses(direction);
+            bool priorDirection = HasPriorPBTrendDirection(direction);
+            bool fastSequence = HasDirectionalFastEmaSlopeForThreeBars(direction);
+            bool tailSide = IsCompletedPinBarTailOnFastEmaSide(direction);
+            bool emaOrderPass = IsPB1EmaOrderValid(direction);
+            bool trendFilterPass = IsPB1TrendFilterValid(direction, tickSize);
             bool leadInPass = HasPBLeadInStructure(direction);
             bool strongContinuationPass = IsStrongTrendContinuationValid(direction,
                                                                            tickSize);
-            bool closeBeyondPass = direction > 0 ? Bars.Close[0] > Bars.High[1] :
-                                   direction < 0 && Bars.Close[0] < Bars.Low[1];
-            bool clearance8Pass = HasRangeClearance(direction, 8);
             bool openSidePass = direction > 0 ? Bars.Open[0] > m_SlowEMA[0] :
                                 direction < 0 && Bars.Open[0] < m_SlowEMA[0];
-            bool normalPass = normalShape && emaOrderPass && separationPass &&
-                              slopePass && (leadInPass || strongContinuationPass) &&
-                              closeBeyondPass && clearance8Pass && openSidePass &&
-                              HasTradeProfileDirectionAt(direction, 0, tickSize);
-            text.AppendFormat("General PB ({0}): shape tail/body {1}/{2} [{3}], " +
-                "EMA order [{4}], separation >= 3t [{5}], slope >= 20° [{6}]\n",
-                DirectionName(direction), tail, body, Pass(normalShape),
-                Pass(emaOrderPass), Pass(separationPass), Pass(slopePass));
-            text.AppendFormat("Lead-in [{0}] OR strong continuation [{1}], close beyond prior range [{2}], " +
-                "8-bar clearance [{3}], open on 24-EMA side [{4}]\n",
-                Pass(leadInPass), Pass(strongContinuationPass),
-                Pass(closeBeyondPass), Pass(clearance8Pass), Pass(openSidePass));
-            text.AppendFormat("General PB RESULT: [{0}]\n", Pass(normalPass));
+            bool normalPass = pb2PlusShape && twoPriorCloses && priorDirection &&
+                              fastSequence && tailSide && emaOrderPass &&
+                              trendFilterPass &&
+                              (leadInPass || strongContinuationPass) && openSidePass;
+            text.AppendFormat("Regular PB2+ ({0}): shape tail/body {1}/{2} [{3}], " +
+                "two prior closes [{4}], prior direction [{5}], 8 sequence [{6}]\n",
+                DirectionName(direction), tail, body, Pass(pb2PlusShape),
+                Pass(twoPriorCloses), Pass(priorDirection), Pass(fastSequence));
+            text.AppendFormat("Tail side [{0}], 8/24 order [{1}], 3t + 8-slope trend " +
+                "filter [{2}], lead-in OR strong [{3}], open side [{4}]\n",
+                Pass(tailSide), Pass(emaOrderPass), Pass(trendFilterPass),
+                Pass(leadInPass || strongContinuationPass), Pass(openSidePass));
+            text.AppendFormat("Regular PB2+ RESULT: [{0}]\n", Pass(normalPass));
         }
 
         private void AppendEma8Report(StringBuilder text, int direction,
@@ -535,6 +516,7 @@ namespace PowerLanguage.Indicator
             double displacement = GetLocalDisplacement(direction, tickSize);
             bool displacementPass = displacement >= 1.0;
             bool result = separationPass && fastPass && slowPass && leadPass &&
+                          twoBarPullback &&
                           penetrationPass && closeSidePass && colorPass &&
                           displacementPass;
             text.AppendLine("8 EMA BOUNCE");
@@ -543,11 +525,11 @@ namespace PowerLanguage.Indicator
             text.AppendFormat("Separation >= 4.5t [{0}], 8 slope >= 40° [{1}], " +
                 "24 slope >= 40° [{2}], slope lead informational [{3}]\n", Pass(separationPass),
                 Pass(fastPass), Pass(slowPass), Pass(leadPass));
-            text.AppendFormat("Crosses 8 EMA [{0}], penetration {1:F2}t (1-3.5) [{2}], " +
+            text.AppendFormat("Crosses 8 EMA [{0}], penetration {1:F2}t (1-4) [{2}], " +
                 "close side [{3}], color [{4}], displacement {5:F2}t [{6}]\n",
                 Pass(crosses), comparablePenetration, Pass(penetrationPass),
                 Pass(closeSidePass), Pass(colorPass), displacement, Pass(displacementPass));
-            text.AppendFormat("Two countertrend bars [{0}], shallow touch (<1t) [{1}]\n",
+            text.AppendFormat("Two countertrend bars REQUIRED [{0}], shallow touch (<1t) [{1}]\n",
                 Pass(twoBarPullback), Pass(shallowTouchPass));
             text.AppendFormat("8 EMA BOUNCE RESULT: [{0}]\n", Pass(result));
         }
@@ -844,8 +826,161 @@ namespace PowerLanguage.Indicator
                 body = ToTicks(open - low, tickSize);
                 if (Math.Abs(close - low) > tolerance) return false;
             }
-            return (body == 0 || body == 1 || body == 2) &&
-                   tail + body == PinBarRangeTicks;
+            int rangeTicks = GetPinBarRangeTicks(tickSize);
+            return (body == 0 || body == GetPB1BodyTicks(tickSize) ||
+                    body == GetPB2BodyTicks(tickSize)) &&
+                   tail + body == rangeTicks;
+        }
+
+        private int GetPinBarRangeTicks(double tickSize)
+        {
+            return Math.Max(1, ToTicks(Bars.High[0] - Bars.Low[0], tickSize));
+        }
+
+        private int GetPB2BodyTicks(double tickSize)
+        {
+            return Math.Max(1, (int)Math.Round(GetPinBarRangeTicks(tickSize) *
+                                                2.0 / BasePinBarRangeTicks));
+        }
+
+        private int GetPB1BodyTicks(double tickSize)
+        {
+            return Math.Max(1, (int)Math.Round(GetPinBarRangeTicks(tickSize) *
+                                                1.0 / BasePinBarRangeTicks));
+        }
+
+        // Mirrors RangePBBounce's current PB routing, including the compact
+        // PB1/PB0 three-close breakout rule.
+        private int GetUnarmedPBDisplayDirection(double tickSize)
+        {
+            if (HasSharplyMovingFastEma(1, tickSize)) return 1;
+            if (HasSharplyMovingFastEma(-1, tickSize)) return -1;
+            return m_SlowEMA[0] >= m_SlowEMA[1] ? 1 : -1;
+        }
+
+        private bool IsCompactPBContinuationValid(int direction, double tickSize)
+        {
+            int tail, body;
+            return TryGetPBShape(direction, tickSize, out tail, out body) &&
+                   body <= GetPB1BodyTicks(tickSize) &&
+                   HasDirectional824PBTrendContext(direction) &&
+                   HasMinimumPBFastSlowSeparation(tickSize) &&
+                   HasSharplyMovingFastEma(direction, tickSize) &&
+                   HasDirectionalFastEmaSlopeForThreeBars(direction) &&
+                   HasThreeBarPBCloseBreakout(direction) &&
+                   HasCompactPBPriorTrendConfirmation(direction, tickSize) &&
+                   IsCompletedPinBarTailOnFastEmaSide(direction);
+        }
+
+        private bool HasDirectional824PBTrendContext(int direction)
+        {
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] && HasPersistentPBSlowEmaDirection(1)
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] &&
+                  HasPersistentPBSlowEmaDirection(-1);
+        }
+
+        private bool HasPersistentPBSlowEmaDirection(int direction)
+        {
+            for (int barsBack = 0; barsBack < PBSlowEmaPersistenceBars; barsBack++)
+            {
+                if (direction > 0 && m_SlowEMA[barsBack] <= m_SlowEMA[barsBack + 1]) return false;
+                if (direction < 0 && m_SlowEMA[barsBack] >= m_SlowEMA[barsBack + 1]) return false;
+            }
+            return true;
+        }
+
+        private bool HasMinimumPBFastSlowSeparation(double tickSize)
+        {
+            return Math.Abs(m_FastEMA[0] - m_SlowEMA[0]) >=
+                   PBMinimumSeparationTicks * tickSize;
+        }
+
+        private bool HasSharplyMovingFastEma(int direction, double tickSize)
+        {
+            double slope = GetAngle(m_FastEMA[0], m_FastEMA[SlopeBars], SlopeBars, tickSize);
+            return direction > 0 ? slope >= PBMinimumFastSlopeDegrees :
+                   direction < 0 && slope <= -PBMinimumFastSlopeDegrees;
+        }
+
+        private bool HasDirectionalFastEmaSlopeForThreeBars(int direction)
+        {
+            return direction > 0
+                ? m_FastEMA[0] > m_FastEMA[1] && m_FastEMA[1] > m_FastEMA[2] &&
+                  m_FastEMA[2] > m_FastEMA[3]
+                : direction < 0 && m_FastEMA[0] < m_FastEMA[1] &&
+                  m_FastEMA[1] < m_FastEMA[2] && m_FastEMA[2] < m_FastEMA[3];
+        }
+
+        private bool HasPriorPBTrendDirection(int direction)
+        {
+            return direction > 0 ? Bars.Close[1] > Bars.Open[1] :
+                   direction < 0 && Bars.Close[1] < Bars.Open[1];
+        }
+
+        private bool HasCompactPBPriorTrendConfirmation(int direction,
+                                                         double tickSize)
+        {
+            return HasPriorPBTrendDirection(direction) ||
+                   IsPriorDirectionalPB0(direction, tickSize);
+        }
+
+        private bool IsPriorDirectionalPB0(int direction, double tickSize)
+        {
+            double tolerance = tickSize * 0.1;
+            double open = RoundToTick(Bars.Open[1], tickSize);
+            double high = RoundToTick(Bars.High[1], tickSize);
+            double low = RoundToTick(Bars.Low[1], tickSize);
+            double close = RoundToTick(Bars.Close[1], tickSize);
+
+            return direction > 0
+                ? Math.Abs(open - high) <= tolerance &&
+                  Math.Abs(close - high) <= tolerance &&
+                  ToTicks(open - low, tickSize) == GetPinBarRangeTicks(tickSize)
+                : direction < 0 &&
+                  Math.Abs(open - low) <= tolerance &&
+                  Math.Abs(close - low) <= tolerance &&
+                  ToTicks(high - open, tickSize) == GetPinBarRangeTicks(tickSize);
+        }
+
+        private bool HasTwoPriorPBTrendCloses(int direction)
+        {
+            for (int barsBack = 1; barsBack <= 2; barsBack++)
+            {
+                bool withTrend = direction > 0
+                    ? Bars.Close[barsBack] > Bars.Open[barsBack]
+                    : Bars.Close[barsBack] < Bars.Open[barsBack];
+                if (!withTrend) return false;
+            }
+            return true;
+        }
+
+        private bool HasThreeBarPBCloseBreakout(int direction)
+        {
+            for (int barsBack = 1; barsBack <= 3; barsBack++)
+            {
+                if (direction > 0 && Bars.Close[0] <= Bars.Close[barsBack]) return false;
+                if (direction < 0 && Bars.Close[0] >= Bars.Close[barsBack]) return false;
+            }
+            return true;
+        }
+
+        private bool IsCompletedPinBarTailOnFastEmaSide(int direction)
+        {
+            return direction > 0 ? Bars.Low[0] >= m_FastEMA[0] :
+                   direction < 0 && Bars.High[0] <= m_FastEMA[0];
+        }
+
+        private bool IsPB1EmaOrderValid(int direction)
+        {
+            return direction > 0 ? m_FastEMA[0] > m_SlowEMA[0] :
+                   direction < 0 && m_FastEMA[0] < m_SlowEMA[0];
+        }
+
+        private bool IsPB1TrendFilterValid(int direction, double tickSize)
+        {
+            return direction != 0 && HasMinimumPBFastSlowSeparation(tickSize) &&
+                   HasSharplyMovingFastEma(direction, tickSize);
         }
 
         private bool HasPBLeadInStructure(int direction)

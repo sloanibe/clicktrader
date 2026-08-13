@@ -55,10 +55,10 @@ namespace PowerLanguage.Strategy
         private const int OneBarProfitTargetTicks = 5;
         private const int HudRefreshMilliseconds = 100;
         private const bool ShowHUD = true;
-        private const int PinBarRangeTicks = 5;
-        // RangePBBounce accepts PB2/PB1/PB0 only: 3/2, 4/1, or 5/0
-        // tail/body shapes. A 2/3 bar is not a PB bounce.
-        private const int PinBarMinTailTicks = 3;
+        // PB shapes scale from the original five-tick definitions.  For
+        // example, PB2/PB1/PB0 are 3/2, 4/1, 5/0 on MES 5-tick bars and
+        // 5/3, 6/2, 8/0 on MYM/M2K 8-tick bars.
+        private const int BasePinBarRangeTicks = 5;
         private const int PinBarMinEmaSeparationTicks = 3;
         private const double PinBarMinFastEmaSlopeDegrees = 20.0;
         private const double StrongContinuationFastSlopeDegrees = 40.0;
@@ -73,19 +73,27 @@ namespace PowerLanguage.Strategy
         private const double Ema8MinFastSlopeDegrees = 40.0;
         private const double Ema8MinSlowSlopeDegrees = 40.0;
         private const double Ema8MinPenetrationTicks = 1.0;
-        private const double Ema8MaxPenetrationTicks = 3.5;
+        // A two-bar pullback may probe four ticks through the 8 EMA before
+        // rejecting; the prior 3.5-tick cap excluded otherwise clean MYM
+        // eight-tick-bar examples.
+        private const double Ema8MaxPenetrationTicks = 4.0;
         private const double Ema8MinLocalDisplacementTicks = 1.0;
         // Match RangeEMA8Bounce's half-tick penetration comparison.
         private const double Ema8PenetrationRoundingAllowanceTicks = 0.25;
         private const double Ema24MinCurrentSeparationTicks = 1.5;
         private const double Ema24MinBestSeparationTicks = 2.0;
         private const double Ema24MinSlowSlopeDegrees = 20.0;
+        // Keep the live 24-EMA setup recognition aligned with
+        // RangeEMA24Bounce: a completed/rejecting bar may stop within
+        // three-quarters of a tick of the EMA rather than touching it exactly.
+        private const double Ema24TouchToleranceTicks = 0.75;
         // A trade is allowed only inside a persistent, fully aligned 8/24/50
         // EMA profile. These values are the initial settings derived from the
         // transition diagnostic and can be refined from future samples.
         private const int ProfileEmaLength = 50;
         private const int ProfileSlopeBars = 3;
         private const int ProfilePersistenceBars = 4;
+        private const int PinBarSlowEmaPersistenceBars = 4;
         private const double ProfileMinFastSlowSeparationTicks = 3.0;
         private const double ProfileMinSlowTrendSeparationTicks = 2.0;
         private const double ProfileMinFastTrendSeparationTicks = 5.0;
@@ -139,7 +147,7 @@ namespace PowerLanguage.Strategy
         private int m_PinProjectionDirection = 0;
         private bool m_PinProjectionTailReached = false;
         private bool m_PinProjectionBroken = false;
-        private int m_PinProjectionTailTicks = PinBarMinTailTicks;
+        private int m_PinProjectionTailTicks = 3;
         private bool m_PinProjectionOpenAligned = false;
         private int m_PinBarOrderBar = -1;
         private int m_EmaBounceProjectionBar = -1;
@@ -323,7 +331,7 @@ namespace PowerLanguage.Strategy
                 m_PinProjectionDirection = 0;
                 m_PinProjectionTailReached = false;
                 m_PinProjectionBroken = false;
-                m_PinProjectionTailTicks = PinBarMinTailTicks;
+                m_PinProjectionTailTicks = 3;
                 m_PinProjectionOpenAligned = false;
                 ClearPinBarProjectionLines();
                 if (m_ActiveEntrySetup == EEntrySetup.PinBar && currentPosition == 0)
@@ -751,15 +759,20 @@ namespace PowerLanguage.Strategy
             }
         }
 
-        private void ArmAutomatedEntryMode(double tickSize) {
+        private void ArmAutomatedEntryMode(double tickSize,
+                                           int requestedDirection = 0) {
             ClearEmergencyIndicator();
             m_KillModeActive = false;
             m_FlattenRequested = false;
             m_AutoEntryArmed = true;
-            // Preserve the existing semantics: flat/rising 24 EMA is bullish;
-            // falling 24 EMA is bearish. The direction remains latched until
-            // the trader disarms with Ctrl-click.
-            m_ArmedDirection = m_SlowEMA[0] >= m_SlowEMA[1] ? 1 : -1;
+            // Preserve the existing semantics for a normal Ctrl-click:
+            // flat/rising 24 EMA is bullish; falling 24 EMA is bearish. A
+            // Shift projection already has an explicit, permitted direction,
+            // so use that direction when it also transitions from unarmed to
+            // armed.
+            m_ArmedDirection = requestedDirection != 0
+                ? requestedDirection
+                : m_SlowEMA[0] >= m_SlowEMA[1] ? 1 : -1;
             if (!IsEntryDirectionAllowed(m_ArmedDirection)) {
                 m_AutoEntryArmed = false;
                 m_ArmedDirection = 0;
@@ -846,7 +859,36 @@ namespace PowerLanguage.Strategy
         }
 
         private int GetInitialPinBarTailTicks() {
-            return PinBarMinTailTicks;
+            int rangeTicks = GetActivePinBarRangeTicks();
+            return rangeTicks - GetPinBarPB2BodyTicks(rangeTicks);
+        }
+
+        private int GetActivePinBarRangeTicks() {
+            // Prefer the configured ATIC/range-bar size. When the strategy is
+            // set to auto-detect, use the live measured range instead.
+            return Math.Max(1, (int)Math.Round(GetActiveRangeTicks(0.25)));
+        }
+
+        private int GetPinBarPB2BodyTicks(int rangeTicks) {
+            return Math.Max(1, (int)Math.Round(rangeTicks * 2.0 /
+                                                BasePinBarRangeTicks));
+        }
+
+        private int GetPinBarPB1BodyTicks(int rangeTicks) {
+            return Math.Max(1, (int)Math.Round(rangeTicks * 1.0 /
+                                                BasePinBarRangeTicks));
+        }
+
+        private bool IsSupportedPinBarShape(int rangeTicks, int bodyTicks) {
+            return bodyTicks == GetPinBarPB2BodyTicks(rangeTicks) ||
+                   bodyTicks == GetPinBarPB1BodyTicks(rangeTicks) ||
+                   bodyTicks == 0;
+        }
+
+        private int GetPinBarDisplayLevel(int rangeTicks, int bodyTicks) {
+            if (bodyTicks == 0) return 0;
+            if (bodyTicks == GetPinBarPB1BodyTicks(rangeTicks)) return 1;
+            return 2;
         }
 
         private void ActivateKillMode(int currentPosition) {
@@ -858,7 +900,7 @@ namespace PowerLanguage.Strategy
             m_PinProjectionDirection = 0;
             m_PinProjectionTailReached = false;
             m_PinProjectionBroken = false;
-            m_PinProjectionTailTicks = PinBarMinTailTicks;
+            m_PinProjectionTailTicks = 3;
             m_PinProjectionOpenAligned = false;
             m_EmaBounceProjectionBar = -1;
             m_EmaBounceProjectionDirection = 0;
@@ -1153,10 +1195,11 @@ namespace PowerLanguage.Strategy
 
             double projectedLow;
             double projectedHigh;
-            int bodyTicks = PinBarRangeTicks - m_PinProjectionTailTicks;
+            int pinBarRangeTicks = GetActivePinBarRangeTicks();
+            int bodyTicks = pinBarRangeTicks - m_PinProjectionTailTicks;
             GetPinBarProjectionPrices(direction, m_PinProjectionTailTicks, bodyTicks,
                                        tickSize, out projectedLow, out projectedHigh);
-            if (m_PinProjectionTailTicks < PinBarRangeTicks)
+            if (m_PinProjectionTailTicks < pinBarRangeTicks)
                 UpdatePinBarFormationState(direction, projectedLow, projectedHigh, tickSize);
 
             if (m_PinProjectionBroken ||
@@ -1166,9 +1209,11 @@ namespace PowerLanguage.Strategy
                 // those valid RangePBBounce shapes on the same live bar.
                 bool foundNextShape = false;
                 for (int nextTail = m_PinProjectionTailTicks + 1;
-                     nextTail <= PinBarRangeTicks;
+                     nextTail <= pinBarRangeTicks;
                      nextTail++) {
-                    int nextBody = PinBarRangeTicks - nextTail;
+                    int nextBody = pinBarRangeTicks - nextTail;
+                    if (!IsSupportedPinBarShape(pinBarRangeTicks, nextBody))
+                        continue;
                     if (!CanStillFormPinBar(direction, nextTail, nextBody, tickSize))
                         continue;
 
@@ -1194,23 +1239,43 @@ namespace PowerLanguage.Strategy
             double tailPrice = direction > 0 ? projectedLow : projectedHigh;
             double completionPrice = direction > 0 ? projectedHigh : projectedLow;
             double entryPrice = RoundToTick(completionPrice, tickSize);
+
+            // The PB drawing is a live projection, not an order-status
+            // indicator.  Keep it on every IOG update as long as this range
+            // bar can still complete as PB2, PB1, or PB0.  The qualification
+            // checks below use live EMA/close values and can legitimately
+            // flicker while the bar forms; allowing them to clear this line
+            // left the trader without the projected stop/entry level until
+            // the final ticks of an otherwise viable bar.
+            UpdatePinBarTailProjectionLine(tailPrice);
+            UpdatePinBarProjectionLine(ref m_PinBarCompletionLine,
+                                       completionPrice, false);
+            UpdatePinBarProjectionLabel(completionPrice, direction, false,
+                                        bodyTicks);
+
+            bool isCompactPB = bodyTicks <=
+                GetPinBarPB1BodyTicks(pinBarRangeTicks) && direction != 0;
             // Every PB shape must have a prior bar in the trade direction,
             // a tail on the trend side of the 8 EMA, and three consecutive
             // 8-EMA moves in that same direction.
-            if (!HasPinBarPriorBarDirection(direction) ||
+            bool hasPriorTrendConfirmation = isCompactPB
+                ? HasThreeBarPinBarCloseBreakout(direction)
+                : HasTwoPriorPinBarTrendCloses(direction);
+            bool hasPriorBarConfirmation = isCompactPB
+                ? HasCompactPinBarPriorTrendConfirmation(direction, tickSize)
+                : HasPinBarPriorBarDirection(direction);
+            if (!hasPriorTrendConfirmation ||
+                !hasPriorBarConfirmation ||
                 !HasDirectionalFastEmaSlopeForThreeBars(direction) ||
                 !IsPinBarTailOnFastEmaSide(direction, projectedLow,
                                              projectedHigh)) {
-                ClearPinBarProjectionLines();
                 ClearPinBarEntryIfActive();
                 return;
             }
-            bool isCompactPB = bodyTicks <= 1 && direction != 0;
             bool trendFilterPass = isCompactPB
                 ? HasSharplyMovingFastEma(direction, tickSize)
                 : IsPinBarTrendFilterValid(direction, tickSize);
             if (!trendFilterPass) {
-                ClearPinBarProjectionLines();
                 ClearPinBarEntryIfActive();
                 return;
             }
@@ -1228,7 +1293,6 @@ namespace PowerLanguage.Strategy
             bool rangeClearancePass = true;
             bool projectionActive = m_PinProjectionTailReached &&
                                     pinSetupEligible && rangeClearancePass;
-            UpdatePinBarTailProjectionLine(tailPrice);
             UpdatePinBarProjectionLine(ref m_PinBarCompletionLine, completionPrice,
                                        projectionActive);
             UpdatePinBarProjectionLabel(completionPrice, direction,
@@ -1286,13 +1350,48 @@ namespace PowerLanguage.Strategy
                                                         double projectedHigh,
                                                         double tickSize) {
             return direction > 0
-                ? HasSharplyMovingFastEma(direction, tickSize) &&
-                  Bars.Close[1] > Bars.Open[1] &&
+                ? HasDirectional824PinBarTrendContext(direction, tickSize) &&
+                  HasMinimumPinBarFastSlowSeparation(tickSize) &&
+                  HasSharplyMovingFastEma(direction, tickSize) &&
+                  HasThreeBarPinBarCloseBreakout(direction) &&
+                  HasCompactPinBarPriorTrendConfirmation(direction, tickSize) &&
                   projectedLow >= m_FastEMA[0]
                 : direction < 0 &&
+                  HasDirectional824PinBarTrendContext(direction, tickSize) &&
+                  HasMinimumPinBarFastSlowSeparation(tickSize) &&
                   HasSharplyMovingFastEma(direction, tickSize) &&
-                  Bars.Close[1] < Bars.Open[1] &&
+                  HasThreeBarPinBarCloseBreakout(direction) &&
+                  HasCompactPinBarPriorTrendConfirmation(direction, tickSize) &&
                   projectedHigh <= m_FastEMA[0];
+        }
+
+        // PB1/PB0 continuations can have a rapidly turning 8 EMA, but their
+        // direction must still agree with the 8/24 order and 24-EMA slope.
+        // The 50 EMA is intentionally excluded from this PB rule.
+        private bool HasDirectional824PinBarTrendContext(int direction,
+                                                           double tickSize) {
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] &&
+                  HasPersistentPinBarSlowEmaDirection(1)
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] &&
+                  HasPersistentPinBarSlowEmaDirection(-1);
+        }
+
+        private bool HasPersistentPinBarSlowEmaDirection(int direction) {
+            if (Bars.CurrentBar < PinBarSlowEmaPersistenceBars) return false;
+            for (int barsBack = 0; barsBack < PinBarSlowEmaPersistenceBars;
+                 barsBack++) {
+                if (direction > 0 && m_SlowEMA[barsBack] <= m_SlowEMA[barsBack + 1])
+                    return false;
+                if (direction < 0 && m_SlowEMA[barsBack] >= m_SlowEMA[barsBack + 1])
+                    return false;
+            }
+            return true;
+        }
+
+        private bool HasMinimumPinBarFastSlowSeparation(double tickSize) {
+            return Math.Abs(m_FastEMA[0] - m_SlowEMA[0]) >=
+                   PinBarMinEmaSeparationTicks * tickSize;
         }
 
         private bool HasSharplyMovingFastEma(int direction, double tickSize) {
@@ -1318,6 +1417,57 @@ namespace PowerLanguage.Strategy
             return direction > 0
                 ? Bars.Close[1] > Bars.Open[1]
                 : direction < 0 && Bars.Close[1] < Bars.Open[1];
+        }
+
+        // A completed PB0 is a zero-body directional pin bar: its open and
+        // close are both at the completion extreme.  Accept it as the prior
+        // compact-PB confirmation, while retaining the strict body-color
+        // requirement for every other pin-bar setup.
+        private bool HasCompactPinBarPriorTrendConfirmation(int direction,
+                                                              double tickSize) {
+            return HasPinBarPriorBarDirection(direction) ||
+                   IsPriorDirectionalPB0(direction, tickSize);
+        }
+
+        private bool IsPriorDirectionalPB0(int direction, double tickSize) {
+            double tolerance = tickSize * 0.1;
+            double open = RoundToTick(Bars.Open[1], tickSize);
+            double high = RoundToTick(Bars.High[1], tickSize);
+            double low = RoundToTick(Bars.Low[1], tickSize);
+            double close = RoundToTick(Bars.Close[1], tickSize);
+
+            return direction > 0
+                ? Math.Abs(open - high) <= tolerance &&
+                  Math.Abs(close - high) <= tolerance &&
+                  (int)Math.Round((open - low) / tickSize) == GetActivePinBarRangeTicks()
+                : direction < 0 &&
+                  Math.Abs(open - low) <= tolerance &&
+                  Math.Abs(close - low) <= tolerance &&
+                  (int)Math.Round((high - open) / tickSize) == GetActivePinBarRangeTicks();
+        }
+
+        // PB continuation entries require two completed bars of directional
+        // follow-through immediately before the current pin bar.
+        private bool HasTwoPriorPinBarTrendCloses(int direction) {
+            if (Bars.CurrentBar < 2) return false;
+            for (int barsBack = 1; barsBack <= 2; barsBack++) {
+                bool closesWithTrend = direction > 0
+                    ? Bars.Close[barsBack] > Bars.Open[barsBack]
+                    : Bars.Close[barsBack] < Bars.Open[barsBack];
+                if (!closesWithTrend) return false;
+            }
+            return true;
+        }
+
+        private bool HasThreeBarPinBarCloseBreakout(int direction) {
+            if (Bars.CurrentBar < 3) return false;
+            for (int barsBack = 1; barsBack <= 3; barsBack++) {
+                if (direction > 0 && Bars.Close[0] <= Bars.Close[barsBack])
+                    return false;
+                if (direction < 0 && Bars.Close[0] >= Bars.Close[barsBack])
+                    return false;
+            }
+            return true;
         }
 
         private bool IsPinBarTailOnFastEmaSide(int direction,
@@ -1464,7 +1614,8 @@ namespace PowerLanguage.Strategy
             m_ActiveEntrySetup = EEntrySetup.PinBar;
             m_PinBarOrderBar = Bars.CurrentBar;
             m_StagedPinBodyTicks = Math.Max(0,
-                                             PinBarRangeTicks - m_PinProjectionTailTicks);
+                                             GetActivePinBarRangeTicks() -
+                                             m_PinProjectionTailTicks);
             m_BuyOrderActive = direction > 0;
             m_SellOrderActive = direction < 0;
             m_StopPrice = RoundToTick(
@@ -1589,6 +1740,12 @@ namespace PowerLanguage.Strategy
                 : Bars.High[0] >= projectedHigh - tickSize * 0.1;
             double tail = direction > 0 ? projectedLow : projectedHigh;
             double completion = direction > 0 ? projectedHigh : projectedLow;
+            // A forming 8-EMA bounce is already a competing chart setup.
+            // Keep its possible completion in the display arbitration before
+            // the tail is reached; only the Valid flag below controls whether
+            // it may replace the working entry order.
+            m_Ema8EntryCandidateDirection = direction;
+            m_Ema8EntryCandidatePrice = RoundToTick(completion, tickSize);
             UpdateEma8BounceLine(ref m_Ema8BounceTailLine, tail, Color.Gray,
                                   ETLStyle.ToolDashed, 1);
             UpdateEma8BounceLine(ref m_Ema8BounceCompletionLine, completion,
@@ -1597,8 +1754,6 @@ namespace PowerLanguage.Strategy
             UpdateEma8BounceLabel(completion, direction, tailReached);
             if (!tailReached) return;
             m_Ema8EntryCandidateValid = true;
-            m_Ema8EntryCandidateDirection = direction;
-            m_Ema8EntryCandidatePrice = RoundToTick(completion, tickSize);
         }
 
         private int GetEma8BounceDirection(double tickSize) {
@@ -1606,6 +1761,10 @@ namespace PowerLanguage.Strategy
             int direction = m_FastEMA[0] > m_SlowEMA[0] ? 1 :
                             m_FastEMA[0] < m_SlowEMA[0] ? -1 : 0;
             if (direction == 0 || Math.Abs(m_FastEMA[0] - m_SlowEMA[0]) / tickSize < Ema8MinSeparationTicks)
+                return 0;
+            // An 8-EMA bounce must be a genuine two-bar pullback into the
+            // EMA. A one-bar touch is no longer an 8E setup.
+            if (!HasTwoBarCounterTrendEma8Pullback(direction))
                 return 0;
             double fastBest = GetBestDirectionalEmaSlope(m_FastEMA, direction, tickSize);
             double slowBest = GetBestDirectionalEmaSlope(m_SlowEMA, direction, tickSize);
@@ -1638,15 +1797,15 @@ namespace PowerLanguage.Strategy
                                                         out double projectedLow, out double projectedHigh) {
             double range = GetActiveRangeTicks(tickSize) * tickSize;
             double ema = m_FastEMA[0];
-            bool allowShallowTouch = HasTwoBarCounterTrendEma8Pullback(direction);
             double localReference = direction > 0 ? Math.Min(Bars.Low[1], Bars.Low[2]) :
                                                     Math.Max(Bars.High[1], Bars.High[2]);
             projectedLow = projectedHigh = 0;
             if (direction > 0) {
                 double maximumPenetration = Ema8MaxPenetrationTicks +
                     Ema8PenetrationRoundingAllowanceTicks - 0.000001;
-                double minimumPenetration = allowShallowTouch ? 0 :
-                    Ema8MinPenetrationTicks - Ema8PenetrationRoundingAllowanceTicks;
+                // Two counter-trend bars are now mandatory, so either a
+                // shallow touch or a normal penetration may complete setup.
+                double minimumPenetration = 0;
                 double lower = Math.Max(Bars.High[0] - range,
                                         ema - maximumPenetration * tickSize);
                 double upper = Math.Min(Bars.Low[0],
@@ -1657,8 +1816,7 @@ namespace PowerLanguage.Strategy
                 projectedHigh = projectedLow + range;
                 return projectedHigh > Bars.Open[0] && projectedHigh >= ema;
             }
-            double minimumPenetrationShort = allowShallowTouch ? 0 :
-                Ema8MinPenetrationTicks - Ema8PenetrationRoundingAllowanceTicks;
+            double minimumPenetrationShort = 0;
             double maximumPenetrationShort = Ema8MaxPenetrationTicks +
                 Ema8PenetrationRoundingAllowanceTicks - 0.000001;
             double highLower = Math.Max(Bars.High[0], ema + minimumPenetrationShort * tickSize);
@@ -1824,6 +1982,7 @@ namespace PowerLanguage.Strategy
 
         private void ReconcileAutomaticEntryCandidates(double tickSize,
                                                         int currentPosition) {
+            ApplyProjectionDisplayPriority();
             if (currentPosition != 0 || !m_AutoEntryArmed ||
                 m_ShiftProjectionActive ||
                 m_ActiveEntrySetup == EEntrySetup.ShiftProjection) return;
@@ -1831,32 +1990,28 @@ namespace PowerLanguage.Strategy
             EEntrySetup selectedSetup = EEntrySetup.None;
             int selectedDirection = 0;
             double selectedPrice = 0;
-            if (m_Ema8EntryCandidateValid) {
-                selectedSetup = EEntrySetup.Ema8Bounce;
-                selectedDirection = m_Ema8EntryCandidateDirection;
-                selectedPrice = m_Ema8EntryCandidatePrice;
-            } else if (m_PinEntryCandidateValid && m_EmaEntryCandidateValid) {
-                double pinDistance = Math.Abs(m_PinEntryCandidatePrice - Bars.Close[0]);
-                double emaDistance = Math.Abs(m_EmaEntryCandidatePrice - Bars.Close[0]);
-                // A tie uses the EMA setup for a stable, deterministic result.
-                if (emaDistance <= pinDistance) {
-                    selectedSetup = EEntrySetup.Ema24Bounce;
-                    selectedDirection = m_EmaEntryCandidateDirection;
-                    selectedPrice = m_EmaEntryCandidatePrice;
-                } else {
-                    selectedSetup = EEntrySetup.PinBar;
-                    selectedDirection = m_PinEntryCandidateDirection;
-                    selectedPrice = m_PinEntryCandidatePrice;
-                }
-            } else if (m_EmaEntryCandidateValid) {
-                selectedSetup = EEntrySetup.Ema24Bounce;
-                selectedDirection = m_EmaEntryCandidateDirection;
-                selectedPrice = m_EmaEntryCandidatePrice;
-            } else if (m_PinEntryCandidateValid) {
-                selectedSetup = EEntrySetup.PinBar;
-                selectedDirection = m_PinEntryCandidateDirection;
-                selectedPrice = m_PinEntryCandidatePrice;
-            }
+            // Use the same nearest-target rule for execution as for the
+            // drawing.  Earlier code gave 8-EMA setups absolute priority,
+            // which could leave a farther stop working while a nearer valid
+            // setup was displayed.
+            SelectCloserEntryCandidate(m_Ema8EntryCandidateValid,
+                                       EEntrySetup.Ema8Bounce,
+                                       m_Ema8EntryCandidateDirection,
+                                       m_Ema8EntryCandidatePrice,
+                                       ref selectedSetup, ref selectedDirection,
+                                       ref selectedPrice);
+            SelectCloserEntryCandidate(m_EmaEntryCandidateValid,
+                                       EEntrySetup.Ema24Bounce,
+                                       m_EmaEntryCandidateDirection,
+                                       m_EmaEntryCandidatePrice,
+                                       ref selectedSetup, ref selectedDirection,
+                                       ref selectedPrice);
+            SelectCloserEntryCandidate(m_PinEntryCandidateValid,
+                                       EEntrySetup.PinBar,
+                                       m_PinEntryCandidateDirection,
+                                       m_PinEntryCandidatePrice,
+                                       ref selectedSetup, ref selectedDirection,
+                                       ref selectedPrice);
 
             if (selectedSetup == EEntrySetup.None) {
                 if (m_ActiveEntrySetup == EEntrySetup.PinBar ||
@@ -1906,38 +2061,108 @@ namespace PowerLanguage.Strategy
             }
         }
 
+        private void SelectCloserEntryCandidate(bool candidateValid,
+                                                EEntrySetup candidateSetup,
+                                                int candidateDirection,
+                                                double candidatePrice,
+                                                ref EEntrySetup selectedSetup,
+                                                ref int selectedDirection,
+                                                ref double selectedPrice) {
+            if (!candidateValid || candidateDirection == 0 || candidatePrice <= 0)
+                return;
+            if (selectedSetup == EEntrySetup.None ||
+                Math.Abs(candidatePrice - Bars.Close[0]) <
+                Math.Abs(selectedPrice - Bars.Close[0])) {
+                selectedSetup = candidateSetup;
+                selectedDirection = candidateDirection;
+                selectedPrice = candidatePrice;
+            }
+        }
+
+        // Each recognizer evaluates independently, but only one live setup
+        // should occupy the chart. Keep the completion/target that is nearest
+        // to the current price; the others remain evaluated and can take over
+        // immediately if their target becomes closer or the winner fails.
+        private void ApplyProjectionDisplayPriority() {
+            EEntrySetup visibleSetup = EEntrySetup.None;
+            double visiblePrice = 0;
+            int projectedSetupCount = 0;
+
+            SelectCloserProjection(m_PinEntryCandidateDirection,
+                                    m_PinEntryCandidatePrice,
+                                    EEntrySetup.PinBar, ref projectedSetupCount,
+                                    ref visibleSetup, ref visiblePrice);
+            SelectCloserProjection(m_EmaEntryCandidateDirection,
+                                    m_EmaEntryCandidatePrice,
+                                    EEntrySetup.Ema24Bounce, ref projectedSetupCount,
+                                    ref visibleSetup, ref visiblePrice);
+            SelectCloserProjection(m_Ema8EntryCandidateDirection,
+                                    m_Ema8EntryCandidatePrice,
+                                    EEntrySetup.Ema8Bounce, ref projectedSetupCount,
+                                    ref visibleSetup, ref visiblePrice);
+
+            // Do not suppress a single tentative projection: it is the early
+            // PB line that must remain visible while the bar can still form.
+            if (projectedSetupCount < 2) return;
+
+            if (visibleSetup != EEntrySetup.PinBar)
+                ClearPinBarProjectionLines();
+            if (visibleSetup != EEntrySetup.Ema24Bounce)
+                ClearEmaBounceProjectionLines();
+            if (visibleSetup != EEntrySetup.Ema8Bounce)
+                ClearEma8BounceProjectionLines();
+        }
+
+        private void SelectCloserProjection(int candidateDirection,
+                                             double candidatePrice,
+                                             EEntrySetup candidateSetup,
+                                             ref int projectedSetupCount,
+                                             ref EEntrySetup visibleSetup,
+                                             ref double visiblePrice) {
+            if (candidateDirection == 0 || candidatePrice <= 0) return;
+            projectedSetupCount++;
+            if (visibleSetup == EEntrySetup.None ||
+                Math.Abs(candidatePrice - Bars.Close[0]) <
+                Math.Abs(visiblePrice - Bars.Close[0])) {
+                visibleSetup = candidateSetup;
+                visiblePrice = candidatePrice;
+            }
+        }
+
         private bool TryGetEmaBounceProjectionPrices(int direction, double tickSize,
                                                       out double projectedLow,
                                                       out double projectedHigh) {
             double range = GetActiveRangeTicks(tickSize) * tickSize;
             double currentEma = m_SlowEMA[0];
-            double tolerance = tickSize * 0.1;
+            double roundingTolerance = tickSize * 0.1;
+            double nearTouchAllowance = Ema24TouchToleranceTicks * tickSize;
             projectedLow = projectedHigh = 0;
             if (direction == 0 || range <= 0) return false;
 
             if (direction > 0) {
-                // Setup recognition is based solely on whether the current or
-                // still-possible range bar can reach the live 24 EMA.
-                double projectedTouchLow = currentEma;
+                // A live/finished range bar may reject just above the 24 EMA.
+                // Treat the same 0.75-tick near-touch used by the visual
+                // indicator as a valid low-side contact.
+                double projectedTouchLow = currentEma + nearTouchAllowance;
                 double lowestPossibleLow = Math.Max(Bars.High[0] - range,
-                                                     currentEma - range);
+                                                     projectedTouchLow - range);
                 double highestPossibleLow = Math.Min(Bars.Low[0],
                                                       projectedTouchLow);
-                if (lowestPossibleLow > highestPossibleLow + tolerance) return false;
+                if (lowestPossibleLow > highestPossibleLow + roundingTolerance) return false;
                 projectedLow = RoundDownToTick(highestPossibleLow, tickSize);
-                if (projectedLow < lowestPossibleLow - tolerance) return false;
+                if (projectedLow < lowestPossibleLow - roundingTolerance) return false;
                 projectedHigh = projectedLow + range;
             } else {
-                // Bearish mirror: the current or still-possible bar only needs
-                // to reach the live 24 EMA; entry pricing is handled separately.
-                double projectedTouchHigh = currentEma;
+                // Bearish mirror: accept a high-side rejection within the
+                // same near-touch allowance below the live 24 EMA.
+                double projectedTouchHigh = currentEma - nearTouchAllowance;
                 double lowestPossibleHigh = Math.Max(Bars.High[0],
                                                       projectedTouchHigh);
                 double highestPossibleHigh = Math.Min(Bars.Low[0] + range,
-                                                      currentEma + range);
-                if (lowestPossibleHigh > highestPossibleHigh + tolerance) return false;
+                                                      projectedTouchHigh + range);
+                if (lowestPossibleHigh > highestPossibleHigh + roundingTolerance) return false;
                 projectedHigh = RoundUpToTick(lowestPossibleHigh, tickSize);
-                if (projectedHigh > highestPossibleHigh + tolerance) return false;
+                if (projectedHigh > highestPossibleHigh + roundingTolerance) return false;
                 projectedLow = projectedHigh - range;
             }
 
@@ -2061,7 +2286,12 @@ namespace PowerLanguage.Strategy
             if (direction != 0 && !IsEntryDirectionAllowed(direction)) return;
 
             // Shift replaces a pending entry with a single manually requested
-            // projection. It does not arm the automatic pin/EMA setups.
+            // projection. If it begins from UNARMED, it also latches the
+            // projection's permitted direction for the automatic PB/EMA
+            // setup modes that follow.
+            if (!m_AutoEntryArmed)
+                ArmAutomatedEntryMode(tickSize, direction);
+
             ClearEmergencyIndicator();
             m_KillModeActive = false;
             m_FlattenRequested = false;
@@ -2238,7 +2468,8 @@ namespace PowerLanguage.Strategy
                 // time. MultiCharts can dispose/rebuild a drawing between
                 // ticks, so use a local reference and treat that as transient.
                 ChartPoint point = new ChartPoint(Bars.Time[0], price);
-                string text = "PB" + bodyTicks;
+                string text = "PB" + GetPinBarDisplayLevel(
+                    GetActivePinBarRangeTicks(), bodyTicks);
                 ITextObject label = m_PinBarLabel;
                 if (label == null) {
                     label = DrwText.Create(point, text);
@@ -2521,7 +2752,8 @@ namespace PowerLanguage.Strategy
             m_ActiveTradeEntryArrow = directionMarker;
 
             string entryType = entrySetup == EEntrySetup.PinBar
-                ? "P" + Math.Max(0, pinBodyTicks)
+                ? "P" + GetPinBarDisplayLevel(GetActivePinBarRangeTicks(),
+                                                Math.Max(0, pinBodyTicks))
                 :
                                entrySetup == EEntrySetup.Ema24Bounce ? "B" :
                                entrySetup == EEntrySetup.Ema8Bounce ? "B8" :
@@ -2684,8 +2916,13 @@ namespace PowerLanguage.Strategy
         }
 
         private double GetActiveRangeTicks(double tickSize) {
-            if (RangeSizeTicks > 0) return RangeSizeTicks;
-            return m_AutoRangeTicks > 0 ? m_AutoRangeTicks : 7;
+            // The completed bar reveals the actual ATIC/range-bar size. Use
+            // it once available so a strategy copied from a 5-tick MES chart
+            // automatically follows an 8-tick MYM/M2K chart without relying
+            // on a contract-name exception. The input remains the startup
+            // fallback before any completed bar has been observed.
+            if (m_AutoRangeTicks > 0) return m_AutoRangeTicks;
+            return RangeSizeTicks > 0 ? RangeSizeTicks : 7;
         }
 
         private void UpdateProjectedEntryLine() {
@@ -2813,7 +3050,11 @@ namespace PowerLanguage.Strategy
                     m_ActiveEntrySetup == EEntrySetup.Ema8Bounce
                         ? (m_AutoEntryArmed ? "ARMED | 8 EMA ENTRY BUY" : "8 EMA ENTRY BUY") :
                     m_ActiveEntrySetup == EEntrySetup.ShiftProjection
-                        ? (m_AutoEntryArmed ? "SHIFT ENTRY BUY" : "UNARMED SHIFT ENTRY BUY")
+                        ? (m_AutoEntryArmed
+                            ? (m_ArmedDirection > 0
+                                ? "ARMED BUY | SHIFT ENTRY BUY"
+                                : "ARMED SELL | SHIFT ENTRY BUY")
+                            : "UNARMED SHIFT ENTRY BUY")
                         : (m_AutoEntryArmed ? "ARMED | PIN ENTRY BUY" : "PIN ENTRY BUY");
             if (m_SellOrderActive)
                 status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce
@@ -2821,7 +3062,11 @@ namespace PowerLanguage.Strategy
                     m_ActiveEntrySetup == EEntrySetup.Ema8Bounce
                         ? (m_AutoEntryArmed ? "ARMED | 8 EMA ENTRY SELL" : "8 EMA ENTRY SELL") :
                     m_ActiveEntrySetup == EEntrySetup.ShiftProjection
-                        ? (m_AutoEntryArmed ? "SHIFT ENTRY SELL" : "UNARMED SHIFT ENTRY SELL")
+                        ? (m_AutoEntryArmed
+                            ? (m_ArmedDirection > 0
+                                ? "ARMED BUY | SHIFT ENTRY SELL"
+                                : "ARMED SELL | SHIFT ENTRY SELL")
+                            : "UNARMED SHIFT ENTRY SELL")
                         : (m_AutoEntryArmed ? "ARMED | PIN ENTRY SELL" : "PIN ENTRY SELL");
             if (StrategyInfo.MarketPosition != 0) {
                 status = UseOppositeColorExitForProfits

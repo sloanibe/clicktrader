@@ -22,20 +22,18 @@ namespace PowerLanguage.Indicator
     [RecoverDrawings(false)]
     public class RangePBBounce : IndicatorObject
     {
-        private const int PinBarRangeTicks = 5;
+        private const int BasePinBarRangeTicks = 5;
         private const int FastEmaLength = 8;
         private const int SlowEmaLength = 24;
         private const int ProfileEmaLength = 50;
         // Keep PB1 markers out of flat, overlapping-EMA congestion.
         private const int MinimumEmaSeparationTicks = 3;
         private const int EmaSlopeBars = 3;
+        private const int SlowEmaPersistenceBars = 4;
         private const double MinimumFastEmaSlopeDegrees = 20.0;
         private const double StrongContinuationFastSlopeDegrees = 40.0;
         private const double StrongContinuationSlowSlopeDegrees = 15.0;
         private const double StrongContinuationSeparationTicks = 3.0;
-        // Match RangeBarTrading's one-sided chart convention: ask charts show
-        // longs, and bid charts show shorts.
-        [Input] public bool IsAskChart { get; set; }
         [Input] public bool ShowDisplay { get; set; }
         [Input] public EPBDisplayLevel DisplayPBLevel { get; set; }
 
@@ -47,7 +45,6 @@ namespace PowerLanguage.Indicator
 
         public RangePBBounce(object ctx) : base(ctx)
         {
-            IsAskChart = true;
             ShowDisplay = true;
             DisplayPBLevel = EPBDisplayLevel.PB2;
         }
@@ -91,7 +88,8 @@ namespace PowerLanguage.Indicator
             if (IsDisplayDirectionAllowed(-1) &&
                 TryGetCompletedPB1BodyTicks(-1, tickSize,
                                              out compactShortBodyTicks) &&
-                compactShortBodyTicks <= 1 &&
+                compactShortBodyTicks <= GetPB1BodyTicks(
+                    GetPinBarRangeTicks(tickSize)) &&
                 IsSelectedPBBody(compactShortBodyTicks) &&
                 IsCompactShortPBContinuationValid(tickSize))
             {
@@ -103,7 +101,8 @@ namespace PowerLanguage.Indicator
             if (IsDisplayDirectionAllowed(1) &&
                 TryGetCompletedPB1BodyTicks(1, tickSize,
                                              out compactLongBodyTicks) &&
-                compactLongBodyTicks <= 1 &&
+                compactLongBodyTicks <= GetPB1BodyTicks(
+                    GetPinBarRangeTicks(tickSize)) &&
                 IsSelectedPBBody(compactLongBodyTicks) &&
                 IsCompactLongPBContinuationValid(tickSize))
             {
@@ -113,6 +112,7 @@ namespace PowerLanguage.Indicator
 
             int direction = GetUnarmedPinBarDirection(tickSize);
             if (!IsDisplayDirectionAllowed(direction) ||
+                !HasTwoPriorTrendCloses(direction) ||
                 !HasPriorBarTrendDirection(direction) ||
                 !HasDirectionalFastEmaSlopeForThreeBars(direction) ||
                 !IsCompletedPinBarTailOnFastEmaSide(direction) ||
@@ -131,7 +131,7 @@ namespace PowerLanguage.Indicator
             // PB0/PB1 are compact setups.  RangeBarTrading evaluates them
             // only through the compact 8-EMA continuation rule above; they
             // must never fall through to the PB2 rule set.
-            if (bodyTicks <= 1)
+            if (bodyTicks <= GetPB1BodyTicks(GetPinBarRangeTicks(tickSize)))
                 return;
 
             DrawPB1Label(direction, bodyTicks, tickSize);
@@ -151,7 +151,10 @@ namespace PowerLanguage.Indicator
 
         private bool IsDisplayDirectionAllowed(int direction)
         {
-            return direction > 0 ? IsAskChart : direction < 0 && !IsAskChart;
+            // This is a research/display indicator.  It shows both valid PB
+            // directions on every chart; ask/bid routing is enforced only by
+            // the live RangeBarTrading signal when it submits an order.
+            return direction != 0;
         }
 
         private bool IsPB1EmaOrderValid(int direction)
@@ -203,6 +206,36 @@ namespace PowerLanguage.Indicator
             return direction > 0
                 ? Bars.Close[1] > Bars.Open[1]
                 : direction < 0 && Bars.Close[1] < Bars.Open[1];
+        }
+
+        // A PB0 has no body: its open and close are both at the completion
+        // extreme.  It is therefore directional by structure, but cannot
+        // satisfy the strict Close > Open (or Close < Open) test above.  Let
+        // a completed directional PB0 lead directly into a compact PB1/PB0
+        // continuation without relaxing the normal PB2+ lead-in rule.
+        private bool HasCompactPriorBarTrendConfirmation(int direction,
+                                                         double tickSize)
+        {
+            return HasPriorBarTrendDirection(direction) ||
+                   IsPriorDirectionalPB0(direction, tickSize);
+        }
+
+        private bool IsPriorDirectionalPB0(int direction, double tickSize)
+        {
+            double tolerance = tickSize * 0.1;
+            double open = RoundToTick(Bars.Open[1], tickSize);
+            double high = RoundToTick(Bars.High[1], tickSize);
+            double low = RoundToTick(Bars.Low[1], tickSize);
+            double close = RoundToTick(Bars.Close[1], tickSize);
+
+            return direction > 0
+                ? Math.Abs(open - high) <= tolerance &&
+                  Math.Abs(close - high) <= tolerance &&
+                  ToTicks(open - low, tickSize) == GetPinBarRangeTicks(tickSize)
+                : direction < 0 &&
+                  Math.Abs(open - low) <= tolerance &&
+                  Math.Abs(close - low) <= tolerance &&
+                  ToTicks(high - open, tickSize) == GetPinBarRangeTicks(tickSize);
         }
 
         private bool IsCompletedPinBarTailOnFastEmaSide(int direction)
@@ -258,18 +291,82 @@ namespace PowerLanguage.Indicator
 
         private bool IsCompactShortPBContinuationValid(double tickSize)
         {
-            return HasSharplyMovingFastEma(-1, tickSize) &&
+            return HasDirectional824TrendContext(-1, tickSize) &&
+                   HasMinimumFastSlowSeparation(tickSize) &&
+                   HasSharplyMovingFastEma(-1, tickSize) &&
                    HasDirectionalFastEmaSlopeForThreeBars(-1) &&
-                   HasPriorBarTrendDirection(-1) &&
+                   HasThreeBarCloseBreakout(-1) &&
+                   HasCompactPriorBarTrendConfirmation(-1, tickSize) &&
                    IsCompletedPinBarTailOnFastEmaSide(-1);
         }
 
         private bool IsCompactLongPBContinuationValid(double tickSize)
         {
-            return HasSharplyMovingFastEma(1, tickSize) &&
+            return HasDirectional824TrendContext(1, tickSize) &&
+                   HasMinimumFastSlowSeparation(tickSize) &&
+                   HasSharplyMovingFastEma(1, tickSize) &&
                    HasDirectionalFastEmaSlopeForThreeBars(1) &&
-                   HasPriorBarTrendDirection(1) &&
+                   HasThreeBarCloseBreakout(1) &&
+                   HasCompactPriorBarTrendConfirmation(1, tickSize) &&
                    IsCompletedPinBarTailOnFastEmaSide(1);
+        }
+
+        // Compact PB1/PB0 patterns may use a sharply reversing 8 EMA, but
+        // they must never trade against the 8/24 trend context.  The 50 EMA
+        // is intentionally not part of this rule.
+        private bool HasDirectional824TrendContext(int direction, double tickSize)
+        {
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] &&
+                  HasPersistentSlowEmaDirection(1)
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] &&
+                  HasPersistentSlowEmaDirection(-1);
+        }
+
+        private bool HasPersistentSlowEmaDirection(int direction)
+        {
+            for (int barsBack = 0; barsBack < SlowEmaPersistenceBars; barsBack++)
+            {
+                if (direction > 0 && m_SlowEMA[barsBack] <= m_SlowEMA[barsBack + 1])
+                    return false;
+                if (direction < 0 && m_SlowEMA[barsBack] >= m_SlowEMA[barsBack + 1])
+                    return false;
+            }
+            return true;
+        }
+
+        // A PB is a continuation pattern, so the two completed bars leading
+        // into it must already have closed with the candidate direction.
+        private bool HasTwoPriorTrendCloses(int direction)
+        {
+            for (int barsBack = 1; barsBack <= 2; barsBack++)
+            {
+                bool closesWithTrend = direction > 0
+                    ? Bars.Close[barsBack] > Bars.Open[barsBack]
+                    : Bars.Close[barsBack] < Bars.Open[barsBack];
+                if (!closesWithTrend) return false;
+            }
+            return true;
+        }
+
+        // PB1/PB0 may recover from a mixed-color micro-pullback only when
+        // their own close breaks beyond every one of the prior three closes.
+        private bool HasThreeBarCloseBreakout(int direction)
+        {
+            for (int barsBack = 1; barsBack <= 3; barsBack++)
+            {
+                if (direction > 0 && Bars.Close[0] <= Bars.Close[barsBack])
+                    return false;
+                if (direction < 0 && Bars.Close[0] >= Bars.Close[barsBack])
+                    return false;
+            }
+            return true;
+        }
+
+        private bool HasMinimumFastSlowSeparation(double tickSize)
+        {
+            return Math.Abs(m_FastEMA[0] - m_SlowEMA[0]) >=
+                   MinimumEmaSeparationTicks * tickSize;
         }
 
         private bool IsOpenOnCorrectEmaSide(int direction, double tickSize)
@@ -304,15 +401,56 @@ namespace PowerLanguage.Indicator
                 if (Math.Abs(close - low) > tolerance) return false;
             }
 
-            // The display supports PB3 through PB0: body/tail 3/2, 2/3,
-            // 1/4, and 0/5. DisplayPBLevel selects the largest shown body.
-            return bodyTicks >= 0 && bodyTicks <= 3 &&
-                   tailTicks + bodyTicks == PinBarRangeTicks;
+            int rangeTicks = GetPinBarRangeTicks(tickSize);
+            // Scale the original PB2/PB1/PB0 ratios to the active range.
+            // This is 3/2, 4/1, 5/0 at five ticks and 5/3, 6/2, 8/0 at
+            // eight ticks. Intermediate bodies are not PB shapes.
+            return IsSupportedPBBody(rangeTicks, bodyTicks) &&
+                   tailTicks + bodyTicks == rangeTicks;
         }
 
         private bool IsSelectedPBBody(int bodyTicks)
         {
-            return bodyTicks >= 0 && bodyTicks <= (int)DisplayPBLevel;
+            int rangeTicks = GetPinBarRangeTicks(GetTickSize());
+            return GetPBDisplayLevel(rangeTicks, bodyTicks) <=
+                   (int)DisplayPBLevel;
+        }
+
+        private double GetTickSize()
+        {
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            return tickSize > 0 ? tickSize : 0.25;
+        }
+
+        private int GetPinBarRangeTicks(double tickSize)
+        {
+            return Math.Max(1, ToTicks(Bars.High[0] - Bars.Low[0], tickSize));
+        }
+
+        private int GetPB2BodyTicks(int rangeTicks)
+        {
+            return Math.Max(1, (int)Math.Round(rangeTicks * 2.0 /
+                                                BasePinBarRangeTicks));
+        }
+
+        private int GetPB1BodyTicks(int rangeTicks)
+        {
+            return Math.Max(1, (int)Math.Round(rangeTicks * 1.0 /
+                                                BasePinBarRangeTicks));
+        }
+
+        private bool IsSupportedPBBody(int rangeTicks, int bodyTicks)
+        {
+            return bodyTicks == GetPB2BodyTicks(rangeTicks) ||
+                   bodyTicks == GetPB1BodyTicks(rangeTicks) ||
+                   bodyTicks == 0;
+        }
+
+        private int GetPBDisplayLevel(int rangeTicks, int bodyTicks)
+        {
+            if (bodyTicks == 0) return 0;
+            if (bodyTicks == GetPB1BodyTicks(rangeTicks)) return 1;
+            return 2;
         }
 
         private void DrawPB1Label(int direction, int bodyTicks, double tickSize)
@@ -338,7 +476,8 @@ namespace PowerLanguage.Indicator
                 : Bars.High[0] + (4 * tickSize);
             ITextObject label = DrwText.Create(
                 new ChartPoint(Bars.Time[0], labelPrice),
-                "PB" + bodyTicks.ToString());
+                "PB" + GetPBDisplayLevel(GetPinBarRangeTicks(tickSize),
+                                           bodyTicks).ToString());
             if (label == null) return;
 
             label.Color = Color.DodgerBlue;
