@@ -114,6 +114,7 @@ namespace PowerLanguage.Indicator
             if (!IsDisplayDirectionAllowed(direction) ||
                 !HasTwoPriorTrendCloses(direction) ||
                 !HasPriorBarTrendDirection(direction) ||
+                !HasRequiredEmaFan(direction, tickSize) ||
                 !HasDirectionalFastEmaSlopeForThreeBars(direction) ||
                 !IsCompletedPinBarTailOnFastEmaSide(direction) ||
                 !IsPB1EmaOrderValid(direction) ||
@@ -292,6 +293,7 @@ namespace PowerLanguage.Indicator
         private bool IsCompactShortPBContinuationValid(double tickSize)
         {
             return HasDirectional824TrendContext(-1, tickSize) &&
+                   HasRequiredEmaFan(-1, tickSize) &&
                    HasMinimumFastSlowSeparation(tickSize) &&
                    HasSharplyMovingFastEma(-1, tickSize) &&
                    HasDirectionalFastEmaSlopeForThreeBars(-1) &&
@@ -303,6 +305,7 @@ namespace PowerLanguage.Indicator
         private bool IsCompactLongPBContinuationValid(double tickSize)
         {
             return HasDirectional824TrendContext(1, tickSize) &&
+                   HasRequiredEmaFan(1, tickSize) &&
                    HasMinimumFastSlowSeparation(tickSize) &&
                    HasSharplyMovingFastEma(1, tickSize) &&
                    HasDirectionalFastEmaSlopeForThreeBars(1) &&
@@ -367,6 +370,18 @@ namespace PowerLanguage.Indicator
         {
             return Math.Abs(m_FastEMA[0] - m_SlowEMA[0]) >=
                    MinimumEmaSeparationTicks * tickSize;
+        }
+
+        private bool HasRequiredEmaFan(int direction, double tickSize)
+        {
+            double minimumGap = GetPinBarRangeTicks(tickSize) * 0.5;
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_ProfileEMA[0] &&
+                  (m_FastEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap &&
+                  (m_SlowEMA[0] - m_ProfileEMA[0]) / tickSize >= minimumGap
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] && m_SlowEMA[0] < m_ProfileEMA[0] &&
+                  (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
+                  (m_ProfileEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap;
         }
 
         private bool IsOpenOnCorrectEmaSide(int direction, double tickSize)

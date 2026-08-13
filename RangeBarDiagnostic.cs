@@ -263,6 +263,7 @@ namespace PowerLanguage.Indicator
             bool tailOnFastSide = IsCompletedPinBarTailOnFastEmaSide(direction);
             bool emaOrder = IsPB1EmaOrderValid(direction);
             bool trendFilter = IsPB1TrendFilterValid(direction, tickSize);
+            bool emaFan = HasRequiredEmaFan(direction, tickSize);
             bool openSide = direction > 0 ? Bars.Open[0] > result.SlowEma :
                             direction < 0 && Bars.Open[0] < result.SlowEma;
             bool leadIn = HasPBLeadInStructure(direction);
@@ -273,16 +274,18 @@ namespace PowerLanguage.Indicator
                                body > GetPB1BodyTicks(tickSize) && twoPriorCloses &&
                                priorDirection && directionalFastSlope &&
                                tailOnFastSide && emaOrder && trendFilter &&
+                               emaFan &&
                                (leadIn || strongContinuation) && openSide;
             result.GeneralPBDetail = string.Format(
                 "shape PB2+ {0}; two prior closes {1}; prior direction {2}; " +
                 "8 slope sequence {3}; tail side {4}; order {5}; trend {6}; " +
-                "lead-in {7}; strong continuation {8}; open side {9}",
+                "EMA fan / half-bar gaps {7}; lead-in {8}; strong continuation {9}; open side {10}",
                 Pass(normalShape && body > GetPB1BodyTicks(tickSize)),
                 Pass(twoPriorCloses),
                 Pass(priorDirection), Pass(directionalFastSlope),
                 Pass(tailOnFastSide), Pass(emaOrder), Pass(trendFilter),
-                Pass(leadIn), Pass(strongContinuation), Pass(openSide));
+                Pass(emaFan), Pass(leadIn), Pass(strongContinuation),
+                Pass(openSide));
 
             double bestFast = GetBestDirectionalSlope(m_FastEMA, direction, tickSize);
             double bestSlow = GetBestDirectionalSlope(m_SlowEMA, direction, tickSize);
@@ -309,7 +312,7 @@ namespace PowerLanguage.Indicator
                 crossesFast &&
                 ((penetration >= Ema8MinimumPenetrationTicks &&
                   penetration <= Ema8MaximumPenetrationTicks) || shallowTouch) &&
-                twoBarPullback &&
+                twoBarPullback && HasRequiredEmaFan(direction, tickSize) &&
                 closeFastSide && color &&
                 GetLocalDisplacement(direction, tickSize) >= 1.0;
 
@@ -325,7 +328,8 @@ namespace PowerLanguage.Indicator
                 bestSeparation >= Ema24MinimumBestSeparationTicks &&
                 (direction > 0 ? bestSlow >= Ema24MinimumSlowSlopeDegrees :
                  bestSlow <= -Ema24MinimumSlowSlopeDegrees) &&
-                slowGap <= Ema24TouchToleranceTicks && closeSlowSide && color;
+                slowGap <= Ema24TouchToleranceTicks && closeSlowSide && color &&
+                HasRequiredEmaFan(direction, tickSize);
             result.Ema50Bounce = IsFiftyEmaBounce(tickSize);
             return result;
         }
@@ -462,6 +466,7 @@ namespace PowerLanguage.Indicator
             bool tailSide = IsCompletedPinBarTailOnFastEmaSide(direction);
             bool emaOrderPass = IsPB1EmaOrderValid(direction);
             bool trendFilterPass = IsPB1TrendFilterValid(direction, tickSize);
+            bool emaFanPass = HasRequiredEmaFan(direction, tickSize);
             bool leadInPass = HasPBLeadInStructure(direction);
             bool strongContinuationPass = IsStrongTrendContinuationValid(direction,
                                                                            tickSize);
@@ -469,16 +474,17 @@ namespace PowerLanguage.Indicator
                                 direction < 0 && Bars.Open[0] < m_SlowEMA[0];
             bool normalPass = pb2PlusShape && twoPriorCloses && priorDirection &&
                               fastSequence && tailSide && emaOrderPass &&
-                              trendFilterPass &&
+                              trendFilterPass && emaFanPass &&
                               (leadInPass || strongContinuationPass) && openSidePass;
             text.AppendFormat("Regular PB2+ ({0}): shape tail/body {1}/{2} [{3}], " +
                 "two prior closes [{4}], prior direction [{5}], 8 sequence [{6}]\n",
                 DirectionName(direction), tail, body, Pass(pb2PlusShape),
                 Pass(twoPriorCloses), Pass(priorDirection), Pass(fastSequence));
             text.AppendFormat("Tail side [{0}], 8/24 order [{1}], 3t + 8-slope trend " +
-                "filter [{2}], lead-in OR strong [{3}], open side [{4}]\n",
+                "filter [{2}], EMA fan / half-bar gaps [{3}], lead-in OR strong [{4}], open side [{5}]\n",
                 Pass(tailSide), Pass(emaOrderPass), Pass(trendFilterPass),
-                Pass(leadInPass || strongContinuationPass), Pass(openSidePass));
+                Pass(emaFanPass), Pass(leadInPass || strongContinuationPass),
+                Pass(openSidePass));
             text.AppendFormat("Regular PB2+ RESULT: [{0}]\n", Pass(normalPass));
         }
 
@@ -515,8 +521,9 @@ namespace PowerLanguage.Indicator
                              direction < 0 && Bars.Close[0] <= Bars.Open[0];
             double displacement = GetLocalDisplacement(direction, tickSize);
             bool displacementPass = displacement >= 1.0;
+            bool emaFanPass = HasRequiredEmaFan(direction, tickSize);
             bool result = separationPass && fastPass && slowPass && leadPass &&
-                          twoBarPullback &&
+                          twoBarPullback && emaFanPass &&
                           penetrationPass && closeSidePass && colorPass &&
                           displacementPass;
             text.AppendLine("8 EMA BOUNCE");
@@ -531,6 +538,8 @@ namespace PowerLanguage.Indicator
                 Pass(closeSidePass), Pass(colorPass), displacement, Pass(displacementPass));
             text.AppendFormat("Two countertrend bars REQUIRED [{0}], shallow touch (<1t) [{1}]\n",
                 Pass(twoBarPullback), Pass(shallowTouchPass));
+            text.AppendFormat("Correct EMA fan with 8/24 and 24/50 gaps >= half bar [{0}]\n",
+                Pass(emaFanPass));
             text.AppendFormat("8 EMA BOUNCE RESULT: [{0}]\n", Pass(result));
         }
 
@@ -553,8 +562,9 @@ namespace PowerLanguage.Indicator
                              direction < 0 && Bars.Close[0] < m_SlowEMA[0];
             bool colorPass = direction > 0 ? Bars.Close[0] > Bars.Open[0] :
                              direction < 0 && Bars.Close[0] <= Bars.Open[0];
+            bool emaFanPass = HasRequiredEmaFan(direction, tickSize);
             bool result = currentSepPass && bestSepPass && slopePass && touchPass &&
-                          closePass && colorPass;
+                          closePass && colorPass && emaFanPass;
             text.AppendLine("24 EMA BOUNCE");
             text.AppendFormat("Current separation {0:F2}t >= 1.5 [{1}], best {2:F2}t >= 2 [{3}], " +
                 "best 24 slope {4:F1}° >= 20° [{5}]\n", separation,
@@ -562,6 +572,8 @@ namespace PowerLanguage.Indicator
                 Pass(slopePass));
             text.AppendFormat("24 EMA gap {0:F2}t <= 0.25 [{1}], close side [{2}], color [{3}]\n",
                 gap, Pass(touchPass), Pass(closePass), Pass(colorPass));
+            text.AppendFormat("Correct EMA fan with 8/24 and 24/50 gaps >= half bar [{0}]\n",
+                Pass(emaFanPass));
             text.AppendFormat("24 EMA BOUNCE RESULT: [{0}]\n", Pass(result));
         }
 
@@ -863,6 +875,7 @@ namespace PowerLanguage.Indicator
             int tail, body;
             return TryGetPBShape(direction, tickSize, out tail, out body) &&
                    body <= GetPB1BodyTicks(tickSize) &&
+                   HasRequiredEmaFan(direction, tickSize) &&
                    HasDirectional824PBTrendContext(direction) &&
                    HasMinimumPBFastSlowSeparation(tickSize) &&
                    HasSharplyMovingFastEma(direction, tickSize) &&
@@ -894,6 +907,19 @@ namespace PowerLanguage.Indicator
         {
             return Math.Abs(m_FastEMA[0] - m_SlowEMA[0]) >=
                    PBMinimumSeparationTicks * tickSize;
+        }
+
+        private bool HasRequiredEmaFan(int direction, double tickSize)
+        {
+            double rangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
+            double minimumGap = rangeTicks * 0.5;
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_TrendEMA[0] &&
+                  (m_FastEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap &&
+                  (m_SlowEMA[0] - m_TrendEMA[0]) / tickSize >= minimumGap
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] && m_SlowEMA[0] < m_TrendEMA[0] &&
+                  (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
+                  (m_TrendEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap;
         }
 
         private bool HasSharplyMovingFastEma(int direction, double tickSize)

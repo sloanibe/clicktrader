@@ -18,7 +18,9 @@ namespace PowerLanguage.Indicator
         private const int SlopeBars = 3;
         private const int SlopeLookbackBars = 6;
         private const double MinimumSlopeDegrees = 20.0;
-        private const double EmaTouchToleranceTicks = 0.25;
+        // A completed range bar can reject just short of the EMA.  Treat a
+        // near-touch (up to three-quarters of a tick) as a valid 24 bounce.
+        private const double EmaTouchToleranceTicks = 0.75;
         private const double MinimumEmaSeparationTicks = 2.0;
         private const double MinimumCurrentEmaSeparationTicks = 1.5;
         // Treat each displayed arrow as a completed virtual entry.  A new
@@ -107,7 +109,8 @@ namespace PowerLanguage.Indicator
             BounceDiagnostic diagnostic = BuildDiagnostic(tickSize);
             if (!diagnostic.SeparationPass || !diagnostic.SlopePass ||
                 !diagnostic.TouchPass || !diagnostic.ClosePass ||
-                !diagnostic.BarColorPass)
+                !diagnostic.BarColorPass ||
+                !HasRequiredEmaFan(diagnostic.Direction, tickSize))
                 return;
 
             DrawBounceArrow(diagnostic.Direction, tickSize);
@@ -148,6 +151,19 @@ namespace PowerLanguage.Indicator
             m_VirtualTradeActive = false;
             m_VirtualTradeDirection = 0;
             m_VirtualTradeEntryPrice = 0;
+        }
+
+        private bool HasRequiredEmaFan(int direction, double tickSize)
+        {
+            double rangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
+            double minimumGap = rangeTicks * 0.5;
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_ProfileEMA[0] &&
+                  (m_FastEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap &&
+                  (m_SlowEMA[0] - m_ProfileEMA[0]) / tickSize >= minimumGap
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] && m_SlowEMA[0] < m_ProfileEMA[0] &&
+                  (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
+                  (m_ProfileEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap;
         }
 
         private int GetTrendDirection()

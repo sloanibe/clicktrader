@@ -1266,6 +1266,7 @@ namespace PowerLanguage.Strategy
                 : HasPinBarPriorBarDirection(direction);
             if (!hasPriorTrendConfirmation ||
                 !hasPriorBarConfirmation ||
+                !HasRequiredEmaFan(direction, tickSize) ||
                 !HasDirectionalFastEmaSlopeForThreeBars(direction) ||
                 !IsPinBarTailOnFastEmaSide(direction, projectedLow,
                                              projectedHigh)) {
@@ -1762,6 +1763,7 @@ namespace PowerLanguage.Strategy
                             m_FastEMA[0] < m_SlowEMA[0] ? -1 : 0;
             if (direction == 0 || Math.Abs(m_FastEMA[0] - m_SlowEMA[0]) / tickSize < Ema8MinSeparationTicks)
                 return 0;
+            if (!HasRequiredEmaFan(direction, tickSize)) return 0;
             // An 8-EMA bounce must be a genuine two-bar pullback into the
             // EMA. A one-bar touch is no longer an 8E setup.
             if (!HasTwoBarCounterTrendEma8Pullback(direction))
@@ -1874,6 +1876,7 @@ namespace PowerLanguage.Strategy
                 GetBestDirectionalEmaSeparation(direction) <
                     Ema24MinBestSeparationTicks)
                 return 0;
+            if (!HasRequiredEmaFan(direction, tickSize)) return 0;
 
             double bestSlowSlope = GetBestDirectionalEmaSlope(m_SlowEMA,
                                                                direction, tickSize);
@@ -1894,6 +1897,22 @@ namespace PowerLanguage.Strategy
                 best = Math.Max(best, separation / tickSize);
             }
             return best;
+        }
+
+        // Every PB, 8-EMA, and 24-EMA entry needs a properly fanned EMA
+        // stack. The 8/24 and 24/50 gaps must each span at least half a bar
+        // (2.5 ticks on 5-tick bars; 4 ticks on 8-tick bars).
+        private bool HasRequiredEmaFan(int direction, double tickSize) {
+            double minimumGap = GetActiveRangeTicks(tickSize) * 0.5;
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] &&
+                  m_SlowEMA[0] > m_ProfileEMA[0] &&
+                  (m_FastEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap &&
+                  (m_SlowEMA[0] - m_ProfileEMA[0]) / tickSize >= minimumGap
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] &&
+                  m_SlowEMA[0] < m_ProfileEMA[0] &&
+                  (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
+                  (m_ProfileEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap;
         }
 
         // Shared gate for PB, 8-EMA, and 24-EMA signals. A profile must hold

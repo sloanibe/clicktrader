@@ -323,6 +323,7 @@ namespace PowerLanguage.Indicator
                                            MinimumLocalDisplacementTicks;
             result.SignalPass = result.SeparationPass && result.FastSlopePass &&
                 result.SlowSlopePass && result.SlopeLeadPass &&
+                HasRequiredEmaFan(result.Direction, tickSize) &&
                 result.TwoBarPullbackPass &&
                 result.PenetrationPass && result.CloseOnTrendSide &&
                 result.BarColorPass && result.LocalDisplacementPass;
@@ -336,6 +337,19 @@ namespace PowerLanguage.Indicator
                 best = Math.Max(best, Math.Abs(m_FastEMA[barsBack] -
                                                 m_SlowEMA[barsBack]) / tickSize);
             return best;
+        }
+
+        private bool HasRequiredEmaFan(int direction, double tickSize)
+        {
+            double rangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
+            double minimumGap = rangeTicks * 0.5;
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_ProfileEMA[0] &&
+                  (m_FastEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap &&
+                  (m_SlowEMA[0] - m_ProfileEMA[0]) / tickSize >= minimumGap
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] && m_SlowEMA[0] < m_ProfileEMA[0] &&
+                  (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
+                  (m_ProfileEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap;
         }
 
         private double RoundToIncrement(double value, double increment)
