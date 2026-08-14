@@ -92,6 +92,8 @@ namespace PowerLanguage.Strategy
         private const double Ema24MinCurrentSeparationTicks = 1.5;
         private const double Ema24MinBestSeparationTicks = 2.0;
         private const double Ema24MinSlowSlopeDegrees = 20.0;
+        private const double Ema24MinCurrentSlowSlopeDegrees = 15.0;
+        private const double Ema24MinFanGapBarFraction = 0.475;
         // Keep the live 24-EMA setup recognition aligned with
         // RangeEMA24Bounce: a completed/rejecting bar may stop within
         // one tick of the EMA rather than touching it exactly.
@@ -1923,14 +1925,18 @@ namespace PowerLanguage.Strategy
                 GetBestDirectionalEmaSeparation(direction) <
                     Ema24MinBestSeparationTicks)
                 return 0;
-            if (!HasRequiredEmaFan(direction, tickSize)) return 0;
+            if (!HasRequired24EmaFan(direction, tickSize)) return 0;
 
             double bestSlowSlope = GetBestDirectionalEmaSlope(m_SlowEMA,
                                                                direction, tickSize);
             bool slopePass = direction > 0
                 ? bestSlowSlope >= Ema24MinSlowSlopeDegrees
                 : bestSlowSlope <= -Ema24MinSlowSlopeDegrees;
-            return slopePass ? direction : 0;
+            double currentSlowSlope = GetAngle(m_SlowEMA[0], m_SlowEMA[3], 3, tickSize);
+            bool currentSlopePass = direction > 0
+                ? currentSlowSlope >= Ema24MinCurrentSlowSlopeDegrees
+                : currentSlowSlope <= -Ema24MinCurrentSlowSlopeDegrees;
+            return slopePass && currentSlopePass ? direction : 0;
         }
 
         private double GetBestDirectionalEmaSeparation(int direction) {
@@ -1951,6 +1957,19 @@ namespace PowerLanguage.Strategy
         // (2.5 ticks on 5-tick bars; 4 ticks on 8-tick bars).
         private bool HasRequiredEmaFan(int direction, double tickSize) {
             double minimumGap = GetActiveRangeTicks(tickSize) * 0.5;
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] &&
+                  m_SlowEMA[0] > m_ProfileEMA[0] &&
+                  (m_FastEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap &&
+                  (m_SlowEMA[0] - m_ProfileEMA[0]) / tickSize >= minimumGap
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] &&
+                  m_SlowEMA[0] < m_ProfileEMA[0] &&
+                  (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
+                  (m_ProfileEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap;
+        }
+
+        private bool HasRequired24EmaFan(int direction, double tickSize) {
+            double minimumGap = GetActiveRangeTicks(tickSize) * Ema24MinFanGapBarFraction;
             return direction > 0
                 ? m_FastEMA[0] > m_SlowEMA[0] &&
                   m_SlowEMA[0] > m_ProfileEMA[0] &&

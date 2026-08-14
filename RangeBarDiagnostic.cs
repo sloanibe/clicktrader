@@ -40,6 +40,8 @@ namespace PowerLanguage.Indicator
         private const double Ema24MinimumCurrentSeparationTicks = 1.5;
         private const double Ema24MinimumBestSeparationTicks = 2.0;
         private const double Ema24MinimumSlowSlopeDegrees = 20.0;
+        private const double Ema24MinimumCurrentSlowSlopeDegrees = 15.0;
+        private const double Ema24MinimumFanGapBarFraction = 0.475;
         private const double Ema24TouchToleranceTicks = 1.0;
         private const int ProfilePersistenceBars = 4;
         private const double ProfileMinFastSlowSeparationTicks = 3.0;
@@ -54,8 +56,9 @@ namespace PowerLanguage.Indicator
         private const double StrongContinuationTrendSlopeDegrees = 20.0;
         private const double StrongContinuationSeparationTicks = 4.5;
         private const double Ema50TouchToleranceTicks = 0.75;
-        private const double Ema50MinimumSlowTrendSeparationTicks = 3.0;
-        private const double Ema50MinimumPriorTrendSlopeDegrees = 15.0;
+        private const double Ema50MinimumRecentTrendSlopeDegrees = 12.0;
+        private const int Ema50TrendSlopeLookbackBars = 3;
+        private const double Ema50MinimumSlowTrendSeparationBarFraction = 0.48;
 
         private XAverage m_FastEMA;
         private XAverage m_SlowEMA;
@@ -359,6 +362,8 @@ namespace PowerLanguage.Indicator
                 GetLocalDisplacement(emaDirection, tickSize) >= 1.0;
 
             double bestSeparation = GetBestDirectionalSeparation(emaDirection, tickSize);
+            double currentSlowSlope = GetAngle(m_SlowEMA[0], m_SlowEMA[SlopeBars],
+                                                SlopeBars, tickSize);
             double slowGap = result.SlowEma < Bars.Low[0]
                 ? (Bars.Low[0] - result.SlowEma) / tickSize
                 : result.SlowEma > Bars.High[0]
@@ -370,8 +375,10 @@ namespace PowerLanguage.Indicator
                 bestSeparation >= Ema24MinimumBestSeparationTicks &&
                 (emaDirection > 0 ? bestSlow >= Ema24MinimumSlowSlopeDegrees :
                  bestSlow <= -Ema24MinimumSlowSlopeDegrees) &&
+                (emaDirection > 0 ? currentSlowSlope >= Ema24MinimumCurrentSlowSlopeDegrees :
+                 currentSlowSlope <= -Ema24MinimumCurrentSlowSlopeDegrees) &&
                 slowGap <= Ema24TouchToleranceTicks && closeSlowSide && color &&
-                HasRequiredEmaFan(emaDirection, tickSize);
+                HasRequired24EmaFan(emaDirection, tickSize);
             result.Ema50Bounce = IsFiftyEmaBounce(tickSize);
             return result;
         }
@@ -597,11 +604,16 @@ namespace PowerLanguage.Indicator
         {
             double bestSeparation = GetBestDirectionalSeparation(direction, tickSize);
             double bestSlow = GetBestDirectionalSlope(m_SlowEMA, direction, tickSize);
+            double currentSlow = GetAngle(m_SlowEMA[0], m_SlowEMA[SlopeBars],
+                                          SlopeBars, tickSize);
             bool currentSepPass = direction != 0 &&
                                   separation >= Ema24MinimumCurrentSeparationTicks;
             bool bestSepPass = bestSeparation >= Ema24MinimumBestSeparationTicks;
             bool slopePass = direction > 0 ? bestSlow >= Ema24MinimumSlowSlopeDegrees :
                              direction < 0 && bestSlow <= -Ema24MinimumSlowSlopeDegrees;
+            bool currentSlopePass = direction > 0
+                ? currentSlow >= Ema24MinimumCurrentSlowSlopeDegrees
+                : direction < 0 && currentSlow <= -Ema24MinimumCurrentSlowSlopeDegrees;
             double gap = m_SlowEMA[0] < Bars.Low[0]
                 ? (Bars.Low[0] - m_SlowEMA[0]) / tickSize
                 : m_SlowEMA[0] > Bars.High[0]
@@ -611,19 +623,22 @@ namespace PowerLanguage.Indicator
                              direction < 0 && Bars.Close[0] < m_SlowEMA[0];
             bool colorPass = direction > 0 ? Bars.Close[0] >= Bars.Open[0] :
                              direction < 0 && Bars.Close[0] <= Bars.Open[0];
-            bool emaFanPass = HasRequiredEmaFan(direction, tickSize);
-            bool result = currentSepPass && bestSepPass && slopePass && touchPass &&
+            bool emaFanPass = HasRequired24EmaFan(direction, tickSize);
+            bool result = currentSepPass && bestSepPass && slopePass && currentSlopePass && touchPass &&
                           closePass && colorPass && emaFanPass;
             text.AppendLine("24 EMA BOUNCE");
             text.AppendFormat("Current separation {0:F2}t >= 1.5 [{1}], best {2:F2}t >= 2 [{3}], " +
                 "best 24 slope {4:F1}° >= 20° [{5}]\n", separation,
                 Pass(currentSepPass), bestSeparation, Pass(bestSepPass), bestSlow,
                 Pass(slopePass));
+            text.AppendFormat("Current 24 slope {0:F1}° must be {1}{2:F0}° [{3}]\n",
+                currentSlow, direction > 0 ? ">= +" : "<= -",
+                Ema24MinimumCurrentSlowSlopeDegrees, Pass(currentSlopePass));
             text.AppendFormat("24 EMA gap {0:F2}t <= {1:F2} [{2}], close side [{3}], color [{4}]\n",
                 gap, Ema24TouchToleranceTicks, Pass(touchPass), Pass(closePass),
                 Pass(colorPass));
-            text.AppendFormat("Correct EMA fan with 8/24 and 24/50 gaps >= half bar [{0}]\n",
-                Pass(emaFanPass));
+            text.AppendFormat("24E EMA fan with 8/24 and 24/50 gaps >= {0:F1}% bar [{1}]\n",
+                Ema24MinimumFanGapBarFraction * 100.0, Pass(emaFanPass));
             text.AppendFormat("24 EMA BOUNCE RESULT: [{0}]\n", Pass(result));
         }
 
@@ -658,22 +673,25 @@ namespace PowerLanguage.Indicator
                 : direction < 0 && Bars.Close[0] <= Bars.Open[0] &&
                   Bars.Close[0] < m_TrendEMA[0];
             double slowTrendGap = Math.Abs(m_SlowEMA[0] - m_TrendEMA[0]) / tickSize;
-            bool slowTrendSeparationPass = slowTrendGap >=
-                                           Ema50MinimumSlowTrendSeparationTicks;
-            bool priorTrendPass = HasPriorDirectionalTrendSlope(direction, tickSize);
-            double bestPriorTrendSlope = GetBestPriorDirectionalSlope(m_TrendEMA,
-                                                                        direction, tickSize);
+            double requiredSlowTrendGap = Math.Abs(Bars.High[0] - Bars.Low[0]) /
+                tickSize * Ema50MinimumSlowTrendSeparationBarFraction;
+            bool slowTrendSeparationPass = slowTrendGap >= requiredSlowTrendGap;
+            double bestRecentTrendSlope = GetBestRecentDirectionalTrendSlope(direction, tickSize);
+            bool trendSlopePass = direction > 0
+                ? bestRecentTrendSlope >= Ema50MinimumRecentTrendSlopeDegrees
+                : direction < 0 && bestRecentTrendSlope <= -Ema50MinimumRecentTrendSlopeDegrees;
             bool result = touchPass && closeColorPass && slowTrendSeparationPass &&
-                          priorTrendPass;
+                          trendSlopePass;
             text.AppendLine("50 EMA BOUNCE");
             text.AppendFormat("Direction / current order: {0} [{1}] | 50 EMA gap {2:F2}t <= 0.75 [{3}]\n",
                 DirectionName(direction), Pass(direction != 0), gap, Pass(touchPass));
             text.AppendFormat("Close back on 50-EMA trend side with color [{0}]\n",
                 Pass(closeColorPass));
-            text.AppendFormat("Current 24/50 separation {0:F2}t >= 3t [{1}]\n",
-                slowTrendGap, Pass(slowTrendSeparationPass));
-            text.AppendFormat("Best prior-six directional 50 slope {0:F1}° (threshold ±15°) [{1}]\n",
-                bestPriorTrendSlope, Pass(priorTrendPass));
+            text.AppendFormat("Current 24/50 separation {0:F2}t >= {1:F0}% bar {2:F2}t [{3}]\n",
+                slowTrendGap, Ema50MinimumSlowTrendSeparationBarFraction * 100.0,
+                requiredSlowTrendGap, Pass(slowTrendSeparationPass));
+            text.AppendFormat("Best prior-three directional 50 slope {0:F1}° (threshold ±12°) [{1}]\n",
+                bestRecentTrendSlope, Pass(trendSlopePass));
             text.AppendFormat("50 EMA BOUNCE RESULT: [{0}]\n", Pass(result));
         }
 
@@ -790,9 +808,9 @@ namespace PowerLanguage.Indicator
 
         private int GetFiftyBounceDirection()
         {
-            return m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_TrendEMA[0]
+            return m_SlowEMA[0] > m_TrendEMA[0]
                 ? 1
-                : m_FastEMA[0] < m_SlowEMA[0] && m_SlowEMA[0] < m_TrendEMA[0]
+                : m_SlowEMA[0] < m_TrendEMA[0]
                     ? -1 : 0;
         }
 
@@ -807,26 +825,34 @@ namespace PowerLanguage.Indicator
             bool closeAndColor = direction > 0
                 ? Bars.Close[0] >= Bars.Open[0] && Bars.Close[0] > m_TrendEMA[0]
                 : Bars.Close[0] <= Bars.Open[0] && Bars.Close[0] < m_TrendEMA[0];
+            double rangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
             bool slowTrendSeparation = Math.Abs(m_SlowEMA[0] - m_TrendEMA[0]) /
-                                       tickSize >= Ema50MinimumSlowTrendSeparationTicks;
+                                       tickSize >= rangeTicks *
+                                       Ema50MinimumSlowTrendSeparationBarFraction;
+            bool trendSlopePass = HasRecentDirectionalTrendSlope(direction, tickSize);
             return gap <= Ema50TouchToleranceTicks && closeAndColor &&
-                   slowTrendSeparation &&
-                   HasPriorDirectionalTrendSlope(direction, tickSize);
+                   slowTrendSeparation && trendSlopePass;
         }
 
-        private bool HasPriorDirectionalTrendSlope(int direction, double tickSize)
+        private bool HasRecentDirectionalTrendSlope(int direction, double tickSize)
         {
-            if (direction == 0) return false;
-            for (int barsBack = 1; barsBack <= SlopeLookbackBars; barsBack++)
+            double best = GetBestRecentDirectionalTrendSlope(direction, tickSize);
+            return direction > 0
+                ? best >= Ema50MinimumRecentTrendSlopeDegrees
+                : direction < 0 && best <= -Ema50MinimumRecentTrendSlopeDegrees;
+        }
+
+        private double GetBestRecentDirectionalTrendSlope(int direction, double tickSize)
+        {
+            if (direction == 0) return 0;
+            double best = direction > 0 ? Double.NegativeInfinity : Double.PositiveInfinity;
+            for (int barsBack = 1; barsBack <= Ema50TrendSlopeLookbackBars; barsBack++)
             {
-                double trendSlope = GetAngle(m_TrendEMA[barsBack],
+                double slope = GetAngle(m_TrendEMA[barsBack],
                     m_TrendEMA[barsBack + SlopeBars], SlopeBars, tickSize);
-                if (direction > 0 && trendSlope >= Ema50MinimumPriorTrendSlopeDegrees)
-                    return true;
-                if (direction < 0 && trendSlope <= -Ema50MinimumPriorTrendSlopeDegrees)
-                    return true;
+                best = direction > 0 ? Math.Max(best, slope) : Math.Min(best, slope);
             }
-            return false;
+            return best;
         }
 
         private double GetBestPriorDirectionalSlope(XAverage ema, int direction,
@@ -963,6 +989,21 @@ namespace PowerLanguage.Indicator
         {
             double rangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
             double minimumGap = rangeTicks * 0.5;
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_TrendEMA[0] &&
+                  (m_FastEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap &&
+                  (m_SlowEMA[0] - m_TrendEMA[0]) / tickSize >= minimumGap
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] && m_SlowEMA[0] < m_TrendEMA[0] &&
+                  (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
+                  (m_TrendEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap;
+        }
+
+        // The dedicated 24E continuation filter is fractionally more open
+        // than the PB/8E fan: 47.5% of the active range versus one half.
+        private bool HasRequired24EmaFan(int direction, double tickSize)
+        {
+            double rangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
+            double minimumGap = rangeTicks * Ema24MinimumFanGapBarFraction;
             return direction > 0
                 ? m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_TrendEMA[0] &&
                   (m_FastEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap &&

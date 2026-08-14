@@ -18,6 +18,10 @@ namespace PowerLanguage.Indicator
         private const int SlopeBars = 3;
         private const int SlopeLookbackBars = 6;
         private const double MinimumSlopeDegrees = 20.0;
+        // A historical strong slope is not enough if the 24 EMA has flattened
+        // or reversed on the actual bounce bar.
+        private const double MinimumCurrentSlopeDegrees = 15.0;
+        private const double MinimumFanGapBarFraction = 0.475;
         // A completed range bar can reject just short of the EMA.  Treat a
         // near-touch (up to one tick) as a valid 24 bounce.
         private const double EmaTouchToleranceTicks = 1.0;
@@ -62,10 +66,12 @@ namespace PowerLanguage.Indicator
             public double BestSeparationTicks;
             public double RequiredSeparationTicks;
             public double BestSlopeDegrees;
+            public double CurrentSlopeDegrees;
             public double EmaRangeGapTicks;
             public bool SeparationPass;
             public bool CurrentSeparationPass;
             public bool SlopePass;
+            public bool CurrentSlopePass;
             public bool TouchPass;
             public bool ClosePass;
             public bool BarColorPass;
@@ -174,7 +180,7 @@ namespace PowerLanguage.Indicator
         private bool HasRequiredEmaFan(int direction, double tickSize)
         {
             double rangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
-            double minimumGap = rangeTicks * 0.5;
+            double minimumGap = rangeTicks * MinimumFanGapBarFraction;
             return direction > 0
                 ? m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_ProfileEMA[0] &&
                   (m_FastEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap &&
@@ -211,10 +217,17 @@ namespace PowerLanguage.Indicator
 
             result.BestSlopeDegrees = GetBestDirectionalSlope(
                 result.Direction, tickSize);
-            result.SlopePass = result.Direction > 0
+            bool bestSlopePass = result.Direction > 0
                 ? result.BestSlopeDegrees >= MinimumSlopeDegrees
                 : result.Direction < 0 &&
                   result.BestSlopeDegrees <= -MinimumSlopeDegrees;
+            result.CurrentSlopeDegrees = GetAngle(m_SlowEMA[0],
+                m_SlowEMA[SlopeBars], SlopeBars, tickSize);
+            result.CurrentSlopePass = result.Direction > 0
+                ? result.CurrentSlopeDegrees >= MinimumCurrentSlopeDegrees
+                : result.Direction < 0 &&
+                  result.CurrentSlopeDegrees <= -MinimumCurrentSlopeDegrees;
+            result.SlopePass = bestSlopePass && result.CurrentSlopePass;
 
             if (m_SlowEMA[0] < Bars.Low[0])
                 result.EmaRangeGapTicks = (Bars.Low[0] - m_SlowEMA[0]) / tickSize;
@@ -336,7 +349,7 @@ namespace PowerLanguage.Indicator
                 ? Bars.Low[0] - (4 * tickSize)
                 : Bars.High[0] + (4 * tickSize);
             ITextObject label = DrwText.Create(
-                new ChartPoint(Bars.Time[0], labelPrice), "24E");
+                new ChartPoint(Bars.Time[0], labelPrice), "24");
             if (label == null) return;
 
             label.Color = Color.DarkViolet;

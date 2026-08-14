@@ -17,10 +17,12 @@ namespace PowerLanguage.Indicator
         private const int SlowEmaLength = 24;
         private const int TrendEmaLength = 50;
         private const int SlopeBars = 3;
-        private const int FanLookbackBars = 6;
+        private const int TrendSlopeLookbackBars = 3;
         private const double TouchToleranceTicks = 0.75;
-        private const double MinimumSlowTrendSeparationTicks = 3.0;
-        private const double MinimumPriorTrendSlopeDegrees = 15.0;
+        private const double MinimumRecentTrendSlopeDegrees = 12.0;
+        // Keep the 24/50 stack nearly half a range bar apart while allowing
+        // fractional EMA values to qualify a 3.87-tick gap on an 8-tick bar.
+        private const double MinimumSlowTrendSeparationBarFraction = 0.48;
 
         private XAverage m_FastEMA;
         private XAverage m_SlowEMA;
@@ -61,7 +63,7 @@ namespace PowerLanguage.Indicator
                 return;
             }
             if (Bars.Status != EBarState.Close ||
-                Bars.CurrentBar < FanLookbackBars + SlopeBars)
+                Bars.CurrentBar < SlopeBars)
                 return;
 
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
@@ -73,9 +75,11 @@ namespace PowerLanguage.Indicator
 
         private int GetBounceDirection()
         {
-            return m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_TrendEMA[0]
+            // A deep 50-EMA pullback may put the 8 EMA through the 24 EMA.
+            // The 24/50 relationship is the directional context for 50E.
+            return m_SlowEMA[0] > m_TrendEMA[0]
                 ? 1
-                : m_FastEMA[0] < m_SlowEMA[0] && m_SlowEMA[0] < m_TrendEMA[0]
+                : m_SlowEMA[0] < m_TrendEMA[0]
                     ? -1 : 0;
         }
 
@@ -90,21 +94,25 @@ namespace PowerLanguage.Indicator
             bool closeAndColor = direction > 0
                 ? Bars.Close[0] >= Bars.Open[0] && Bars.Close[0] > m_TrendEMA[0]
                 : Bars.Close[0] <= Bars.Open[0] && Bars.Close[0] < m_TrendEMA[0];
+            double rangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
             bool slowTrendSeparation = Math.Abs(m_SlowEMA[0] - m_TrendEMA[0]) /
-                                       tickSize >= MinimumSlowTrendSeparationTicks;
+                                       tickSize >= rangeTicks * MinimumSlowTrendSeparationBarFraction;
             return touchesTrend && closeAndColor && slowTrendSeparation &&
-                   HasPriorDirectionalTrendSlope(direction, tickSize);
+                   HasRecentDirectionalTrendSlope(direction, tickSize);
         }
 
-        private bool HasPriorDirectionalTrendSlope(int direction, double tickSize)
+        private bool HasRecentDirectionalTrendSlope(int direction, double tickSize)
         {
-            for (int barsBack = 1; barsBack <= FanLookbackBars; barsBack++)
+            // The bounce may briefly flatten the 50 EMA.  Retain its trend
+            // only when one of the three prior completed bars was at least
+            // 12 degrees in the signal direction.
+            for (int barsBack = 1; barsBack <= TrendSlopeLookbackBars; barsBack++)
             {
                 double trendSlope = GetAngle(m_TrendEMA[barsBack],
                     m_TrendEMA[barsBack + SlopeBars], SlopeBars, tickSize);
-                if (direction > 0 && trendSlope >= MinimumPriorTrendSlopeDegrees)
+                if (direction > 0 && trendSlope >= MinimumRecentTrendSlopeDegrees)
                     return true;
-                if (direction < 0 && trendSlope <= -MinimumPriorTrendSlopeDegrees)
+                if (direction < 0 && trendSlope <= -MinimumRecentTrendSlopeDegrees)
                     return true;
             }
             return false;
@@ -132,7 +140,7 @@ namespace PowerLanguage.Indicator
             double labelPrice = direction > 0
                 ? Bars.Low[0] - (4 * tickSize) : Bars.High[0] + (4 * tickSize);
             ITextObject label = DrwText.Create(
-                new ChartPoint(Bars.Time[0], labelPrice), "50E");
+                new ChartPoint(Bars.Time[0], labelPrice), "50");
             if (label == null) return;
             label.Color = Color.Red;
             label.Size = 9;

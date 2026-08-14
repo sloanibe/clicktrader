@@ -520,7 +520,7 @@ namespace PowerLanguage.Indicator
                 ? Bars.Low[0] - (4 * tickSize)
                 : Bars.High[0] + (4 * tickSize);
             ITextObject label = DrwText.Create(
-                new ChartPoint(Bars.Time[0], labelPrice), "8E");
+                new ChartPoint(Bars.Time[0], labelPrice), "8");
             if (label == null) return;
 
             label.Color = Color.MediumSeaGreen;
