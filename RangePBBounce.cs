@@ -418,8 +418,8 @@ namespace PowerLanguage.Indicator
 
             int rangeTicks = GetPinBarRangeTicks(tickSize);
             // Scale the original PB2/PB1/PB0 ratios to the active range.
-            // This is 3/2, 4/1, 5/0 at five ticks and 5/3, 6/2, 8/0 at
-            // eight ticks. Intermediate bodies are not PB shapes.
+            // The compact PB1 category accepts every nonzero body at or
+            // below its scaled body cap: on 8-tick bars, both 6/2 and 7/1.
             return IsSupportedPBBody(rangeTicks, bodyTicks) &&
                    tailTicks + bodyTicks == rangeTicks;
         }
@@ -457,14 +457,13 @@ namespace PowerLanguage.Indicator
         private bool IsSupportedPBBody(int rangeTicks, int bodyTicks)
         {
             return bodyTicks == GetPB2BodyTicks(rangeTicks) ||
-                   bodyTicks == GetPB1BodyTicks(rangeTicks) ||
-                   bodyTicks == 0;
+                   (bodyTicks >= 0 && bodyTicks <= GetPB1BodyTicks(rangeTicks));
         }
 
         private int GetPBDisplayLevel(int rangeTicks, int bodyTicks)
         {
             if (bodyTicks == 0) return 0;
-            if (bodyTicks == GetPB1BodyTicks(rangeTicks)) return 1;
+            if (bodyTicks <= GetPB1BodyTicks(rangeTicks)) return 1;
             return 2;
         }
 

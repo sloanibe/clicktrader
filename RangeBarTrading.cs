@@ -56,8 +56,8 @@ namespace PowerLanguage.Strategy
         private const int HudRefreshMilliseconds = 100;
         private const bool ShowHUD = true;
         // PB shapes scale from the original five-tick definitions.  For
-        // example, PB2/PB1/PB0 are 3/2, 4/1, 5/0 on MES 5-tick bars and
-        // 5/3, 6/2, 8/0 on MYM/M2K 8-tick bars.
+        // example, PB2/PB1/PB0 are 3/2, 4/1, 5/0 on MES 5-tick bars. On an
+        // 8-tick bar PB1 accepts both 6/2 and the equally compact 7/1 form.
         private const int BasePinBarRangeTicks = 5;
         private const int PinBarMinEmaSeparationTicks = 3;
         private const double PinBarMinFastEmaSlopeDegrees = 20.0;
@@ -69,9 +69,18 @@ namespace PowerLanguage.Strategy
         private const int MinBreadth_15_60 = 5;
         private const int MinBreadth_5_15 = 4;
         // Mirrors RangeEMA8Bounce's provisional visual detector.
-        private const double Ema8MinSeparationTicks = 4.5;
+        // A four-tick 8/24 spread is enough for a clean 8E pullback; the
+        // prior 4.5-tick gate excluded otherwise well-fanned MES examples.
+        private const double Ema8MinSeparationTicks = 4.0;
         private const double Ema8MinFastSlopeDegrees = 40.0;
-        private const double Ema8MinSlowSlopeDegrees = 40.0;
+        // The 24 EMA is inherently slower than the 8.  A 39-degree best
+        // directional slope still confirms the strong, fanned continuation
+        // required for an 8E bounce.
+        private const double Ema8MinSlowSlopeDegrees = 39.0;
+        private const double Ema8StrongOneBarFastSlopeDegrees = 50.0;
+        private const double Ema8StrongOneBarSlowSlopeDegrees = 40.0;
+        private const double Ema8StrongOneBarTrendSlopeDegrees = 30.0;
+        private const double Ema8StrongOneBarRecoveryFraction = 0.75;
         private const double Ema8MinPenetrationTicks = 1.0;
         // A two-bar pullback may probe four and a half ticks through the 8
         // EMA before rejecting; tighter caps excluded otherwise clean MYM
@@ -85,8 +94,8 @@ namespace PowerLanguage.Strategy
         private const double Ema24MinSlowSlopeDegrees = 20.0;
         // Keep the live 24-EMA setup recognition aligned with
         // RangeEMA24Bounce: a completed/rejecting bar may stop within
-        // three-quarters of a tick of the EMA rather than touching it exactly.
-        private const double Ema24TouchToleranceTicks = 0.75;
+        // one tick of the EMA rather than touching it exactly.
+        private const double Ema24TouchToleranceTicks = 1.0;
         // A trade is allowed only inside a persistent, fully aligned 8/24/50
         // EMA profile. These values are the initial settings derived from the
         // transition diagnostic and can be refined from future samples.
@@ -881,13 +890,13 @@ namespace PowerLanguage.Strategy
 
         private bool IsSupportedPinBarShape(int rangeTicks, int bodyTicks) {
             return bodyTicks == GetPinBarPB2BodyTicks(rangeTicks) ||
-                   bodyTicks == GetPinBarPB1BodyTicks(rangeTicks) ||
-                   bodyTicks == 0;
+                   (bodyTicks >= 0 &&
+                    bodyTicks <= GetPinBarPB1BodyTicks(rangeTicks));
         }
 
         private int GetPinBarDisplayLevel(int rangeTicks, int bodyTicks) {
             if (bodyTicks == 0) return 0;
-            if (bodyTicks == GetPinBarPB1BodyTicks(rangeTicks)) return 1;
+            if (bodyTicks <= GetPinBarPB1BodyTicks(rangeTicks)) return 1;
             return 2;
         }
 
@@ -1739,6 +1748,8 @@ namespace PowerLanguage.Strategy
             bool tailReached = direction > 0
                 ? Bars.Low[0] <= projectedLow + tickSize * 0.1
                 : Bars.High[0] >= projectedHigh - tickSize * 0.1;
+            bool completedPullbackGate = HasTwoBarCounterTrendEma8Pullback(direction) ||
+                HasStrongOneBarEma8Rejection(direction, tickSize);
             double tail = direction > 0 ? projectedLow : projectedHigh;
             double completion = direction > 0 ? projectedHigh : projectedLow;
             // A forming 8-EMA bounce is already a competing chart setup.
@@ -1750,10 +1761,12 @@ namespace PowerLanguage.Strategy
             UpdateEma8BounceLine(ref m_Ema8BounceTailLine, tail, Color.Gray,
                                   ETLStyle.ToolDashed, 1);
             UpdateEma8BounceLine(ref m_Ema8BounceCompletionLine, completion,
-                                  tailReached ? Color.MediumSeaGreen : Color.Gray,
+                                  tailReached && completedPullbackGate
+                                      ? Color.MediumSeaGreen : Color.Gray,
                                   ETLStyle.ToolSolid, 2);
-            UpdateEma8BounceLabel(completion, direction, tailReached);
-            if (!tailReached) return;
+            UpdateEma8BounceLabel(completion, direction,
+                                  tailReached && completedPullbackGate);
+            if (!tailReached || !completedPullbackGate) return;
             m_Ema8EntryCandidateValid = true;
         }
 
@@ -1763,10 +1776,14 @@ namespace PowerLanguage.Strategy
                             m_FastEMA[0] < m_SlowEMA[0] ? -1 : 0;
             if (direction == 0 || Math.Abs(m_FastEMA[0] - m_SlowEMA[0]) / tickSize < Ema8MinSeparationTicks)
                 return 0;
-            if (!HasRequiredEmaFan(direction, tickSize)) return 0;
-            // An 8-EMA bounce must be a genuine two-bar pullback into the
-            // EMA. A one-bar touch is no longer an 8E setup.
-            if (!HasTwoBarCounterTrendEma8Pullback(direction))
+            if (!HasRequiredEmaFanOrStrong8To50Separation(direction, tickSize))
+                return 0;
+            // Normally 8E requires two completed countertrend bars. A single
+            // long-tailed rejection is also valid only in an exceptionally
+            // steep, fully fanned trend and after it recovers 75% of the
+            // prior range from its pierced tail.
+            if (!HasTwoBarCounterTrendEma8Pullback(direction) &&
+                !HasStrongOneBarEma8RejectionContext(direction, tickSize))
                 return 0;
             double fastBest = GetBestDirectionalEmaSlope(m_FastEMA, direction, tickSize);
             double slowBest = GetBestDirectionalEmaSlope(m_SlowEMA, direction, tickSize);
@@ -1816,7 +1833,7 @@ namespace PowerLanguage.Strategy
                 if (lower > upper) return false;
                 projectedLow = RoundDownToTick(upper, tickSize);
                 projectedHigh = projectedLow + range;
-                return projectedHigh > Bars.Open[0] && projectedHigh >= ema;
+                return projectedHigh >= Bars.Open[0] && projectedHigh >= ema;
             }
             double minimumPenetrationShort = 0;
             double maximumPenetrationShort = Ema8MaxPenetrationTicks +
@@ -1828,7 +1845,7 @@ namespace PowerLanguage.Strategy
             if (highLower > highUpper) return false;
             projectedHigh = RoundUpToTick(highLower, tickSize);
             projectedLow = projectedHigh - range;
-            return projectedLow < Bars.Open[0] && projectedLow <= ema;
+            return projectedLow <= Bars.Open[0] && projectedLow <= ema;
         }
 
         private bool HasTwoBarCounterTrendEma8Pullback(int direction) {
@@ -1836,6 +1853,36 @@ namespace PowerLanguage.Strategy
                 ? Bars.Close[1] < Bars.Open[1] && Bars.Close[2] < Bars.Open[2]
                 : direction < 0 && Bars.Close[1] > Bars.Open[1] &&
                   Bars.Close[2] > Bars.Open[2];
+        }
+
+        private bool HasStrongOneBarEma8RejectionContext(int direction,
+                                                           double tickSize) {
+            if (Bars.CurrentBar < 1) return false;
+            bool priorCounterTrend = direction > 0
+                ? Bars.Close[1] < Bars.Open[1]
+                : direction < 0 && Bars.Close[1] > Bars.Open[1];
+            if (!priorCounterTrend || !HasRequiredEmaFan(direction, tickSize))
+                return false;
+
+            double fastSlope = GetBestDirectionalEmaSlope(m_FastEMA, direction, tickSize);
+            double slowSlope = GetBestDirectionalEmaSlope(m_SlowEMA, direction, tickSize);
+            double trendSlope = GetBestDirectionalEmaSlope(m_ProfileEMA, direction, tickSize);
+            return direction > 0
+                ? fastSlope >= Ema8StrongOneBarFastSlopeDegrees &&
+                  slowSlope >= Ema8StrongOneBarSlowSlopeDegrees &&
+                  trendSlope >= Ema8StrongOneBarTrendSlopeDegrees
+                : fastSlope <= -Ema8StrongOneBarFastSlopeDegrees &&
+                  slowSlope <= -Ema8StrongOneBarSlowSlopeDegrees &&
+                  trendSlope <= -Ema8StrongOneBarTrendSlopeDegrees;
+        }
+
+        private bool HasStrongOneBarEma8Rejection(int direction, double tickSize) {
+            if (!HasStrongOneBarEma8RejectionContext(direction, tickSize)) return false;
+            double priorRange = Math.Abs(Bars.High[1] - Bars.Low[1]);
+            double recovery = direction > 0 ? Bars.Close[0] - Bars.Low[0] :
+                              direction < 0 ? Bars.High[0] - Bars.Close[0] : 0;
+            return priorRange > 0 && recovery + tickSize * 0.1 >=
+                   priorRange * Ema8StrongOneBarRecoveryFraction;
         }
 
         private void UpdateEma8BounceLine(ref ITrendLineObject line, double price, Color color,
@@ -1913,6 +1960,25 @@ namespace PowerLanguage.Strategy
                   m_SlowEMA[0] < m_ProfileEMA[0] &&
                   (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
                   (m_ProfileEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap;
+        }
+
+        // An exceptionally strong 8-EMA leg can be traded even while the
+        // 24/50 pair has not yet fanned. Preserve directional ordering and
+        // the 8/24 half-bar gap, then allow an 8E bounce once the 8-to-50
+        // distance spans two complete range bars.
+        private bool HasRequiredEmaFanOrStrong8To50Separation(int direction,
+                                                                double tickSize) {
+            if (HasRequiredEmaFan(direction, tickSize)) return true;
+            double minimumGap = GetActiveRangeTicks(tickSize) * 0.5;
+            double strongDistance = GetActiveRangeTicks(tickSize) * 2.0;
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_ProfileEMA[0] &&
+                  (m_FastEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap &&
+                  (m_FastEMA[0] - m_ProfileEMA[0]) / tickSize >= strongDistance
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] &&
+                  m_SlowEMA[0] < m_ProfileEMA[0] &&
+                  (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
+                  (m_ProfileEMA[0] - m_FastEMA[0]) / tickSize >= strongDistance;
         }
 
         // Shared gate for PB, 8-EMA, and 24-EMA signals. A profile must hold
@@ -2191,7 +2257,7 @@ namespace PowerLanguage.Strategy
             // bar. Require the same close-side and bar-color relationship as
             // RangeEMA24Bounce before a breakout order can be staged.
             return direction > 0
-                ? projectedHigh > m_SlowEMA[0] && projectedHigh > Bars.Open[0]
+                ? projectedHigh > m_SlowEMA[0] && projectedHigh >= Bars.Open[0]
                 : projectedLow < m_SlowEMA[0] && projectedLow <= Bars.Open[0];
         }
 

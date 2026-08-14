@@ -28,15 +28,19 @@ namespace PowerLanguage.Indicator
         private const int PBSlowEmaPersistenceBars = 4;
         private const double PBMinimumSeparationTicks = 3.0;
         private const double PBMinimumFastSlopeDegrees = 20.0;
-        private const double Ema8MinimumSeparationTicks = 4.5;
+        private const double Ema8MinimumSeparationTicks = 4.0;
         private const double Ema8MinimumFastSlopeDegrees = 40.0;
-        private const double Ema8MinimumSlowSlopeDegrees = 40.0;
+        private const double Ema8MinimumSlowSlopeDegrees = 39.0;
+        private const double Ema8StrongOneBarFastSlopeDegrees = 50.0;
+        private const double Ema8StrongOneBarSlowSlopeDegrees = 40.0;
+        private const double Ema8StrongOneBarTrendSlopeDegrees = 30.0;
+        private const double Ema8StrongOneBarRecoveryFraction = 0.75;
         private const double Ema8MinimumPenetrationTicks = 1.0;
         private const double Ema8MaximumPenetrationTicks = 4.5;
         private const double Ema24MinimumCurrentSeparationTicks = 1.5;
         private const double Ema24MinimumBestSeparationTicks = 2.0;
         private const double Ema24MinimumSlowSlopeDegrees = 20.0;
-        private const double Ema24TouchToleranceTicks = 0.25;
+        private const double Ema24TouchToleranceTicks = 1.0;
         private const int ProfilePersistenceBars = 4;
         private const double ProfileMinFastSlowSeparationTicks = 3.0;
         private const double ProfileMinSlowTrendSeparationTicks = 2.0;
@@ -56,8 +60,12 @@ namespace PowerLanguage.Indicator
         private XAverage m_FastEMA;
         private XAverage m_SlowEMA;
         private XAverage m_TrendEMA;
-        private readonly Dictionary<DateTime, DiagnosticSnapshot> m_SnapshotsByTime =
-            new Dictionary<DateTime, DiagnosticSnapshot>();
+        // Range bars can legitimately share an exchange timestamp.  Bar number
+        // is the unique identity; using the timestamp as a dictionary key
+        // silently discarded one of those bars and made a selected range omit
+        // the very bar being inspected.
+        private readonly Dictionary<int, DiagnosticSnapshot> m_SnapshotsByBar =
+            new Dictionary<int, DiagnosticSnapshot>();
         private Form m_DiagnosticWindow;
         private TextBox m_DiagnosticText;
         private TextBox m_NotesText;
@@ -74,6 +82,7 @@ namespace PowerLanguage.Indicator
 
         private class DiagnosticSnapshot
         {
+            public int BarNumber;
             public DateTime Time;
             public double Open, High, Low, Close;
             public double FastEma, SlowEma, TrendEma;
@@ -100,7 +109,7 @@ namespace PowerLanguage.Indicator
 
         protected override void StartCalc()
         {
-            m_SnapshotsByTime.Clear();
+            m_SnapshotsByBar.Clear();
             m_FirstSelectionTime = DateTime.MinValue;
             m_SecondSelectionTime = DateTime.MinValue;
             m_ActiveRangeSnapshots = null;
@@ -126,7 +135,7 @@ namespace PowerLanguage.Indicator
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize <= 0) tickSize = 0.25;
             string report = BuildReport(tickSize);
-            m_SnapshotsByTime[Bars.Time[0]] = BuildSnapshot(tickSize, report);
+            m_SnapshotsByBar[Bars.CurrentBar] = BuildSnapshot(tickSize, report);
         }
 
         protected override void OnMouseEvent(MouseClickArgs arg)
@@ -135,8 +144,8 @@ namespace PowerLanguage.Indicator
                 !IsDHeld(arg.keys))
                 return;
 
-            DiagnosticSnapshot snapshot;
-            if (!m_SnapshotsByTime.TryGetValue(arg.point.Time, out snapshot))
+            DiagnosticSnapshot snapshot = FindSnapshotAt(arg.point.Time, arg.point.Price);
+            if (snapshot == null)
             {
                 ShowDiagnosticWindow("No diagnostic was captured for this bar. " +
                     "Click a completed bar after the chart has recalculated.",
@@ -173,6 +182,31 @@ namespace PowerLanguage.Indicator
             }
         }
 
+        // Mouse events identify a chart point by time and price, not bar
+        // number.  When several range bars have the same time, choose the
+        // clicked bar by its price proximity while retaining every bar in the
+        // diagnostic store.
+        private DiagnosticSnapshot FindSnapshotAt(DateTime time, double price)
+        {
+            DiagnosticSnapshot closest = null;
+            double closestDistance = Double.MaxValue;
+            foreach (KeyValuePair<int, DiagnosticSnapshot> entry in m_SnapshotsByBar)
+            {
+                DiagnosticSnapshot candidate = entry.Value;
+                if (candidate.Time != time) continue;
+                double distance = price < candidate.Low ? candidate.Low - price :
+                                  price > candidate.High ? price - candidate.High : 0;
+                if (distance < closestDistance ||
+                    (distance == closestDistance &&
+                     (closest == null || candidate.BarNumber > closest.BarNumber)))
+                {
+                    closest = candidate;
+                    closestDistance = distance;
+                }
+            }
+            return closest;
+        }
+
         private bool IsDHeld(Keys eventKeys)
         {
             if ((eventKeys & Keys.KeyCode) == Keys.D) return true;
@@ -191,6 +225,7 @@ namespace PowerLanguage.Indicator
         {
             StringBuilder text = new StringBuilder();
             int direction = GetUnarmedPBDisplayDirection(tickSize);
+            int emaDirection = GetTrendDirection();
             double fastSlope = GetAngle(m_FastEMA[0], m_FastEMA[SlopeBars],
                                         SlopeBars, tickSize);
             double slowSlope = GetAngle(m_SlowEMA[0], m_SlowEMA[SlopeBars],
@@ -204,16 +239,16 @@ namespace PowerLanguage.Indicator
                 Bars.Open[0], Bars.High[0], Bars.Low[0], Bars.Close[0],
                 BodyName());
             text.AppendFormat("8 / 24 / 50 EMA: {0:F2} / {1:F2} / {2:F2} | context: {3}\n",
-                m_FastEMA[0], m_SlowEMA[0], m_TrendEMA[0], DirectionName(direction));
+                m_FastEMA[0], m_SlowEMA[0], m_TrendEMA[0], DirectionName(emaDirection));
             text.AppendFormat("8/24 separation: {0:F2}t | slopes 8/24/50: {1:F1}° / " +
                 "{2:F1}° / {3:F1}°\n\n", separation, fastSlope, slowSlope,
                 trendSlope);
 
             AppendPBReport(text, direction, separation, fastSlope, tickSize);
             text.AppendLine();
-            AppendEma8Report(text, direction, separation, tickSize);
+            AppendEma8Report(text, emaDirection, separation, tickSize);
             text.AppendLine();
-            AppendEma24Report(text, direction, separation, tickSize);
+            AppendEma24Report(text, emaDirection, separation, tickSize);
             text.AppendLine();
             AppendEma50Report(text, tickSize);
             text.AppendLine();
@@ -230,6 +265,7 @@ namespace PowerLanguage.Indicator
         private DiagnosticSnapshot BuildSnapshot(double tickSize, string report)
         {
             DiagnosticSnapshot result = new DiagnosticSnapshot();
+            result.BarNumber = Bars.CurrentBar;
             result.Time = Bars.Time[0];
             result.Open = Bars.Open[0]; result.High = Bars.High[0];
             result.Low = Bars.Low[0]; result.Close = Bars.Close[0];
@@ -287,49 +323,55 @@ namespace PowerLanguage.Indicator
                 Pass(emaFan), Pass(leadIn), Pass(strongContinuation),
                 Pass(openSide));
 
-            double bestFast = GetBestDirectionalSlope(m_FastEMA, direction, tickSize);
-            double bestSlow = GetBestDirectionalSlope(m_SlowEMA, direction, tickSize);
-            double lead = direction > 0 ? bestFast - bestSlow :
-                          direction < 0 ? Math.Abs(bestFast) - Math.Abs(bestSlow) : 0;
+            // PB display direction is inferred from its own continuation
+            // rules; EMA bounce diagnostics must instead follow current
+            // 8/24 order.
+            int emaDirection = GetTrendDirection();
+            double bestFast = GetBestDirectionalSlope(m_FastEMA, emaDirection, tickSize);
+            double bestSlow = GetBestDirectionalSlope(m_SlowEMA, emaDirection, tickSize);
+            double lead = emaDirection > 0 ? bestFast - bestSlow :
+                          emaDirection < 0 ? Math.Abs(bestFast) - Math.Abs(bestSlow) : 0;
             bool crossesFast = Bars.Low[0] <= result.FastEma && Bars.High[0] >= result.FastEma;
-            double rawPenetration = direction > 0 ? (result.FastEma - Bars.Low[0]) / tickSize :
-                                    direction < 0 ? (Bars.High[0] - result.FastEma) / tickSize : 0;
+            double rawPenetration = emaDirection > 0 ? (result.FastEma - Bars.Low[0]) / tickSize :
+                                    emaDirection < 0 ? (Bars.High[0] - result.FastEma) / tickSize : 0;
             double penetration = Math.Round(rawPenetration * 2.0) / 2.0;
-            bool twoBarPullback = HasTwoBarCounterTrendEma8Pullback(direction);
+            bool twoBarPullback = HasTwoBarCounterTrendEma8Pullback(emaDirection);
+            bool strongOneBarRejection = HasStrongOneBarEma8Rejection(emaDirection, tickSize);
             bool shallowTouch = crossesFast && rawPenetration >= 0 &&
                                 rawPenetration < Ema8MinimumPenetrationTicks &&
                                 twoBarPullback;
-            bool fastSlope = direction > 0 ? bestFast >= Ema8MinimumFastSlopeDegrees :
-                             direction < 0 && bestFast <= -Ema8MinimumFastSlopeDegrees;
-            bool slowSlope = direction > 0 ? bestSlow >= Ema8MinimumSlowSlopeDegrees :
-                             direction < 0 && bestSlow <= -Ema8MinimumSlowSlopeDegrees;
-            bool closeFastSide = direction > 0 ? Bars.Close[0] >= result.FastEma :
-                                 direction < 0 && Bars.Close[0] <= result.FastEma;
-            bool color = direction > 0 ? Bars.Close[0] > Bars.Open[0] :
-                         direction < 0 && Bars.Close[0] <= Bars.Open[0];
-            result.Ema8Bounce = direction != 0 &&
+            bool fastSlope = emaDirection > 0 ? bestFast >= Ema8MinimumFastSlopeDegrees :
+                             emaDirection < 0 && bestFast <= -Ema8MinimumFastSlopeDegrees;
+            bool slowSlope = emaDirection > 0 ? bestSlow >= Ema8MinimumSlowSlopeDegrees :
+                             emaDirection < 0 && bestSlow <= -Ema8MinimumSlowSlopeDegrees;
+            bool closeFastSide = emaDirection > 0 ? Bars.Close[0] >= result.FastEma :
+                                 emaDirection < 0 && Bars.Close[0] <= result.FastEma;
+            bool color = emaDirection > 0 ? Bars.Close[0] >= Bars.Open[0] :
+                         emaDirection < 0 && Bars.Close[0] <= Bars.Open[0];
+            result.Ema8Bounce = emaDirection != 0 &&
                 result.Separation824 >= Ema8MinimumSeparationTicks && fastSlope && slowSlope &&
                 crossesFast &&
                 ((penetration >= Ema8MinimumPenetrationTicks &&
                   penetration <= Ema8MaximumPenetrationTicks) || shallowTouch) &&
-                twoBarPullback && HasRequiredEmaFan(direction, tickSize) &&
+                (twoBarPullback || strongOneBarRejection) &&
+                HasRequiredEmaFanOrStrong8To50Separation(emaDirection, tickSize) &&
                 closeFastSide && color &&
-                GetLocalDisplacement(direction, tickSize) >= 1.0;
+                GetLocalDisplacement(emaDirection, tickSize) >= 1.0;
 
-            double bestSeparation = GetBestDirectionalSeparation(direction, tickSize);
+            double bestSeparation = GetBestDirectionalSeparation(emaDirection, tickSize);
             double slowGap = result.SlowEma < Bars.Low[0]
                 ? (Bars.Low[0] - result.SlowEma) / tickSize
                 : result.SlowEma > Bars.High[0]
                     ? (result.SlowEma - Bars.High[0]) / tickSize : 0;
-            bool closeSlowSide = direction > 0 ? Bars.Close[0] > result.SlowEma :
-                                 direction < 0 && Bars.Close[0] < result.SlowEma;
-            result.Ema24Bounce = direction != 0 &&
+            bool closeSlowSide = emaDirection > 0 ? Bars.Close[0] > result.SlowEma :
+                                 emaDirection < 0 && Bars.Close[0] < result.SlowEma;
+            result.Ema24Bounce = emaDirection != 0 &&
                 result.Separation824 >= Ema24MinimumCurrentSeparationTicks &&
                 bestSeparation >= Ema24MinimumBestSeparationTicks &&
-                (direction > 0 ? bestSlow >= Ema24MinimumSlowSlopeDegrees :
+                (emaDirection > 0 ? bestSlow >= Ema24MinimumSlowSlopeDegrees :
                  bestSlow <= -Ema24MinimumSlowSlopeDegrees) &&
                 slowGap <= Ema24TouchToleranceTicks && closeSlowSide && color &&
-                HasRequiredEmaFan(direction, tickSize);
+                HasRequiredEmaFan(emaDirection, tickSize);
             result.Ema50Bounce = IsFiftyEmaBounce(tickSize);
             return result;
         }
@@ -340,13 +382,14 @@ namespace PowerLanguage.Indicator
             DateTime start = firstTime <= secondTime ? firstTime : secondTime;
             DateTime end = firstTime <= secondTime ? secondTime : firstTime;
             List<DiagnosticSnapshot> snapshots = new List<DiagnosticSnapshot>();
-            foreach (KeyValuePair<DateTime, DiagnosticSnapshot> entry in m_SnapshotsByTime)
+            foreach (KeyValuePair<int, DiagnosticSnapshot> entry in m_SnapshotsByBar)
             {
-                if (entry.Key >= start && entry.Key <= end)
+                if (entry.Value.Time >= start && entry.Value.Time <= end)
                     snapshots.Add(entry.Value);
             }
             snapshots.Sort(delegate(DiagnosticSnapshot left, DiagnosticSnapshot right) {
-                return left.Time.CompareTo(right.Time);
+                int byTime = left.Time.CompareTo(right.Time);
+                return byTime != 0 ? byTime : left.BarNumber.CompareTo(right.BarNumber);
             });
 
             StringBuilder text = new StringBuilder();
@@ -389,16 +432,16 @@ namespace PowerLanguage.Indicator
             text.AppendLine("PER-BAR RESULTS");
             foreach (DiagnosticSnapshot snapshot in snapshots)
             {
-                text.AppendFormat("{0}: OHLC {1:F2}/{2:F2}/{3:F2}/{4:F2} | " +
-                    "8/24/50 {5:F2}/{6:F2}/{7:F2} | slopes {8:F1}/{9:F1}/{10:F1} | " +
-                    "PB L/S/G {11}/{12}/{13} | 8E/24E/50E {14}/{15}/{16}\n",
-                    snapshot.Time.ToString("HH:mm:ss.fff"), snapshot.Open, snapshot.High,
-                    snapshot.Low, snapshot.Close, snapshot.FastEma, snapshot.SlowEma,
-                    snapshot.TrendEma, snapshot.FastSlope, snapshot.SlowSlope,
-                    snapshot.TrendSlope, Pass(snapshot.CompactLongPB),
-                    Pass(snapshot.CompactShortPB), Pass(snapshot.GeneralPB),
-                    Pass(snapshot.Ema8Bounce), Pass(snapshot.Ema24Bounce),
-                    Pass(snapshot.Ema50Bounce));
+                text.AppendFormat("{0} [bar {1}]: OHLC {2:F2}/{3:F2}/{4:F2}/{5:F2} | " +
+                    "8/24/50 {6:F2}/{7:F2}/{8:F2} | slopes {9:F1}/{10:F1}/{11:F1} | " +
+                    "PB L/S/G {12}/{13}/{14} | 8E/24E/50E {15}/{16}/{17}\n",
+                    snapshot.Time.ToString("HH:mm:ss.fff"), snapshot.BarNumber,
+                    snapshot.Open, snapshot.High, snapshot.Low, snapshot.Close,
+                    snapshot.FastEma, snapshot.SlowEma, snapshot.TrendEma,
+                    snapshot.FastSlope, snapshot.SlowSlope, snapshot.TrendSlope,
+                    Pass(snapshot.CompactLongPB), Pass(snapshot.CompactShortPB),
+                    Pass(snapshot.GeneralPB), Pass(snapshot.Ema8Bounce),
+                    Pass(snapshot.Ema24Bounce), Pass(snapshot.Ema50Bounce));
                 text.AppendFormat("  General PB gates: {0}\n", snapshot.GeneralPBDetail);
                 // Keep the exact completed-bar decisions produced for this
                 // snapshot. This lets a marked signal be compared directly
@@ -466,6 +509,8 @@ namespace PowerLanguage.Indicator
             bool tailSide = IsCompletedPinBarTailOnFastEmaSide(direction);
             bool emaOrderPass = IsPB1EmaOrderValid(direction);
             bool trendFilterPass = IsPB1TrendFilterValid(direction, tickSize);
+            // The strong 8-to-50 exception applies only to 8-EMA bounces;
+            // PB setups retain the required fully fanned profile.
             bool emaFanPass = HasRequiredEmaFan(direction, tickSize);
             bool leadInPass = HasPBLeadInStructure(direction);
             bool strongContinuationPass = IsStrongTrendContinuationValid(direction,
@@ -511,34 +556,38 @@ namespace PowerLanguage.Indicator
                 comparablePenetration >= Ema8MinimumPenetrationTicks &&
                 comparablePenetration <= Ema8MaximumPenetrationTicks;
             bool twoBarPullback = HasTwoBarCounterTrendEma8Pullback(direction);
+            bool strongOneBarRejection = HasStrongOneBarEma8Rejection(direction, tickSize);
             bool shallowTouchPass = crosses && penetration >= 0 &&
                                     penetration < Ema8MinimumPenetrationTicks &&
                                     twoBarPullback;
             penetrationPass = penetrationPass || shallowTouchPass;
             bool closeSidePass = direction > 0 ? Bars.Close[0] >= m_FastEMA[0] :
                                  direction < 0 && Bars.Close[0] <= m_FastEMA[0];
-            bool colorPass = direction > 0 ? Bars.Close[0] > Bars.Open[0] :
+            bool colorPass = direction > 0 ? Bars.Close[0] >= Bars.Open[0] :
                              direction < 0 && Bars.Close[0] <= Bars.Open[0];
             double displacement = GetLocalDisplacement(direction, tickSize);
             bool displacementPass = displacement >= 1.0;
             bool emaFanPass = HasRequiredEmaFan(direction, tickSize);
             bool result = separationPass && fastPass && slowPass && leadPass &&
-                          twoBarPullback && emaFanPass &&
+                          (twoBarPullback || strongOneBarRejection) && emaFanPass &&
                           penetrationPass && closeSidePass && colorPass &&
                           displacementPass;
             text.AppendLine("8 EMA BOUNCE");
             text.AppendFormat("Best slopes 8/24: {0:F1}° / {1:F1}° | lead {2:F1}°\n",
                 bestFast, bestSlow, lead);
-            text.AppendFormat("Separation >= 4.5t [{0}], 8 slope >= 40° [{1}], " +
-                "24 slope >= 40° [{2}], slope lead informational [{3}]\n", Pass(separationPass),
-                Pass(fastPass), Pass(slowPass), Pass(leadPass));
+            text.AppendFormat("Separation >= {0:F1}t [{1}], 8 slope >= {2:F0}° [{3}], " +
+                "24 slope >= {4:F0}° [{5}], slope lead informational [{6}]\n",
+                Ema8MinimumSeparationTicks, Pass(separationPass),
+                Ema8MinimumFastSlopeDegrees, Pass(fastPass),
+                Ema8MinimumSlowSlopeDegrees, Pass(slowPass), Pass(leadPass));
             text.AppendFormat("Crosses 8 EMA [{0}], penetration {1:F2}t (1-4.5) [{2}], " +
                 "close side [{3}], color [{4}], displacement {5:F2}t [{6}]\n",
                 Pass(crosses), comparablePenetration, Pass(penetrationPass),
                 Pass(closeSidePass), Pass(colorPass), displacement, Pass(displacementPass));
-            text.AppendFormat("Two countertrend bars REQUIRED [{0}], shallow touch (<1t) [{1}]\n",
-                Pass(twoBarPullback), Pass(shallowTouchPass));
-            text.AppendFormat("Correct EMA fan with 8/24 and 24/50 gaps >= half bar [{0}]\n",
+            text.AppendFormat("Two countertrend bars [{0}] OR strong one-bar rejection " +
+                "(>=75% prior-range recovery) [{1}], shallow touch (<1t) [{2}]\n",
+                Pass(twoBarPullback), Pass(strongOneBarRejection), Pass(shallowTouchPass));
+            text.AppendFormat("EMA fan OR 8/50 >= two bars (with order + 8/24 gap) [{0}]\n",
                 Pass(emaFanPass));
             text.AppendFormat("8 EMA BOUNCE RESULT: [{0}]\n", Pass(result));
         }
@@ -560,7 +609,7 @@ namespace PowerLanguage.Indicator
             bool touchPass = gap <= Ema24TouchToleranceTicks;
             bool closePass = direction > 0 ? Bars.Close[0] > m_SlowEMA[0] :
                              direction < 0 && Bars.Close[0] < m_SlowEMA[0];
-            bool colorPass = direction > 0 ? Bars.Close[0] > Bars.Open[0] :
+            bool colorPass = direction > 0 ? Bars.Close[0] >= Bars.Open[0] :
                              direction < 0 && Bars.Close[0] <= Bars.Open[0];
             bool emaFanPass = HasRequiredEmaFan(direction, tickSize);
             bool result = currentSepPass && bestSepPass && slopePass && touchPass &&
@@ -570,8 +619,9 @@ namespace PowerLanguage.Indicator
                 "best 24 slope {4:F1}° >= 20° [{5}]\n", separation,
                 Pass(currentSepPass), bestSeparation, Pass(bestSepPass), bestSlow,
                 Pass(slopePass));
-            text.AppendFormat("24 EMA gap {0:F2}t <= 0.25 [{1}], close side [{2}], color [{3}]\n",
-                gap, Pass(touchPass), Pass(closePass), Pass(colorPass));
+            text.AppendFormat("24 EMA gap {0:F2}t <= {1:F2} [{2}], close side [{3}], color [{4}]\n",
+                gap, Ema24TouchToleranceTicks, Pass(touchPass), Pass(closePass),
+                Pass(colorPass));
             text.AppendFormat("Correct EMA fan with 8/24 and 24/50 gaps >= half bar [{0}]\n",
                 Pass(emaFanPass));
             text.AppendFormat("24 EMA BOUNCE RESULT: [{0}]\n", Pass(result));
@@ -604,8 +654,8 @@ namespace PowerLanguage.Indicator
                     ? (m_TrendEMA[0] - Bars.High[0]) / tickSize : 0;
             bool touchPass = direction != 0 && gap <= Ema50TouchToleranceTicks;
             bool closeColorPass = direction > 0
-                ? Bars.Close[0] > Bars.Open[0] && Bars.Close[0] > m_TrendEMA[0]
-                : direction < 0 && Bars.Close[0] < Bars.Open[0] &&
+                ? Bars.Close[0] >= Bars.Open[0] && Bars.Close[0] > m_TrendEMA[0]
+                : direction < 0 && Bars.Close[0] <= Bars.Open[0] &&
                   Bars.Close[0] < m_TrendEMA[0];
             double slowTrendGap = Math.Abs(m_SlowEMA[0] - m_TrendEMA[0]) / tickSize;
             bool slowTrendSeparationPass = slowTrendGap >=
@@ -755,8 +805,8 @@ namespace PowerLanguage.Indicator
                 : m_TrendEMA[0] > Bars.High[0]
                     ? (m_TrendEMA[0] - Bars.High[0]) / tickSize : 0;
             bool closeAndColor = direction > 0
-                ? Bars.Close[0] > Bars.Open[0] && Bars.Close[0] > m_TrendEMA[0]
-                : Bars.Close[0] < Bars.Open[0] && Bars.Close[0] < m_TrendEMA[0];
+                ? Bars.Close[0] >= Bars.Open[0] && Bars.Close[0] > m_TrendEMA[0]
+                : Bars.Close[0] <= Bars.Open[0] && Bars.Close[0] < m_TrendEMA[0];
             bool slowTrendSeparation = Math.Abs(m_SlowEMA[0] - m_TrendEMA[0]) /
                                        tickSize >= Ema50MinimumSlowTrendSeparationTicks;
             return gap <= Ema50TouchToleranceTicks && closeAndColor &&
@@ -839,8 +889,8 @@ namespace PowerLanguage.Indicator
                 if (Math.Abs(close - low) > tolerance) return false;
             }
             int rangeTicks = GetPinBarRangeTicks(tickSize);
-            return (body == 0 || body == GetPB1BodyTicks(tickSize) ||
-                    body == GetPB2BodyTicks(tickSize)) &&
+            return (body == GetPB2BodyTicks(tickSize) ||
+                    (body >= 0 && body <= GetPB1BodyTicks(tickSize))) &&
                    tail + body == rangeTicks;
         }
 
@@ -920,6 +970,23 @@ namespace PowerLanguage.Indicator
                 : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] && m_SlowEMA[0] < m_TrendEMA[0] &&
                   (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
                   (m_TrendEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap;
+        }
+
+        private bool HasRequiredEmaFanOrStrong8To50Separation(int direction,
+                                                                double tickSize)
+        {
+            if (HasRequiredEmaFan(direction, tickSize)) return true;
+            double rangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
+            double minimumGap = rangeTicks * 0.5;
+            double strongDistance = rangeTicks * 2.0;
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_TrendEMA[0] &&
+                  (m_FastEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap &&
+                  (m_FastEMA[0] - m_TrendEMA[0]) / tickSize >= strongDistance
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] &&
+                  m_SlowEMA[0] < m_TrendEMA[0] &&
+                  (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
+                  (m_TrendEMA[0] - m_FastEMA[0]) / tickSize >= strongDistance;
         }
 
         private bool HasSharplyMovingFastEma(int direction, double tickSize)
@@ -1035,6 +1102,32 @@ namespace PowerLanguage.Indicator
                 ? Bars.Close[1] < Bars.Open[1] && Bars.Close[2] < Bars.Open[2]
                 : direction < 0 && Bars.Close[1] > Bars.Open[1] &&
                   Bars.Close[2] > Bars.Open[2];
+        }
+
+        private bool HasStrongOneBarEma8Rejection(int direction, double tickSize)
+        {
+            if (Bars.CurrentBar < 1 || !HasRequiredEmaFan(direction, tickSize))
+                return false;
+            bool priorCounterTrend = direction > 0
+                ? Bars.Close[1] < Bars.Open[1]
+                : direction < 0 && Bars.Close[1] > Bars.Open[1];
+            if (!priorCounterTrend) return false;
+
+            double fastSlope = GetBestDirectionalSlope(m_FastEMA, direction, tickSize);
+            double slowSlope = GetBestDirectionalSlope(m_SlowEMA, direction, tickSize);
+            double trendSlope = GetBestDirectionalSlope(m_TrendEMA, direction, tickSize);
+            bool steep = direction > 0
+                ? fastSlope >= Ema8StrongOneBarFastSlopeDegrees &&
+                  slowSlope >= Ema8StrongOneBarSlowSlopeDegrees &&
+                  trendSlope >= Ema8StrongOneBarTrendSlopeDegrees
+                : fastSlope <= -Ema8StrongOneBarFastSlopeDegrees &&
+                  slowSlope <= -Ema8StrongOneBarSlowSlopeDegrees &&
+                  trendSlope <= -Ema8StrongOneBarTrendSlopeDegrees;
+            double priorRange = Math.Abs(Bars.High[1] - Bars.Low[1]);
+            double recovery = direction > 0 ? Bars.Close[0] - Bars.Low[0] :
+                              direction < 0 ? Bars.High[0] - Bars.Close[0] : 0;
+            return steep && priorRange > 0 && recovery + tickSize * 0.1 >=
+                   priorRange * Ema8StrongOneBarRecoveryFraction;
         }
 
         private bool HasRangeClearance(int direction, int lookbackBars)
@@ -1156,17 +1249,17 @@ namespace PowerLanguage.Indicator
                         DateTime.Now.ToString("yyyy-MM-dd_HHmmss") + ".md")
                     : existingPath;
                 StringBuilder csv = new StringBuilder();
-                csv.AppendLine("Time,Open,High,Low,Close,EMA8,EMA24,EMA50," +
+                csv.AppendLine("BarNumber,Time,Open,High,Low,Close,EMA8,EMA24,EMA50," +
                     "Slope8,Slope24,Slope50,Separation8_24,Separation8_50," +
                     "Separation24_50,BullishOrder,BearishOrder,CompactLongPB," +
                     "CompactShortPB,GeneralPB,Ema8Bounce,Ema24Bounce,Ema50Bounce");
                 foreach (DiagnosticSnapshot snapshot in snapshots)
                 {
-                    csv.AppendFormat("{0:yyyy-MM-dd HH:mm:ss},{1:F4},{2:F4},{3:F4},{4:F4}," +
-                        "{5:F4},{6:F4},{7:F4},{8:F4},{9:F4},{10:F4},{11:F4},{12:F4}," +
-                        "{13:F4},{14},{15},{16},{17},{18},{19},{20},{21}\r\n",
-                        snapshot.Time, snapshot.Open, snapshot.High, snapshot.Low,
-                        snapshot.Close, snapshot.FastEma, snapshot.SlowEma,
+                    csv.AppendFormat("{0},{1:yyyy-MM-dd HH:mm:ss.fff},{2:F4},{3:F4},{4:F4},{5:F4}," +
+                        "{6:F4},{7:F4},{8:F4},{9:F4},{10:F4},{11:F4},{12:F4},{13:F4}," +
+                        "{14:F4},{15},{16},{17},{18},{19},{20},{21},{22}\r\n",
+                        snapshot.BarNumber, snapshot.Time, snapshot.Open, snapshot.High,
+                        snapshot.Low, snapshot.Close, snapshot.FastEma, snapshot.SlowEma,
                         snapshot.TrendEma, snapshot.FastSlope, snapshot.SlowSlope,
                         snapshot.TrendSlope, snapshot.Separation824, snapshot.Separation850,
                         snapshot.Separation2450, snapshot.BullishOrder,

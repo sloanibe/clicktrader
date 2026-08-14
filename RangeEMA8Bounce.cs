@@ -19,9 +19,15 @@ namespace PowerLanguage.Indicator
         private const int SlopeBars = 3;
         private const int SlopeLookbackBars = 6;
         private const int DisplacementLookbackBars = 2;
-        private const double MinimumSeparationTicks = 4.5;
+        private const double MinimumSeparationTicks = 4.0;
         private const double MinimumFastSlopeDegrees = 40.0;
-        private const double MinimumSlowSlopeDegrees = 40.0;
+        // Keep the fast EMA at 40°, while allowing the naturally slower 24
+        // EMA to qualify at 39° on an otherwise valid continuation.
+        private const double MinimumSlowSlopeDegrees = 39.0;
+        private const double StrongOneBarFastSlopeDegrees = 50.0;
+        private const double StrongOneBarSlowSlopeDegrees = 40.0;
+        private const double StrongOneBarTrendSlopeDegrees = 30.0;
+        private const double StrongOneBarRecoveryFraction = 0.75;
         private const double MinimumPenetrationTicks = 1.0;
         // Match the live strategy: permit a four-and-a-half-tick two-bar
         // pullback through the 8 EMA before the rejection resumes the trend.
@@ -92,6 +98,7 @@ namespace PowerLanguage.Indicator
             public bool SlopeLeadPass;
             public bool PenetrationPass;
             public bool TwoBarPullbackPass;
+            public bool StrongOneBarRejectionPass;
             public bool ShallowTouchPass;
             public bool BarColorPass;
             public bool LocalDisplacementPass;
@@ -185,13 +192,14 @@ namespace PowerLanguage.Indicator
                     diagnostic.CloseOnTrendSide, diagnostic.Body,
                     diagnostic.LocalDisplacementTicks);
                 text.AppendFormat("Gates: separation={0}; 8slope={1}; 24slope={2}; lead={3}; " +
-                    "penetration={4}; two-bar pullback={5}; shallow touch={6}; color={7}; " +
-                    "displacement={8}; final={9}\r\n\r\n",
+                    "penetration={4}; two-bar pullback={5}; strong one-bar rejection={6}; " +
+                    "shallow touch={7}; color={8}; displacement={9}; final={10}\r\n\r\n",
                     diagnostic.SeparationPass, diagnostic.FastSlopePass,
                     diagnostic.SlowSlopePass, diagnostic.SlopeLeadPass,
                     diagnostic.PenetrationPass, diagnostic.TwoBarPullbackPass,
-                    diagnostic.ShallowTouchPass, diagnostic.BarColorPass,
-                    diagnostic.LocalDisplacementPass, diagnostic.SignalPass);
+                    diagnostic.StrongOneBarRejectionPass, diagnostic.ShallowTouchPass,
+                    diagnostic.BarColorPass, diagnostic.LocalDisplacementPass,
+                    diagnostic.SignalPass);
                 File.AppendAllText(path, text.ToString());
             }
             catch
@@ -310,6 +318,8 @@ namespace PowerLanguage.Indicator
             // the 8 EMA, but its raw penetration may be below one tick.
             result.TwoBarPullbackPass = HasTwoBarCounterTrendPullback(
                 result.Direction);
+            result.StrongOneBarRejectionPass = HasStrongOneBarRejection(
+                result.Direction, tickSize);
             result.ShallowTouchPass = result.RangeCrossesFast &&
                 result.PenetrationTicks >= 0 &&
                 result.PenetrationTicks < MinimumPenetrationTicks &&
@@ -317,14 +327,14 @@ namespace PowerLanguage.Indicator
             result.PenetrationPass = normalPenetrationPass ||
                                      result.ShallowTouchPass;
             result.BarColorPass = result.Direction > 0
-                ? result.Close > result.Open
+                ? result.Close >= result.Open
                 : result.Direction < 0 && result.Close <= result.Open;
             result.LocalDisplacementPass = result.LocalDisplacementTicks >=
                                            MinimumLocalDisplacementTicks;
             result.SignalPass = result.SeparationPass && result.FastSlopePass &&
                 result.SlowSlopePass && result.SlopeLeadPass &&
-                HasRequiredEmaFan(result.Direction, tickSize) &&
-                result.TwoBarPullbackPass &&
+                HasRequiredEmaFanOrStrong8To50Separation(result.Direction, tickSize) &&
+                (result.TwoBarPullbackPass || result.StrongOneBarRejectionPass) &&
                 result.PenetrationPass && result.CloseOnTrendSide &&
                 result.BarColorPass && result.LocalDisplacementPass;
             return result;
@@ -350,6 +360,23 @@ namespace PowerLanguage.Indicator
                 : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] && m_SlowEMA[0] < m_ProfileEMA[0] &&
                   (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
                   (m_ProfileEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap;
+        }
+
+        private bool HasRequiredEmaFanOrStrong8To50Separation(int direction,
+                                                                double tickSize)
+        {
+            if (HasRequiredEmaFan(direction, tickSize)) return true;
+            double rangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
+            double minimumGap = rangeTicks * 0.5;
+            double strongDistance = rangeTicks * 2.0;
+            return direction > 0
+                ? m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_ProfileEMA[0] &&
+                  (m_FastEMA[0] - m_SlowEMA[0]) / tickSize >= minimumGap &&
+                  (m_FastEMA[0] - m_ProfileEMA[0]) / tickSize >= strongDistance
+                : direction < 0 && m_FastEMA[0] < m_SlowEMA[0] &&
+                  m_SlowEMA[0] < m_ProfileEMA[0] &&
+                  (m_SlowEMA[0] - m_FastEMA[0]) / tickSize >= minimumGap &&
+                  (m_ProfileEMA[0] - m_FastEMA[0]) / tickSize >= strongDistance;
         }
 
         private double RoundToIncrement(double value, double increment)
@@ -385,6 +412,31 @@ namespace PowerLanguage.Indicator
                 : direction < 0 &&
                   Bars.Close[1] > Bars.Open[1] &&
                   Bars.Close[2] > Bars.Open[2];
+        }
+
+        private bool HasStrongOneBarRejection(int direction, double tickSize)
+        {
+            if (Bars.CurrentBar < 1) return false;
+            bool priorCounterTrend = direction > 0
+                ? Bars.Close[1] < Bars.Open[1]
+                : direction < 0 && Bars.Close[1] > Bars.Open[1];
+            if (!priorCounterTrend || !HasRequiredEmaFan(direction, tickSize))
+                return false;
+            double fastSlope = GetBestDirectionalSlope(m_FastEMA, direction, tickSize);
+            double slowSlope = GetBestDirectionalSlope(m_SlowEMA, direction, tickSize);
+            double trendSlope = GetBestDirectionalSlope(m_ProfileEMA, direction, tickSize);
+            bool steep = direction > 0
+                ? fastSlope >= StrongOneBarFastSlopeDegrees &&
+                  slowSlope >= StrongOneBarSlowSlopeDegrees &&
+                  trendSlope >= StrongOneBarTrendSlopeDegrees
+                : fastSlope <= -StrongOneBarFastSlopeDegrees &&
+                  slowSlope <= -StrongOneBarSlowSlopeDegrees &&
+                  trendSlope <= -StrongOneBarTrendSlopeDegrees;
+            double priorRange = Math.Abs(Bars.High[1] - Bars.Low[1]);
+            double recovery = direction > 0 ? Bars.Close[0] - Bars.Low[0] :
+                              direction < 0 ? Bars.High[0] - Bars.Close[0] : 0;
+            return steep && priorRange > 0 && recovery + tickSize * 0.1 >=
+                   priorRange * StrongOneBarRecoveryFraction;
         }
 
         private double GetBestDirectionalSlope(XAverage ema, int direction,

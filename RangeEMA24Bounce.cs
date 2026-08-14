@@ -19,8 +19,8 @@ namespace PowerLanguage.Indicator
         private const int SlopeLookbackBars = 6;
         private const double MinimumSlopeDegrees = 20.0;
         // A completed range bar can reject just short of the EMA.  Treat a
-        // near-touch (up to three-quarters of a tick) as a valid 24 bounce.
-        private const double EmaTouchToleranceTicks = 0.75;
+        // near-touch (up to one tick) as a valid 24 bounce.
+        private const double EmaTouchToleranceTicks = 1.0;
         private const double MinimumEmaSeparationTicks = 2.0;
         private const double MinimumCurrentEmaSeparationTicks = 1.5;
         // Treat each displayed arrow as a completed virtual entry.  A new
@@ -44,6 +44,11 @@ namespace PowerLanguage.Indicator
         private XAverage m_ProfileEMA;
         private readonly List<IDrawObject> m_DisplayDrawings =
             new List<IDrawObject>();
+        private readonly List<IDrawObject> m_LastSignalDrawings =
+            new List<IDrawObject>();
+        private readonly HashSet<DateTime> m_AmbiguousDrawingTimes =
+            new HashSet<DateTime>();
+        private DateTime m_LastSignalTime = DateTime.MinValue;
         private bool m_VirtualTradeActive;
         private int m_VirtualTradeDirection;
         private double m_VirtualTradeEntryPrice;
@@ -81,6 +86,9 @@ namespace PowerLanguage.Indicator
         protected override void StartCalc()
         {
             ClearDisplayDrawings();
+            m_LastSignalDrawings.Clear();
+            m_AmbiguousDrawingTimes.Clear();
+            m_LastSignalTime = DateTime.MinValue;
             ResetVirtualTrade();
             m_FastEMA.Length = FastEmaLength;
             m_FastEMA.Price = Bars.Close;
@@ -103,6 +111,14 @@ namespace PowerLanguage.Indicator
             if (Bars.Status != EBarState.Close ||
                 Bars.CurrentBar < SlopeBars + SlopeLookbackBars) return;
 
+            // A ChartPoint is time based.  If two completed range bars share
+            // the exact timestamp, MultiCharts can attach a drawing created
+            // for the first one to the other bar.  Remove a just-created
+            // marker for that timestamp and suppress the whole ambiguous
+            // group; a missing rare marker is preferable to a false one.
+            if (Bars.Time[0] == Bars.Time[1])
+                SuppressAmbiguousTimestamp(Bars.Time[0]);
+
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize <= 0) tickSize = 0.25;
 
@@ -112,6 +128,8 @@ namespace PowerLanguage.Indicator
                 !diagnostic.BarColorPass ||
                 !HasRequiredEmaFan(diagnostic.Direction, tickSize))
                 return;
+
+            if (m_AmbiguousDrawingTimes.Contains(Bars.Time[0])) return;
 
             DrawBounceArrow(diagnostic.Direction, tickSize);
         }
@@ -208,12 +226,10 @@ namespace PowerLanguage.Indicator
             result.ClosePass = result.Direction > 0
                 ? Bars.Close[0] > m_SlowEMA[0]
                 : result.Direction < 0 && Bars.Close[0] < m_SlowEMA[0];
-            // A zero-body range bar has no chart color.  In a bearish 24 EMA
-            // bounce it represents the completed rejection at the EMA, so
-            // classify it as bearish rather than rejecting the setup merely
-            // because Open and Close are equal.
+            // A zero-body range bar closes at its directional completion
+            // extreme, so classify it with the established EMA trend.
             result.BarColorPass = result.Direction > 0
-                ? Bars.Close[0] > Bars.Open[0]
+                ? Bars.Close[0] >= Bars.Open[0]
                 : result.Direction < 0 && Bars.Close[0] <= Bars.Open[0];
             return result;
         }
@@ -299,6 +315,8 @@ namespace PowerLanguage.Indicator
 
         private void DrawBounceArrow(int direction, double tickSize)
         {
+            m_LastSignalDrawings.Clear();
+            m_LastSignalTime = Bars.Time[0];
             // Purple identifies the 24-EMA bounce family in either direction;
             // DrwArrow uses false for an up arrow and true for a down arrow.
             double price = direction > 0
@@ -311,6 +329,7 @@ namespace PowerLanguage.Indicator
                 arrow.Color = Color.DarkViolet;
                 arrow.Size = 4;
                 m_DisplayDrawings.Add(arrow);
+                m_LastSignalDrawings.Add(arrow);
             }
 
             double labelPrice = direction > 0
@@ -325,6 +344,22 @@ namespace PowerLanguage.Indicator
             label.HStyle = ETextStyleH.Right;
             label.VStyle = direction > 0 ? ETextStyleV.Below : ETextStyleV.Above;
             m_DisplayDrawings.Add(label);
+            m_LastSignalDrawings.Add(label);
+        }
+
+        private void SuppressAmbiguousTimestamp(DateTime time)
+        {
+            if (!m_AmbiguousDrawingTimes.Add(time)) return;
+            if (m_LastSignalTime != time) return;
+            foreach (IDrawObject drawing in m_LastSignalDrawings)
+            {
+                if (drawing == null) continue;
+                try { drawing.Delete(); }
+                catch { }
+                m_DisplayDrawings.Remove(drawing);
+            }
+            m_LastSignalDrawings.Clear();
+            m_LastSignalTime = DateTime.MinValue;
         }
 
         private double GetAngle(double valueCurrent, double valueOld,
@@ -344,6 +379,7 @@ namespace PowerLanguage.Indicator
                 catch { }
             }
             m_DisplayDrawings.Clear();
+            m_LastSignalDrawings.Clear();
         }
 
         protected override void Destroy()

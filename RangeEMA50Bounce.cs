@@ -88,8 +88,8 @@ namespace PowerLanguage.Indicator
                     ? (m_TrendEMA[0] - Bars.High[0]) / tickSize : 0;
             bool touchesTrend = gap <= TouchToleranceTicks;
             bool closeAndColor = direction > 0
-                ? Bars.Close[0] > Bars.Open[0] && Bars.Close[0] > m_TrendEMA[0]
-                : Bars.Close[0] < Bars.Open[0] && Bars.Close[0] < m_TrendEMA[0];
+                ? Bars.Close[0] >= Bars.Open[0] && Bars.Close[0] > m_TrendEMA[0]
+                : Bars.Close[0] <= Bars.Open[0] && Bars.Close[0] < m_TrendEMA[0];
             bool slowTrendSeparation = Math.Abs(m_SlowEMA[0] - m_TrendEMA[0]) /
                                        tickSize >= MinimumSlowTrendSeparationTicks;
             return touchesTrend && closeAndColor && slowTrendSeparation &&
