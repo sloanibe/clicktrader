@@ -35,11 +35,13 @@ namespace PowerLanguage.Indicator
         private readonly HashSet<DateTime> m_MarkedBars = new HashSet<DateTime>();
 
         [Input] public bool ShowDisplay { get; set; }
+        [Input] public bool ShowBreakoutLines { get; set; }
         [Input] public bool ShowEMAs { get; set; }
 
         public RangeBarBreakoutDisplay(object ctx) : base(ctx)
         {
             ShowDisplay = true;
+            ShowBreakoutLines = true;
             ShowEMAs = true;
         }
 
@@ -79,7 +81,12 @@ namespace PowerLanguage.Indicator
                 m_TrendEMAPlot.Set(m_TrendEMA[0], Color.Green);
             }
 
-            if (!ShowDisplay || Bars.Status != EBarState.Close ||
+            if (!ShowDisplay || !ShowBreakoutLines)
+            {
+                ClearDisplayDrawings();
+                return;
+            }
+            if (Bars.Status != EBarState.Close ||
                 Bars.CurrentBar < SlopeBars + 3)
                 return;
             if (m_MarkedBars.Contains(Bars.Time[0])) return;

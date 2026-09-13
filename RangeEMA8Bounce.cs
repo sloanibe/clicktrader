@@ -20,9 +20,9 @@ namespace PowerLanguage.Indicator
         private const int SlopeLookbackBars = 6;
         private const int DisplacementLookbackBars = 2;
         private const double MinimumSeparationTicks = 4.0;
-        private const double MinimumFastSlopeDegrees = 40.0;
-        // Keep the fast EMA at 40°, while allowing the naturally slower 24
-        // EMA to qualify at 39° on an otherwise valid continuation.
+        private const double MinimumFastSlopeDegrees = 39.0;
+        // Both the fast and naturally slower 24 EMA require a 39° best
+        // directional slope on an otherwise valid continuation.
         private const double MinimumSlowSlopeDegrees = 39.0;
         private const double StrongOneBarFastSlopeDegrees = 50.0;
         private const double StrongOneBarSlowSlopeDegrees = 40.0;
@@ -56,6 +56,12 @@ namespace PowerLanguage.Indicator
         private XAverage m_FastEMA;
         private XAverage m_SlowEMA;
         private XAverage m_ProfileEMA;
+        private IPlotObject m_SignalPlot;
+        // Drawing objects are timestamp-addressed in MultiCharts, whereas the
+        // plot above is bar-addressed.  Hold a signal for one completed bar so
+        // we can prove its timestamp is unique before adding the decorative
+        // arrow and label.
+        private PendingDisplaySignal m_PendingDisplaySignal;
         private readonly List<IDrawObject> m_DisplayDrawings =
             new List<IDrawObject>();
         private readonly HashSet<DateTime> m_AuditedSignalTimes =
@@ -105,6 +111,15 @@ namespace PowerLanguage.Indicator
             public bool SignalPass;
         }
 
+        private class PendingDisplaySignal
+        {
+            public int BarNumber;
+            public DateTime Time;
+            public int Direction;
+            public double Low;
+            public double High;
+        }
+
         public RangeEMA8Bounce(object ctx) : base(ctx)
         {
             ShowDisplay = true;
@@ -117,11 +132,14 @@ namespace PowerLanguage.Indicator
             m_FastEMA = new XAverage(this);
             m_SlowEMA = new XAverage(this);
             m_ProfileEMA = new XAverage(this);
+            m_SignalPlot = AddPlot(new PlotAttributes("8 EMA Bounce", EPlotShapes.Point,
+                Color.MediumSeaGreen, Color.Empty, 10, 0, true));
         }
 
         protected override void StartCalc()
         {
             ClearDisplayDrawings();
+            m_PendingDisplaySignal = null;
             ResetVirtualTrade();
             m_AuditedSignalTimes.Clear();
             m_FastEMA.Length = FastEmaLength;
@@ -134,9 +152,11 @@ namespace PowerLanguage.Indicator
 
         protected override void CalcBar()
         {
+            m_SignalPlot.Set(Double.NaN);
             if (!ShowDisplay)
             {
                 ClearDisplayDrawings();
+                m_PendingDisplaySignal = null;
                 return;
             }
 
@@ -147,11 +167,14 @@ namespace PowerLanguage.Indicator
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize <= 0) tickSize = 0.25;
 
+            DrawPendingArrowIfTimestampIsUnique(tickSize);
+
             BounceDiagnostic diagnostic = BuildDiagnostic(tickSize);
             if (diagnostic.SignalPass)
             {
                 AppendSignalAudit(diagnostic, tickSize);
                 DrawBounceArrow(diagnostic.Direction, tickSize);
+                QueueDisplayArrow(diagnostic.Direction);
             }
         }
 
@@ -293,8 +316,10 @@ namespace PowerLanguage.Indicator
                 result.Direction, tickSize);
 
             // The initial values are from the supplied positive examples.
-            // The pullback itself can soften the current three-bar slope, so
-            // use the best directional slope in the recent 0-6 bar window.
+            // The pullback itself can soften the current three-bar slope.
+            // Judge both EMAs by their best directional three-bar slope in
+            // the recent 0-6 bar window, while the touch/rejection and
+            // two-bar pullback gates keep this from accepting stale trends.
             result.SeparationPass = result.Direction != 0 &&
                                     result.SeparationTicks >= MinimumSeparationTicks;
             result.FastSlopePass = result.Direction > 0
@@ -318,8 +343,10 @@ namespace PowerLanguage.Indicator
             // the 8 EMA, but its raw penetration may be below one tick.
             result.TwoBarPullbackPass = HasTwoBarCounterTrendPullback(
                 result.Direction);
-            result.StrongOneBarRejectionPass = HasStrongOneBarRejection(
-                result.Direction, tickSize);
+            // APMA requires the two-bar pullback to be preceded by two bars
+            // that close with the established trend; a one-bar exception is
+            // intentionally not an APMA setup.
+            result.StrongOneBarRejectionPass = false;
             result.ShallowTouchPass = result.RangeCrossesFast &&
                 result.PenetrationTicks >= 0 &&
                 result.PenetrationTicks < MinimumPenetrationTicks &&
@@ -334,7 +361,7 @@ namespace PowerLanguage.Indicator
             result.SignalPass = result.SeparationPass && result.FastSlopePass &&
                 result.SlowSlopePass && result.SlopeLeadPass &&
                 HasRequiredEmaFanOrStrong8To50Separation(result.Direction, tickSize) &&
-                (result.TwoBarPullbackPass || result.StrongOneBarRejectionPass) &&
+                result.TwoBarPullbackPass &&
                 result.PenetrationPass && result.CloseOnTrendSide &&
                 result.BarColorPass && result.LocalDisplacementPass;
             return result;
@@ -408,10 +435,14 @@ namespace PowerLanguage.Indicator
         {
             return direction > 0
                 ? Bars.Close[1] < Bars.Open[1] &&
-                  Bars.Close[2] < Bars.Open[2]
+                  Bars.Close[2] < Bars.Open[2] &&
+                  Bars.Close[3] > Bars.Open[3] &&
+                  Bars.Close[4] > Bars.Open[4]
                 : direction < 0 &&
                   Bars.Close[1] > Bars.Open[1] &&
-                  Bars.Close[2] > Bars.Open[2];
+                  Bars.Close[2] > Bars.Open[2] &&
+                  Bars.Close[3] < Bars.Open[3] &&
+                  Bars.Close[4] < Bars.Open[4];
         }
 
         private bool HasStrongOneBarRejection(int direction, double tickSize)
@@ -499,16 +530,47 @@ namespace PowerLanguage.Indicator
 
         private void DrawBounceArrow(int direction, double tickSize)
         {
-            // Do not rely on the small arrow alone.  Some chart themes render
-            // an arrow almost indistinguishably from a range-bar wick, and an
-            // unavailable arrow object used to make a passed setup appear to
-            // have no signal at all.  Keep a text marker as the definitive
-            // historical indication of every qualifying 8-EMA bounce.
-            double price = direction > 0
-                ? Bars.Low[0] - (2 * tickSize)
-                : Bars.High[0] + (2 * tickSize);
+            // Plot values are indexed by bar, unlike ChartPoint drawings
+            // whose timestamp cannot distinguish adjacent range bars.
+            m_SignalPlot.Set(direction > 0
+                ? Bars.Low[0] - (3 * tickSize)
+                : Bars.High[0] + (3 * tickSize));
+        }
+
+        private void QueueDisplayArrow(int direction)
+        {
+            m_PendingDisplaySignal = new PendingDisplaySignal
+            {
+                BarNumber = Bars.CurrentBar,
+                Time = Bars.Time[0],
+                Direction = direction,
+                Low = Bars.Low[0],
+                High = Bars.High[0]
+            };
+        }
+
+        private void DrawPendingArrowIfTimestampIsUnique(double tickSize)
+        {
+            PendingDisplaySignal signal = m_PendingDisplaySignal;
+            if (signal == null || Bars.CurrentBar <= signal.BarNumber)
+                return;
+
+            // The immediately newer and older bars must differ from the
+            // signal's timestamp.  Otherwise a ChartPoint-based drawing could
+            // attach to a neighboring range bar, so retain only its exact plot
+            // point.
+            bool immediatelyAfterSignal = Bars.CurrentBar == signal.BarNumber + 1;
+            bool hasUniqueTimestamp = immediatelyAfterSignal &&
+                Bars.Time[0] != signal.Time &&
+                (signal.BarNumber == 1 || Bars.Time[2] != signal.Time);
+            m_PendingDisplaySignal = null;
+            if (!hasUniqueTimestamp) return;
+
+            double arrowPrice = signal.Direction > 0
+                ? signal.Low - (2 * tickSize)
+                : signal.High + (2 * tickSize);
             IArrowObject arrow = DrwArrow.Create(
-                new ChartPoint(Bars.Time[0], price), direction < 0);
+                new ChartPoint(signal.Time, arrowPrice), signal.Direction < 0);
             if (arrow != null)
             {
                 arrow.Color = Color.MediumSeaGreen;
@@ -516,17 +578,18 @@ namespace PowerLanguage.Indicator
                 m_DisplayDrawings.Add(arrow);
             }
 
-            double labelPrice = direction > 0
-                ? Bars.Low[0] - (4 * tickSize)
-                : Bars.High[0] + (4 * tickSize);
+            double labelPrice = signal.Direction > 0
+                ? signal.Low - (4 * tickSize)
+                : signal.High + (4 * tickSize);
             ITextObject label = DrwText.Create(
-                new ChartPoint(Bars.Time[0], labelPrice), "8");
+                new ChartPoint(signal.Time, labelPrice), "8");
             if (label == null) return;
 
             label.Color = Color.MediumSeaGreen;
             label.Size = 9;
             label.HStyle = ETextStyleH.Center;
-            label.VStyle = direction > 0 ? ETextStyleV.Below : ETextStyleV.Above;
+            label.VStyle = signal.Direction > 0
+                ? ETextStyleV.Below : ETextStyleV.Above;
             m_DisplayDrawings.Add(label);
         }
 

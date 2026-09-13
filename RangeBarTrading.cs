@@ -72,7 +72,7 @@ namespace PowerLanguage.Strategy
         // A four-tick 8/24 spread is enough for a clean 8E pullback; the
         // prior 4.5-tick gate excluded otherwise well-fanned MES examples.
         private const double Ema8MinSeparationTicks = 4.0;
-        private const double Ema8MinFastSlopeDegrees = 40.0;
+        private const double Ema8MinFastSlopeDegrees = 39.0;
         // The 24 EMA is inherently slower than the 8.  A 39-degree best
         // directional slope still confirms the strong, fanned continuation
         // required for an 8E bounce.
@@ -158,12 +158,20 @@ namespace PowerLanguage.Strategy
         private int m_PinProjectionDirection = 0;
         private bool m_PinProjectionTailReached = false;
         private bool m_PinProjectionBroken = false;
+        // Once a forming PB reaches its live trigger, retain its established
+        // context for the rest of that range bar.  The projected price still
+        // moves with new extremes; only soft EMA/filter flicker is ignored.
+        private bool m_PinProjectionQualified = false;
         private int m_PinProjectionTailTicks = 3;
         private bool m_PinProjectionOpenAligned = false;
         private int m_PinBarOrderBar = -1;
         private int m_EmaBounceProjectionBar = -1;
         private int m_EmaBounceProjectionDirection = 0;
+        private bool m_EmaBounceProjectionBroken = false;
         private int m_EmaBounceOrderBar = -1;
+        private int m_Ema8BounceProjectionBar = -1;
+        private int m_Ema8BounceProjectionDirection = 0;
+        private bool m_Ema8BounceProjectionBroken = false;
         private int m_Ema8BounceOrderBar = -1;
         private bool m_PinEntryCandidateValid = false;
         private int m_PinEntryCandidateDirection = 0;
@@ -342,6 +350,7 @@ namespace PowerLanguage.Strategy
                 m_PinProjectionDirection = 0;
                 m_PinProjectionTailReached = false;
                 m_PinProjectionBroken = false;
+                m_PinProjectionQualified = false;
                 m_PinProjectionTailTicks = 3;
                 m_PinProjectionOpenAligned = false;
                 ClearPinBarProjectionLines();
@@ -356,6 +365,7 @@ namespace PowerLanguage.Strategy
             }
 
             if (!Enable8EMABounceTrading) {
+                ResetEma8BounceProjection();
                 ClearEma8BounceProjectionLines();
                 if (m_ActiveEntrySetup == EEntrySetup.Ema8Bounce && currentPosition == 0) {
                     CancelWorkingEntryOrders();
@@ -1184,6 +1194,7 @@ namespace PowerLanguage.Strategy
                     : GetUnarmedPinBarProjectionDirection(tickSize);
                 m_PinProjectionTailReached = false;
                 m_PinProjectionBroken = false;
+                m_PinProjectionQualified = false;
                 m_PinProjectionTailTicks = GetInitialPinBarTailTicks();
                 m_PinProjectionOpenAligned = IsPinBarOpenOnCorrectEmaSide(
                     m_PinProjectionDirection, tickSize);
@@ -1264,6 +1275,21 @@ namespace PowerLanguage.Strategy
             UpdatePinBarProjectionLabel(completionPrice, direction, false,
                                         bodyTicks);
 
+            // After the tail has qualified, retain that context throughout
+            // this bar.  The completion price below is deliberately still
+            // recalculated from the live high/low on every IOG update.
+            if (m_PinProjectionQualified) {
+                UpdatePinBarProjectionLine(ref m_PinBarCompletionLine,
+                                           completionPrice, true);
+                UpdatePinBarProjectionLabel(completionPrice, direction, true,
+                                            bodyTicks);
+                m_PinEntryCandidateValid = true;
+                m_PinEntryCandidateDirection = direction;
+                m_PinEntryCandidatePrice = entryPrice;
+                m_PinEntryCandidateBodyTicks = bodyTicks;
+                return;
+            }
+
             bool isCompactPB = bodyTicks <=
                 GetPinBarPB1BodyTicks(pinBarRangeTicks) && direction != 0;
             // Every PB shape must have a prior bar in the trade direction,
@@ -1305,10 +1331,12 @@ namespace PowerLanguage.Strategy
             bool rangeClearancePass = true;
             bool projectionActive = m_PinProjectionTailReached &&
                                     pinSetupEligible && rangeClearancePass;
+            if (projectionActive)
+                m_PinProjectionQualified = true;
             UpdatePinBarProjectionLine(ref m_PinBarCompletionLine, completionPrice,
-                                       projectionActive);
+                                       m_PinProjectionQualified);
             UpdatePinBarProjectionLabel(completionPrice, direction,
-                                        projectionActive, bodyTicks);
+                                        m_PinProjectionQualified, bodyTicks);
 
             // Keep the projected entry price available for setup arbitration
             // even before the pin tail is reached. Order staging still uses
@@ -1319,8 +1347,7 @@ namespace PowerLanguage.Strategy
 
             // A pin becomes an actionable entry candidate only after its tail
             // is reached. Until then it cannot displace an EMA order.
-            if (m_PinProjectionTailReached && pinSetupEligible &&
-                rangeClearancePass) {
+            if (m_PinProjectionQualified) {
                 m_PinEntryCandidateValid = true;
                 m_PinEntryCandidateDirection = direction;
                 m_PinEntryCandidatePrice = entryPrice;
@@ -1653,17 +1680,28 @@ namespace PowerLanguage.Strategy
             if (m_EmaBounceProjectionBar != Bars.CurrentBar) {
                 m_EmaBounceProjectionBar = Bars.CurrentBar;
                 m_EmaBounceProjectionDirection = 0;
+                m_EmaBounceProjectionBroken = false;
             }
 
-            int qualifyingDirection = GetEmaBounceDirection();
-            if (qualifyingDirection == 0) {
-                m_EmaBounceProjectionDirection = 0;
+            if (m_EmaBounceProjectionBroken) {
                 ClearEmaBounceProjectionLines();
                 ClearEmaBounceEntryIfActive();
                 return;
             }
-            m_EmaBounceProjectionDirection = qualifyingDirection;
-            if (!IsEntryDirectionAllowed(qualifyingDirection)) {
+
+            // Establish the context once.  Intrabar EMA recalculation can
+            // soften an angle by a fraction just before price reaches the
+            // target; that must not make the live entry blink off.
+            if (m_EmaBounceProjectionDirection == 0)
+                m_EmaBounceProjectionDirection = GetEmaBounceDirection();
+            if (m_EmaBounceProjectionDirection == 0) {
+                ClearEmaBounceProjectionLines();
+                ClearEmaBounceEntryIfActive();
+                return;
+            }
+            if (!IsEntryDirectionAllowed(m_EmaBounceProjectionDirection) ||
+                !HasEmaBounceDirectionStillOrdered(m_EmaBounceProjectionDirection)) {
+                m_EmaBounceProjectionBroken = true;
                 ClearEmaBounceProjectionLines();
                 ClearEmaBounceEntryIfActive();
                 return;
@@ -1675,8 +1713,9 @@ namespace PowerLanguage.Strategy
                                                   tickSize,
                                                   out projectedLow,
                                                   out projectedHigh)) {
-                // Geometry can recover before the range bar completes, so do
-                // not latch this as a permanent failure for the current bar.
+                // No remaining price path can finish this range bar as the
+                // projected bounce; this is a real, bar-level disqualification.
+                m_EmaBounceProjectionBroken = true;
                 ClearEmaBounceProjectionLines();
                 ClearEmaBounceEntryIfActive();
                 return;
@@ -1727,6 +1766,11 @@ namespace PowerLanguage.Strategy
                 : Bars.High[0] >= m_SlowEMA[0] - tolerance;
         }
 
+        private bool HasEmaBounceDirectionStillOrdered(int direction) {
+            return direction > 0 ? m_FastEMA[0] > m_SlowEMA[0]
+                                 : direction < 0 && m_FastEMA[0] < m_SlowEMA[0];
+        }
+
         // Live counterpart of RangeEMA8Bounce: project the range bar that
         // could finish as a qualifying 8 EMA bounce, then stage its breakout
         // only after the projected tail has actually been reached.
@@ -1736,22 +1780,40 @@ namespace PowerLanguage.Strategy
                 ClearEma8BounceProjectionLines();
                 return;
             }
-            int direction = GetEma8BounceDirection(tickSize);
-            if (direction == 0 || !IsEntryDirectionAllowed(direction)) {
+
+            if (m_Ema8BounceProjectionBar != Bars.CurrentBar) {
+                m_Ema8BounceProjectionBar = Bars.CurrentBar;
+                m_Ema8BounceProjectionDirection = 0;
+                m_Ema8BounceProjectionBroken = false;
+            }
+            if (m_Ema8BounceProjectionBroken) {
+                ClearEma8BounceProjectionLines();
+                return;
+            }
+
+            // Keep the already-qualified context for this live range bar.
+            // The projection price is still calculated afresh below, so it
+            // advances as the bar makes a new high or low.
+            if (m_Ema8BounceProjectionDirection == 0)
+                m_Ema8BounceProjectionDirection = GetEma8BounceDirection(tickSize);
+            int direction = m_Ema8BounceProjectionDirection;
+            if (direction == 0 || !IsEntryDirectionAllowed(direction) ||
+                !HasEma8BounceDirectionStillOrdered(direction)) {
+                m_Ema8BounceProjectionBroken = direction != 0;
                 ClearEma8BounceProjectionLines();
                 return;
             }
             double projectedLow, projectedHigh;
             if (!TryGetEma8BounceProjectionPrices(direction, tickSize,
                                                     out projectedLow, out projectedHigh)) {
+                m_Ema8BounceProjectionBroken = true;
                 ClearEma8BounceProjectionLines();
                 return;
             }
             bool tailReached = direction > 0
                 ? Bars.Low[0] <= projectedLow + tickSize * 0.1
                 : Bars.High[0] >= projectedHigh - tickSize * 0.1;
-            bool completedPullbackGate = HasTwoBarCounterTrendEma8Pullback(direction) ||
-                HasStrongOneBarEma8Rejection(direction, tickSize);
+            bool completedPullbackGate = HasTwoBarCounterTrendEma8Pullback(direction);
             double tail = direction > 0 ? projectedLow : projectedHigh;
             double completion = direction > 0 ? projectedHigh : projectedLow;
             // A forming 8-EMA bounce is already a competing chart setup.
@@ -1772,6 +1834,11 @@ namespace PowerLanguage.Strategy
             m_Ema8EntryCandidateValid = true;
         }
 
+        private bool HasEma8BounceDirectionStillOrdered(int direction) {
+            return direction > 0 ? m_FastEMA[0] > m_SlowEMA[0]
+                                 : direction < 0 && m_FastEMA[0] < m_SlowEMA[0];
+        }
+
         private int GetEma8BounceDirection(double tickSize) {
             if (Bars.CurrentBar < 9) return 0;
             int direction = m_FastEMA[0] > m_SlowEMA[0] ? 1 :
@@ -1780,12 +1847,9 @@ namespace PowerLanguage.Strategy
                 return 0;
             if (!HasRequiredEmaFanOrStrong8To50Separation(direction, tickSize))
                 return 0;
-            // Normally 8E requires two completed countertrend bars. A single
-            // long-tailed rejection is also valid only in an exceptionally
-            // steep, fully fanned trend and after it recovers 75% of the
-            // prior range from its pierced tail.
-            if (!HasTwoBarCounterTrendEma8Pullback(direction) &&
-                !HasStrongOneBarEma8RejectionContext(direction, tickSize))
+            // APMA requires two countertrend bars immediately preceded by two
+            // trend-color bars; no one-bar rejection exception is allowed.
+            if (!HasTwoBarCounterTrendEma8Pullback(direction))
                 return 0;
             double fastBest = GetBestDirectionalEmaSlope(m_FastEMA, direction, tickSize);
             double slowBest = GetBestDirectionalEmaSlope(m_SlowEMA, direction, tickSize);
@@ -1852,9 +1916,11 @@ namespace PowerLanguage.Strategy
 
         private bool HasTwoBarCounterTrendEma8Pullback(int direction) {
             return direction > 0
-                ? Bars.Close[1] < Bars.Open[1] && Bars.Close[2] < Bars.Open[2]
+                ? Bars.Close[1] < Bars.Open[1] && Bars.Close[2] < Bars.Open[2] &&
+                  Bars.Close[3] > Bars.Open[3] && Bars.Close[4] > Bars.Open[4]
                 : direction < 0 && Bars.Close[1] > Bars.Open[1] &&
-                  Bars.Close[2] > Bars.Open[2];
+                  Bars.Close[2] > Bars.Open[2] && Bars.Close[3] < Bars.Open[3] &&
+                  Bars.Close[4] < Bars.Open[4];
         }
 
         private bool HasStrongOneBarEma8RejectionContext(int direction,
@@ -1909,6 +1975,12 @@ namespace PowerLanguage.Strategy
             if (m_Ema8BounceTailLine != null) { m_Ema8BounceTailLine.Delete(); m_Ema8BounceTailLine = null; }
             if (m_Ema8BounceCompletionLine != null) { m_Ema8BounceCompletionLine.Delete(); m_Ema8BounceCompletionLine = null; }
             if (m_Ema8BounceLabel != null) { m_Ema8BounceLabel.Delete(); m_Ema8BounceLabel = null; }
+        }
+
+        private void ResetEma8BounceProjection() {
+            m_Ema8BounceProjectionBar = -1;
+            m_Ema8BounceProjectionDirection = 0;
+            m_Ema8BounceProjectionBroken = false;
         }
 
         private int GetEmaBounceDirection() {
@@ -2368,6 +2440,7 @@ namespace PowerLanguage.Strategy
         private void ResetEmaBounceProjection() {
             m_EmaBounceProjectionBar = -1;
             m_EmaBounceProjectionDirection = 0;
+            m_EmaBounceProjectionBroken = false;
             ClearEmaBounceProjectionLines();
         }
 

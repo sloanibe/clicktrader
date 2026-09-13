@@ -10,6 +10,7 @@ namespace PowerLanguage.Indicator
     // both directions: chart role, arming, and order management belong to the
     // signal, not to this visual research tool.
     [SameAsSymbol(true)]
+    [UpdateOnEveryTick(true)]
     [RecoverDrawings(false)]
     public class RenkoBarTradingV3EntryDisplay : IndicatorObject
     {
@@ -18,6 +19,7 @@ namespace PowerLanguage.Indicator
         private const double Minimum50SlopeDegrees = 20.0;
 
         [Input] public bool ShowDisplay { get; set; }
+        [Input] public bool ShowProjectedEntryLines { get; set; }
         // This is deliberately independent of RangeBarDiagnostic's 4.5-tick
         // strong-continuation value, which measures 8/24 separation.  Renko
         // entries need a substantially matured 24/50 fan.
@@ -31,10 +33,14 @@ namespace PowerLanguage.Indicator
         private XAverage m_Ema50;
         private readonly List<IDrawObject> m_DisplayDrawings =
             new List<IDrawObject>();
+        // Unlike completed-bar markers, a projection is intentionally a
+        // single live drawing for the Renko brick currently forming.
+        private ITrendLineObject m_CurrentProjectedEntryLine;
 
         public RenkoBarTradingV3EntryDisplay(object ctx) : base(ctx)
         {
             ShowDisplay = true;
+            ShowProjectedEntryLines = true;
             Minimum2450SeparationTicks = 14.0;
             Minimum824SeparationTicks = 27.0;
         }
@@ -49,6 +55,7 @@ namespace PowerLanguage.Indicator
         protected override void StartCalc()
         {
             ClearDisplayDrawings();
+            ClearCurrentProjectedEntryLine();
             m_Ema8.Length = 8; m_Ema8.Price = Bars.Close;
             m_Ema24.Length = 24; m_Ema24.Price = Bars.Close;
             m_Ema50.Length = 50; m_Ema50.Price = Bars.Close;
@@ -59,24 +66,38 @@ namespace PowerLanguage.Indicator
             if (!ShowDisplay)
             {
                 ClearDisplayDrawings();
+                ClearCurrentProjectedEntryLine();
                 return;
             }
 
-            // This is a completed-bar display.  It produces one durable mark
-            // per confirmed historical Renko setup, never a repeating mark on
-            // every tick of a still-forming brick.
-            if (Bars.Status != EBarState.Close || Bars.CurrentBar < 51) return;
+            if (Bars.CurrentBar < 51)
+            {
+                ClearCurrentProjectedEntryLine();
+                return;
+            }
 
             double tickSize = GetTickSize();
             int direction = GetAlignedTrendDirection();
-            if (direction == 0 || !HasStrong2450Profile(direction, tickSize) ||
-                !HasMinimum824Separation(tickSize) ||
-                !HasThreePriorDirectionalCloses(direction) ||
-                !HasDirectionalClose(direction) ||
-                !HasTailPierce(direction) ||
-                !HasTwoBarBreakout(direction)) return;
+            bool qualifies = direction != 0 &&
+                             HasStrong2450Profile(direction, tickSize) &&
+                             HasMinimum824Separation(tickSize) &&
+                             HasThreePriorDirectionalCloses(direction) &&
+                             HasDirectionalClose(direction) &&
+                             HasTailPierce(direction) &&
+                             HasTwoBarBreakout(direction);
 
-            DrawEntry(direction, tickSize);
+            // A projection belongs only to the active, forming chart bar.
+            // Updating one object prevents a historical line from being left
+            // behind for every previously-qualified setup.
+            if (Bars.LastBarOnChart && qualifies)
+                UpdateCurrentProjectedEntryLine(direction, tickSize);
+            else
+                ClearCurrentProjectedEntryLine();
+
+            // The arrows and B labels remain completed-bar research marks;
+            // they must not be recreated on each real-time tick.
+            if (Bars.Status == EBarState.Close && qualifies)
+                DrawEntryMarker(direction, tickSize);
         }
 
         // Same internal EMA gate as the V3 signal: 8/24/50 must be stacked
@@ -164,7 +185,7 @@ namespace PowerLanguage.Indicator
                 : Bars.Low[0] < Bars.Low[1] && Bars.Low[0] < Bars.Low[2];
         }
 
-        private void DrawEntry(int direction, double tickSize)
+        private void DrawEntryMarker(int direction, double tickSize)
         {
             double arrowPrice = direction > 0
                 ? Bars.Low[0] - 2 * tickSize : Bars.High[0] + 2 * tickSize;
@@ -189,10 +210,61 @@ namespace PowerLanguage.Indicator
             }
         }
 
+        // Project one further brick in the signal direction for the current
+        // setup only.  The prior completed Renko body is used because the
+        // current brick is still forming and its body is not stable.
+        private void UpdateCurrentProjectedEntryLine(int direction, double tickSize)
+        {
+            if (!ShowProjectedEntryLines)
+            {
+                ClearCurrentProjectedEntryLine();
+                return;
+            }
+
+            double brickSize = Math.Abs(Bars.Close[1] - Bars.Open[1]);
+            if (brickSize <= 0) brickSize = Math.Abs(Bars.High[1] - Bars.Low[1]);
+            if (brickSize <= 0)
+            {
+                ClearCurrentProjectedEntryLine();
+                return;
+            }
+
+            double entryPrice = RoundToTick(
+                direction > 0 ? Bars.Close[0] + brickSize
+                              : Bars.Close[0] - brickSize,
+                tickSize);
+            Color color = direction > 0 ? Color.DodgerBlue : Color.DeepPink;
+            ChartPoint begin = new ChartPoint(Bars.Time[0], entryPrice);
+            ChartPoint end = new ChartPoint(Bars.Time[0].AddMinutes(5), entryPrice);
+            if (m_CurrentProjectedEntryLine == null)
+                m_CurrentProjectedEntryLine = DrwTrendLine.Create(begin, end);
+            if (m_CurrentProjectedEntryLine == null) return;
+
+            m_CurrentProjectedEntryLine.Begin = begin;
+            m_CurrentProjectedEntryLine.End = end;
+            m_CurrentProjectedEntryLine.Color = color;
+            m_CurrentProjectedEntryLine.Style = ETLStyle.ToolDashed;
+            m_CurrentProjectedEntryLine.Size = 2;
+            m_CurrentProjectedEntryLine.ExtRight = true;
+        }
+
+        private void ClearCurrentProjectedEntryLine()
+        {
+            if (m_CurrentProjectedEntryLine == null) return;
+            try { m_CurrentProjectedEntryLine.Delete(); }
+            catch { }
+            m_CurrentProjectedEntryLine = null;
+        }
+
         private double GetTickSize()
         {
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             return tickSize > 0 ? tickSize : 0.25;
+        }
+
+        private double RoundToTick(double price, double tickSize)
+        {
+            return Math.Round(price / tickSize) * tickSize;
         }
 
         private double GetAngle(double current, double previous, int barsBack,
@@ -211,6 +283,12 @@ namespace PowerLanguage.Indicator
                 catch { }
             }
             m_DisplayDrawings.Clear();
+        }
+
+        protected override void Destroy()
+        {
+            ClearDisplayDrawings();
+            ClearCurrentProjectedEntryLine();
         }
     }
 }

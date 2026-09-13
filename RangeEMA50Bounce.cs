@@ -27,10 +27,21 @@ namespace PowerLanguage.Indicator
         private XAverage m_FastEMA;
         private XAverage m_SlowEMA;
         private XAverage m_TrendEMA;
+        private IPlotObject m_SignalPlot;
+        private PendingDisplaySignal m_PendingDisplaySignal;
         private readonly List<IDrawObject> m_DisplayDrawings =
             new List<IDrawObject>();
 
         [Input] public bool ShowDisplay { get; set; }
+
+        private class PendingDisplaySignal
+        {
+            public int BarNumber;
+            public DateTime Time;
+            public int Direction;
+            public double Low;
+            public double High;
+        }
 
         public RangeEMA50Bounce(object ctx) : base(ctx)
         {
@@ -42,11 +53,14 @@ namespace PowerLanguage.Indicator
             m_FastEMA = new XAverage(this);
             m_SlowEMA = new XAverage(this);
             m_TrendEMA = new XAverage(this);
+            m_SignalPlot = AddPlot(new PlotAttributes("50 EMA Bounce", EPlotShapes.Point,
+                Color.Red, Color.Empty, 10, 0, true));
         }
 
         protected override void StartCalc()
         {
             ClearDisplayDrawings();
+            m_PendingDisplaySignal = null;
             m_FastEMA.Length = FastEmaLength;
             m_FastEMA.Price = Bars.Close;
             m_SlowEMA.Length = SlowEmaLength;
@@ -57,9 +71,11 @@ namespace PowerLanguage.Indicator
 
         protected override void CalcBar()
         {
+            m_SignalPlot.Set(Double.NaN);
             if (!ShowDisplay)
             {
                 ClearDisplayDrawings();
+                m_PendingDisplaySignal = null;
                 return;
             }
             if (Bars.Status != EBarState.Close ||
@@ -68,9 +84,13 @@ namespace PowerLanguage.Indicator
 
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize <= 0) tickSize = 0.25;
+            DrawPendingArrowIfTimestampIsUnique(tickSize);
             int direction = GetBounceDirection();
             if (IsFiftyEmaBounce(direction, tickSize))
+            {
                 DrawBounceArrow(direction, tickSize);
+                QueueDisplayArrow(direction);
+            }
         }
 
         private int GetBounceDirection()
@@ -127,25 +147,45 @@ namespace PowerLanguage.Indicator
 
         private void DrawBounceArrow(int direction, double tickSize)
         {
-            double arrowPrice = direction > 0
-                ? Bars.Low[0] - (2 * tickSize) : Bars.High[0] + (2 * tickSize);
-            IArrowObject arrow = DrwArrow.Create(
-                new ChartPoint(Bars.Time[0], arrowPrice), direction < 0);
+            m_SignalPlot.Set(direction > 0
+                ? Bars.Low[0] - (3 * tickSize) : Bars.High[0] + (3 * tickSize));
+        }
+
+        private void QueueDisplayArrow(int direction)
+        {
+            m_PendingDisplaySignal = new PendingDisplaySignal
+            {
+                BarNumber = Bars.CurrentBar, Time = Bars.Time[0], Direction = direction,
+                Low = Bars.Low[0], High = Bars.High[0]
+            };
+        }
+
+        private void DrawPendingArrowIfTimestampIsUnique(double tickSize)
+        {
+            PendingDisplaySignal signal = m_PendingDisplaySignal;
+            if (signal == null || Bars.CurrentBar <= signal.BarNumber) return;
+            bool isUnique = Bars.CurrentBar == signal.BarNumber + 1 &&
+                Bars.Time[0] != signal.Time && Bars.Time[2] != signal.Time;
+            m_PendingDisplaySignal = null;
+            if (!isUnique) return;
+            double arrowPrice = signal.Direction > 0 ? signal.Low - (2 * tickSize)
+                                                     : signal.High + (2 * tickSize);
+            IArrowObject arrow = DrwArrow.Create(new ChartPoint(signal.Time, arrowPrice),
+                                                  signal.Direction < 0);
             if (arrow != null)
             {
                 arrow.Color = Color.Red;
                 arrow.Size = 4;
                 m_DisplayDrawings.Add(arrow);
             }
-            double labelPrice = direction > 0
-                ? Bars.Low[0] - (4 * tickSize) : Bars.High[0] + (4 * tickSize);
-            ITextObject label = DrwText.Create(
-                new ChartPoint(Bars.Time[0], labelPrice), "50");
+            double labelPrice = signal.Direction > 0 ? signal.Low - (4 * tickSize)
+                                                     : signal.High + (4 * tickSize);
+            ITextObject label = DrwText.Create(new ChartPoint(signal.Time, labelPrice), "50");
             if (label == null) return;
             label.Color = Color.Red;
             label.Size = 9;
             label.HStyle = ETextStyleH.Right;
-            label.VStyle = direction > 0 ? ETextStyleV.Below : ETextStyleV.Above;
+            label.VStyle = signal.Direction > 0 ? ETextStyleV.Below : ETextStyleV.Above;
             m_DisplayDrawings.Add(label);
         }
 

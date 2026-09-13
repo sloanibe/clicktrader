@@ -40,6 +40,8 @@ namespace PowerLanguage.Indicator
         private XAverage m_FastEMA;
         private XAverage m_SlowEMA;
         private XAverage m_ProfileEMA;
+        private IPlotObject m_SignalPlot;
+        private PendingDisplaySignal m_PendingDisplaySignal;
         private readonly List<IDrawObject> m_DisplayDrawings =
             new List<IDrawObject>();
 
@@ -49,16 +51,29 @@ namespace PowerLanguage.Indicator
             DisplayPBLevel = EPBDisplayLevel.PB2;
         }
 
+        private class PendingDisplaySignal
+        {
+            public int BarNumber;
+            public DateTime Time;
+            public int Direction;
+            public double Low;
+            public double High;
+            public string Label;
+        }
+
         protected override void Create()
         {
             m_FastEMA = new XAverage(this);
             m_SlowEMA = new XAverage(this);
             m_ProfileEMA = new XAverage(this);
+            m_SignalPlot = AddPlot(new PlotAttributes("PB Bounce", EPlotShapes.Point,
+                Color.DodgerBlue, Color.Empty, 10, 0, true));
         }
 
         protected override void StartCalc()
         {
             ClearDisplayDrawings();
+            m_PendingDisplaySignal = null;
             m_FastEMA.Length = FastEmaLength;
             m_FastEMA.Price = Bars.Close;
             m_SlowEMA.Length = SlowEmaLength;
@@ -69,9 +84,11 @@ namespace PowerLanguage.Indicator
 
         protected override void CalcBar()
         {
+            m_SignalPlot.Set(Double.NaN);
             if (!ShowDisplay)
             {
                 ClearDisplayDrawings();
+                m_PendingDisplaySignal = null;
                 return;
             }
 
@@ -81,6 +98,7 @@ namespace PowerLanguage.Indicator
 
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize <= 0) tickSize = 0.25;
+            DrawPendingArrowIfTimestampIsUnique(tickSize);
 
             // PB1/PB0 continuations are governed only by their directional
             // 8-EMA rule, not the general PB 24-EMA/lead-in filters.
@@ -469,35 +487,49 @@ namespace PowerLanguage.Indicator
 
         private void DrawPB1Label(int direction, int bodyTicks, double tickSize)
         {
-            // Blue keeps the PB bounce family readable in either direction.
-            // DrwArrow uses false for an up arrow and true for a down arrow.
-            double arrowPrice = direction > 0
-                ? Bars.Low[0] - (2 * tickSize)
-                : Bars.High[0] + (2 * tickSize);
-            IArrowObject arrow = DrwArrow.Create(
-                new ChartPoint(Bars.Time[0], arrowPrice), direction < 0);
+            // A plot is bar-indexed, so it remains attached to the correct
+            // range bar when several bars share an exchange timestamp.
+            m_SignalPlot.Set(direction > 0
+                ? Bars.Low[0] - (3 * tickSize)
+                : Bars.High[0] + (3 * tickSize));
+            m_PendingDisplaySignal = new PendingDisplaySignal
+            {
+                BarNumber = Bars.CurrentBar,
+                Time = Bars.Time[0],
+                Direction = direction,
+                Low = Bars.Low[0],
+                High = Bars.High[0],
+                Label = "PB" + GetPBDisplayLevel(GetPinBarRangeTicks(tickSize), bodyTicks).ToString()
+            };
+        }
+
+        private void DrawPendingArrowIfTimestampIsUnique(double tickSize)
+        {
+            PendingDisplaySignal signal = m_PendingDisplaySignal;
+            if (signal == null || Bars.CurrentBar <= signal.BarNumber) return;
+            bool isUnique = Bars.CurrentBar == signal.BarNumber + 1 &&
+                Bars.Time[0] != signal.Time && Bars.Time[2] != signal.Time;
+            m_PendingDisplaySignal = null;
+            if (!isUnique) return;
+            double arrowPrice = signal.Direction > 0 ? signal.Low - (2 * tickSize)
+                                                     : signal.High + (2 * tickSize);
+            IArrowObject arrow = DrwArrow.Create(new ChartPoint(signal.Time, arrowPrice),
+                                                  signal.Direction < 0);
             if (arrow != null)
             {
                 arrow.Color = Color.DodgerBlue;
                 arrow.Size = 4;
                 m_DisplayDrawings.Add(arrow);
             }
-
-            // Preserve the same horizontal anchor as the arrow, but put the
-            // text beyond it vertically so it cannot cover the arrowhead.
-            double labelPrice = direction > 0
-                ? Bars.Low[0] - (4 * tickSize)
-                : Bars.High[0] + (4 * tickSize);
-            ITextObject label = DrwText.Create(
-                new ChartPoint(Bars.Time[0], labelPrice),
-                "PB" + GetPBDisplayLevel(GetPinBarRangeTicks(tickSize),
-                                           bodyTicks).ToString());
+            double labelPrice = signal.Direction > 0 ? signal.Low - (4 * tickSize)
+                                                     : signal.High + (4 * tickSize);
+            ITextObject label = DrwText.Create(new ChartPoint(signal.Time, labelPrice),
+                                                signal.Label);
             if (label == null) return;
-
             label.Color = Color.DodgerBlue;
             label.Size = 9;
             label.HStyle = ETextStyleH.Center;
-            label.VStyle = direction > 0 ? ETextStyleV.Below : ETextStyleV.Above;
+            label.VStyle = signal.Direction > 0 ? ETextStyleV.Below : ETextStyleV.Above;
             m_DisplayDrawings.Add(label);
         }
 

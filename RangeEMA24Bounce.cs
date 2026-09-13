@@ -46,13 +46,10 @@ namespace PowerLanguage.Indicator
         private XAverage m_FastEMA;
         private XAverage m_SlowEMA;
         private XAverage m_ProfileEMA;
+        private IPlotObject m_SignalPlot;
+        private PendingDisplaySignal m_PendingDisplaySignal;
         private readonly List<IDrawObject> m_DisplayDrawings =
             new List<IDrawObject>();
-        private readonly List<IDrawObject> m_LastSignalDrawings =
-            new List<IDrawObject>();
-        private readonly HashSet<DateTime> m_AmbiguousDrawingTimes =
-            new HashSet<DateTime>();
-        private DateTime m_LastSignalTime = DateTime.MinValue;
         private bool m_VirtualTradeActive;
         private int m_VirtualTradeDirection;
         private double m_VirtualTradeEntryPrice;
@@ -77,6 +74,15 @@ namespace PowerLanguage.Indicator
             public bool BarColorPass;
         }
 
+        private class PendingDisplaySignal
+        {
+            public int BarNumber;
+            public DateTime Time;
+            public int Direction;
+            public double Low;
+            public double High;
+        }
+
         public RangeEMA24Bounce(object ctx) : base(ctx)
         {
             ShowDisplay = true;
@@ -87,14 +93,14 @@ namespace PowerLanguage.Indicator
             m_FastEMA = new XAverage(this);
             m_SlowEMA = new XAverage(this);
             m_ProfileEMA = new XAverage(this);
+            m_SignalPlot = AddPlot(new PlotAttributes("24 EMA Bounce", EPlotShapes.Point,
+                Color.DarkViolet, Color.Empty, 10, 0, true));
         }
 
         protected override void StartCalc()
         {
             ClearDisplayDrawings();
-            m_LastSignalDrawings.Clear();
-            m_AmbiguousDrawingTimes.Clear();
-            m_LastSignalTime = DateTime.MinValue;
+            m_PendingDisplaySignal = null;
             ResetVirtualTrade();
             m_FastEMA.Length = FastEmaLength;
             m_FastEMA.Price = Bars.Close;
@@ -106,9 +112,11 @@ namespace PowerLanguage.Indicator
 
         protected override void CalcBar()
         {
+            m_SignalPlot.Set(Double.NaN);
             if (!ShowDisplay)
             {
                 ClearDisplayDrawings();
+                m_PendingDisplaySignal = null;
                 return;
             }
 
@@ -117,16 +125,9 @@ namespace PowerLanguage.Indicator
             if (Bars.Status != EBarState.Close ||
                 Bars.CurrentBar < SlopeBars + SlopeLookbackBars) return;
 
-            // A ChartPoint is time based.  If two completed range bars share
-            // the exact timestamp, MultiCharts can attach a drawing created
-            // for the first one to the other bar.  Remove a just-created
-            // marker for that timestamp and suppress the whole ambiguous
-            // group; a missing rare marker is preferable to a false one.
-            if (Bars.Time[0] == Bars.Time[1])
-                SuppressAmbiguousTimestamp(Bars.Time[0]);
-
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize <= 0) tickSize = 0.25;
+            DrawPendingArrowIfTimestampIsUnique(tickSize);
 
             BounceDiagnostic diagnostic = BuildDiagnostic(tickSize);
             if (!diagnostic.SeparationPass || !diagnostic.SlopePass ||
@@ -135,9 +136,8 @@ namespace PowerLanguage.Indicator
                 !HasRequiredEmaFan(diagnostic.Direction, tickSize))
                 return;
 
-            if (m_AmbiguousDrawingTimes.Contains(Bars.Time[0])) return;
-
             DrawBounceArrow(diagnostic.Direction, tickSize);
+            QueueDisplayArrow(diagnostic.Direction);
         }
 
         private void StartVirtualTrade(int direction, double entryPrice)
@@ -328,51 +328,47 @@ namespace PowerLanguage.Indicator
 
         private void DrawBounceArrow(int direction, double tickSize)
         {
-            m_LastSignalDrawings.Clear();
-            m_LastSignalTime = Bars.Time[0];
-            // Purple identifies the 24-EMA bounce family in either direction;
-            // DrwArrow uses false for an up arrow and true for a down arrow.
-            double price = direction > 0
-                ? Bars.Low[0] - (2 * tickSize)
-                : Bars.High[0] + (2 * tickSize);
-            IArrowObject arrow = DrwArrow.Create(
-                new ChartPoint(Bars.Time[0], price), direction < 0);
+            m_SignalPlot.Set(direction > 0
+                ? Bars.Low[0] - (3 * tickSize)
+                : Bars.High[0] + (3 * tickSize));
+        }
+
+        private void QueueDisplayArrow(int direction)
+        {
+            m_PendingDisplaySignal = new PendingDisplaySignal
+            {
+                BarNumber = Bars.CurrentBar, Time = Bars.Time[0], Direction = direction,
+                Low = Bars.Low[0], High = Bars.High[0]
+            };
+        }
+
+        private void DrawPendingArrowIfTimestampIsUnique(double tickSize)
+        {
+            PendingDisplaySignal signal = m_PendingDisplaySignal;
+            if (signal == null || Bars.CurrentBar <= signal.BarNumber) return;
+            bool isUnique = Bars.CurrentBar == signal.BarNumber + 1 &&
+                Bars.Time[0] != signal.Time && Bars.Time[2] != signal.Time;
+            m_PendingDisplaySignal = null;
+            if (!isUnique) return;
+            double arrowPrice = signal.Direction > 0 ? signal.Low - (2 * tickSize)
+                                                     : signal.High + (2 * tickSize);
+            IArrowObject arrow = DrwArrow.Create(new ChartPoint(signal.Time, arrowPrice),
+                                                  signal.Direction < 0);
             if (arrow != null)
             {
                 arrow.Color = Color.DarkViolet;
                 arrow.Size = 4;
                 m_DisplayDrawings.Add(arrow);
-                m_LastSignalDrawings.Add(arrow);
             }
-
-            double labelPrice = direction > 0
-                ? Bars.Low[0] - (4 * tickSize)
-                : Bars.High[0] + (4 * tickSize);
-            ITextObject label = DrwText.Create(
-                new ChartPoint(Bars.Time[0], labelPrice), "24");
+            double labelPrice = signal.Direction > 0 ? signal.Low - (4 * tickSize)
+                                                     : signal.High + (4 * tickSize);
+            ITextObject label = DrwText.Create(new ChartPoint(signal.Time, labelPrice), "24");
             if (label == null) return;
-
             label.Color = Color.DarkViolet;
             label.Size = 9;
-            label.HStyle = ETextStyleH.Right;
-            label.VStyle = direction > 0 ? ETextStyleV.Below : ETextStyleV.Above;
+            label.HStyle = ETextStyleH.Center;
+            label.VStyle = signal.Direction > 0 ? ETextStyleV.Below : ETextStyleV.Above;
             m_DisplayDrawings.Add(label);
-            m_LastSignalDrawings.Add(label);
-        }
-
-        private void SuppressAmbiguousTimestamp(DateTime time)
-        {
-            if (!m_AmbiguousDrawingTimes.Add(time)) return;
-            if (m_LastSignalTime != time) return;
-            foreach (IDrawObject drawing in m_LastSignalDrawings)
-            {
-                if (drawing == null) continue;
-                try { drawing.Delete(); }
-                catch { }
-                m_DisplayDrawings.Remove(drawing);
-            }
-            m_LastSignalDrawings.Clear();
-            m_LastSignalTime = DateTime.MinValue;
         }
 
         private double GetAngle(double valueCurrent, double valueOld,
@@ -392,7 +388,6 @@ namespace PowerLanguage.Indicator
                 catch { }
             }
             m_DisplayDrawings.Clear();
-            m_LastSignalDrawings.Clear();
         }
 
         protected override void Destroy()

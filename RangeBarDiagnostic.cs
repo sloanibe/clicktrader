@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Globalization;
 using System.Windows.Forms;
 using System.Runtime.InteropServices;
 using PowerLanguage;
@@ -29,7 +30,7 @@ namespace PowerLanguage.Indicator
         private const double PBMinimumSeparationTicks = 3.0;
         private const double PBMinimumFastSlopeDegrees = 20.0;
         private const double Ema8MinimumSeparationTicks = 4.0;
-        private const double Ema8MinimumFastSlopeDegrees = 40.0;
+        private const double Ema8MinimumFastSlopeDegrees = 39.0;
         private const double Ema8MinimumSlowSlopeDegrees = 39.0;
         private const double Ema8StrongOneBarFastSlopeDegrees = 50.0;
         private const double Ema8StrongOneBarSlowSlopeDegrees = 40.0;
@@ -59,6 +60,7 @@ namespace PowerLanguage.Indicator
         private const double Ema50MinimumRecentTrendSlopeDegrees = 12.0;
         private const int Ema50TrendSlopeLookbackBars = 3;
         private const double Ema50MinimumSlowTrendSeparationBarFraction = 0.48;
+        private const int MaximumPerBarDetailsInWindow = 25;
 
         private XAverage m_FastEMA;
         private XAverage m_SlowEMA;
@@ -82,6 +84,13 @@ namespace PowerLanguage.Indicator
         private string m_ActiveRangeExportPath = "";
 
         [Input] public string ExportDirectory { get; set; }
+        // Forward outcomes are deliberately measured from the signal-bar close
+        // and begin on the next completed range bar.  This makes the exported
+        // labels deterministic from OHLC data; they are research labels, not
+        // a claim about an intrabar live-order fill.
+        [Input] public int OutcomeHorizonBars { get; set; }
+        [Input] public double OutcomeTargetTicks { get; set; }
+        [Input] public double OutcomeStopTicks { get; set; }
 
         private class DiagnosticSnapshot
         {
@@ -91,6 +100,12 @@ namespace PowerLanguage.Indicator
             public double FastEma, SlowEma, TrendEma;
             public double FastSlope, SlowSlope, TrendSlope;
             public double Separation824, Separation850, Separation2450;
+            public int TrendDirection;
+            public double RangeTicks;
+            public double LowToEma8Ticks, HighToEma8Ticks, CloseToEma8Ticks;
+            public double LowToEma24Ticks, HighToEma24Ticks, CloseToEma24Ticks;
+            public double LowToEma50Ticks, HighToEma50Ticks, CloseToEma50Ticks;
+            public bool CrossesEma8, CrossesEma24, CrossesEma50;
             public bool BullishOrder, BearishOrder;
             public bool CompactShortPB, CompactLongPB, GeneralPB;
             public bool Ema8Bounce, Ema24Bounce, Ema50Bounce;
@@ -101,6 +116,9 @@ namespace PowerLanguage.Indicator
         public RangeBarDiagnostic(object ctx) : base(ctx)
         {
             ExportDirectory = @"C:\rangebar_diagnostics";
+            OutcomeHorizonBars = 12;
+            OutcomeTargetTicks = 5.0;
+            OutcomeStopTicks = 10.0;
         }
 
         protected override void Create()
@@ -288,6 +306,21 @@ namespace PowerLanguage.Indicator
                                   result.SlowEma > result.TrendEma;
             result.BearishOrder = result.FastEma < result.SlowEma &&
                                   result.SlowEma < result.TrendEma;
+            result.TrendDirection = result.FastEma > result.SlowEma ? 1 :
+                                    result.FastEma < result.SlowEma ? -1 : 0;
+            result.RangeTicks = Math.Abs(result.High - result.Low) / tickSize;
+            result.LowToEma8Ticks = (result.Low - result.FastEma) / tickSize;
+            result.HighToEma8Ticks = (result.High - result.FastEma) / tickSize;
+            result.CloseToEma8Ticks = (result.Close - result.FastEma) / tickSize;
+            result.LowToEma24Ticks = (result.Low - result.SlowEma) / tickSize;
+            result.HighToEma24Ticks = (result.High - result.SlowEma) / tickSize;
+            result.CloseToEma24Ticks = (result.Close - result.SlowEma) / tickSize;
+            result.LowToEma50Ticks = (result.Low - result.TrendEma) / tickSize;
+            result.HighToEma50Ticks = (result.High - result.TrendEma) / tickSize;
+            result.CloseToEma50Ticks = (result.Close - result.TrendEma) / tickSize;
+            result.CrossesEma8 = result.Low <= result.FastEma && result.High >= result.FastEma;
+            result.CrossesEma24 = result.Low <= result.SlowEma && result.High >= result.SlowEma;
+            result.CrossesEma50 = result.Low <= result.TrendEma && result.High >= result.TrendEma;
             result.Report = report;
 
             int tail, body;
@@ -332,6 +365,8 @@ namespace PowerLanguage.Indicator
             int emaDirection = GetTrendDirection();
             double bestFast = GetBestDirectionalSlope(m_FastEMA, emaDirection, tickSize);
             double bestSlow = GetBestDirectionalSlope(m_SlowEMA, emaDirection, tickSize);
+            double currentFast = GetAngle(m_FastEMA[0], m_FastEMA[SlopeBars],
+                                          SlopeBars, tickSize);
             double lead = emaDirection > 0 ? bestFast - bestSlow :
                           emaDirection < 0 ? Math.Abs(bestFast) - Math.Abs(bestSlow) : 0;
             bool crossesFast = Bars.Low[0] <= result.FastEma && Bars.High[0] >= result.FastEma;
@@ -339,7 +374,6 @@ namespace PowerLanguage.Indicator
                                     emaDirection < 0 ? (Bars.High[0] - result.FastEma) / tickSize : 0;
             double penetration = Math.Round(rawPenetration * 2.0) / 2.0;
             bool twoBarPullback = HasTwoBarCounterTrendEma8Pullback(emaDirection);
-            bool strongOneBarRejection = HasStrongOneBarEma8Rejection(emaDirection, tickSize);
             bool shallowTouch = crossesFast && rawPenetration >= 0 &&
                                 rawPenetration < Ema8MinimumPenetrationTicks &&
                                 twoBarPullback;
@@ -356,7 +390,7 @@ namespace PowerLanguage.Indicator
                 crossesFast &&
                 ((penetration >= Ema8MinimumPenetrationTicks &&
                   penetration <= Ema8MaximumPenetrationTicks) || shallowTouch) &&
-                (twoBarPullback || strongOneBarRejection) &&
+                twoBarPullback &&
                 HasRequiredEmaFanOrStrong8To50Separation(emaDirection, tickSize) &&
                 closeFastSide && color &&
                 GetLocalDisplacement(emaDirection, tickSize) >= 1.0;
@@ -436,9 +470,11 @@ namespace PowerLanguage.Indicator
             text.AppendFormat("Signals: compact long PB {0}, compact short PB {1}, " +
                 "general PB {2}, 8 EMA {3}, 24 EMA {4}, 50 EMA {5}\n\n", compactLong,
                 compactShort, generalPB, ema8, ema24, ema50);
-            text.AppendLine("PER-BAR RESULTS");
+            text.AppendLine("PER-BAR RESULTS (first " + MaximumPerBarDetailsInWindow + " bars; full data is in the CSV export)");
+            int displayedSnapshots = 0;
             foreach (DiagnosticSnapshot snapshot in snapshots)
             {
+                if (displayedSnapshots++ >= MaximumPerBarDetailsInWindow) break;
                 text.AppendFormat("{0} [bar {1}]: OHLC {2:F2}/{3:F2}/{4:F2}/{5:F2} | " +
                     "8/24/50 {6:F2}/{7:F2}/{8:F2} | slopes {9:F1}/{10:F1}/{11:F1} | " +
                     "PB L/S/G {12}/{13}/{14} | 8E/24E/50E {15}/{16}/{17}\n",
@@ -457,6 +493,9 @@ namespace PowerLanguage.Indicator
                 text.Append(snapshot.Report);
                 text.AppendLine();
             }
+            if (snapshots.Count > MaximumPerBarDetailsInWindow)
+                text.AppendLine("... " + (snapshots.Count - MaximumPerBarDetailsInWindow) +
+                    " additional bars omitted from this window; they remain in the CSV export.");
 
             m_ActiveRangeSnapshots = snapshots;
             m_ActiveRangeReport = text.ToString();
@@ -464,7 +503,7 @@ namespace PowerLanguage.Indicator
                 m_NotesText == null ? "" : m_NotesText.Text, "");
             exportPath = m_ActiveRangeExportPath;
             text.AppendLine();
-            text.AppendLine(exportPath.Length > 0 ? "Report exported: " + exportPath :
+            text.AppendLine(exportPath.Length > 0 ? "Report and analysis CSV exported: " + exportPath :
                 "Report export failed; see the diagnostic output log for the error.");
             text.AppendLine("Selection cleared automatically. Alt+D-click a new first bar to begin another range.");
             return text.ToString();
@@ -545,6 +584,8 @@ namespace PowerLanguage.Indicator
         {
             double bestFast = GetBestDirectionalSlope(m_FastEMA, direction, tickSize);
             double bestSlow = GetBestDirectionalSlope(m_SlowEMA, direction, tickSize);
+            double currentFast = GetAngle(m_FastEMA[0], m_FastEMA[SlopeBars],
+                                          SlopeBars, tickSize);
             double lead = direction > 0 ? bestFast - bestSlow :
                           direction < 0 ? Math.Abs(bestFast) - Math.Abs(bestSlow) : 0;
             bool separationPass = direction != 0 &&
@@ -563,7 +604,6 @@ namespace PowerLanguage.Indicator
                 comparablePenetration >= Ema8MinimumPenetrationTicks &&
                 comparablePenetration <= Ema8MaximumPenetrationTicks;
             bool twoBarPullback = HasTwoBarCounterTrendEma8Pullback(direction);
-            bool strongOneBarRejection = HasStrongOneBarEma8Rejection(direction, tickSize);
             bool shallowTouchPass = crosses && penetration >= 0 &&
                                     penetration < Ema8MinimumPenetrationTicks &&
                                     twoBarPullback;
@@ -576,13 +616,13 @@ namespace PowerLanguage.Indicator
             bool displacementPass = displacement >= 1.0;
             bool emaFanPass = HasRequiredEmaFan(direction, tickSize);
             bool result = separationPass && fastPass && slowPass && leadPass &&
-                          (twoBarPullback || strongOneBarRejection) && emaFanPass &&
+                          twoBarPullback && emaFanPass &&
                           penetrationPass && closeSidePass && colorPass &&
                           displacementPass;
             text.AppendLine("8 EMA BOUNCE");
-            text.AppendFormat("Best slopes 8/24: {0:F1}° / {1:F1}° | lead {2:F1}°\n",
-                bestFast, bestSlow, lead);
-            text.AppendFormat("Separation >= {0:F1}t [{1}], 8 slope >= {2:F0}° [{3}], " +
+            text.AppendFormat("Current/best 8 slope: {0:F1}° / {1:F1}° | best 24 slope {2:F1}° | lead {3:F1}°\n",
+                currentFast, bestFast, bestSlow, lead);
+            text.AppendFormat("Separation >= {0:F1}t [{1}], best 8 slope >= {2:F0}° [{3}], " +
                 "24 slope >= {4:F0}° [{5}], slope lead informational [{6}]\n",
                 Ema8MinimumSeparationTicks, Pass(separationPass),
                 Ema8MinimumFastSlopeDegrees, Pass(fastPass),
@@ -591,9 +631,9 @@ namespace PowerLanguage.Indicator
                 "close side [{3}], color [{4}], displacement {5:F2}t [{6}]\n",
                 Pass(crosses), comparablePenetration, Pass(penetrationPass),
                 Pass(closeSidePass), Pass(colorPass), displacement, Pass(displacementPass));
-            text.AppendFormat("Two countertrend bars [{0}] OR strong one-bar rejection " +
-                "(>=75% prior-range recovery) [{1}], shallow touch (<1t) [{2}]\n",
-                Pass(twoBarPullback), Pass(strongOneBarRejection), Pass(shallowTouchPass));
+            text.AppendFormat("APMA structure: two countertrend bars preceded by two trend bars [{0}], " +
+                "shallow touch (<1t) [{1}]\n", Pass(twoBarPullback),
+                Pass(shallowTouchPass));
             text.AppendFormat("EMA fan OR 8/50 >= two bars (with order + 8/24 gap) [{0}]\n",
                 Pass(emaFanPass));
             text.AppendFormat("8 EMA BOUNCE RESULT: [{0}]\n", Pass(result));
@@ -1141,8 +1181,10 @@ namespace PowerLanguage.Indicator
         {
             return direction > 0
                 ? Bars.Close[1] < Bars.Open[1] && Bars.Close[2] < Bars.Open[2]
+                  && Bars.Close[3] > Bars.Open[3] && Bars.Close[4] > Bars.Open[4]
                 : direction < 0 && Bars.Close[1] > Bars.Open[1] &&
-                  Bars.Close[2] > Bars.Open[2];
+                  Bars.Close[2] > Bars.Open[2] && Bars.Close[3] < Bars.Open[3] &&
+                  Bars.Close[4] < Bars.Open[4];
         }
 
         private bool HasStrongOneBarEma8Rejection(int direction, double tickSize)
@@ -1289,26 +1331,8 @@ namespace PowerLanguage.Indicator
                     ? Path.Combine(directory, "RangeBarDiagnostics_" +
                         DateTime.Now.ToString("yyyy-MM-dd_HHmmss") + ".md")
                     : existingPath;
-                StringBuilder csv = new StringBuilder();
-                csv.AppendLine("BarNumber,Time,Open,High,Low,Close,EMA8,EMA24,EMA50," +
-                    "Slope8,Slope24,Slope50,Separation8_24,Separation8_50," +
-                    "Separation24_50,BullishOrder,BearishOrder,CompactLongPB," +
-                    "CompactShortPB,GeneralPB,Ema8Bounce,Ema24Bounce,Ema50Bounce");
-                foreach (DiagnosticSnapshot snapshot in snapshots)
-                {
-                    csv.AppendFormat("{0},{1:yyyy-MM-dd HH:mm:ss.fff},{2:F4},{3:F4},{4:F4},{5:F4}," +
-                        "{6:F4},{7:F4},{8:F4},{9:F4},{10:F4},{11:F4},{12:F4},{13:F4}," +
-                        "{14:F4},{15},{16},{17},{18},{19},{20},{21},{22}\r\n",
-                        snapshot.BarNumber, snapshot.Time, snapshot.Open, snapshot.High,
-                        snapshot.Low, snapshot.Close, snapshot.FastEma, snapshot.SlowEma,
-                        snapshot.TrendEma, snapshot.FastSlope, snapshot.SlowSlope,
-                        snapshot.TrendSlope, snapshot.Separation824, snapshot.Separation850,
-                        snapshot.Separation2450, snapshot.BullishOrder,
-                        snapshot.BearishOrder, snapshot.CompactLongPB,
-                        snapshot.CompactShortPB, snapshot.GeneralPB,
-                        snapshot.Ema8Bounce, snapshot.Ema24Bounce,
-                        snapshot.Ema50Bounce);
-                }
+                string csvPath = Path.ChangeExtension(path, ".csv");
+                string csv = BuildAnalysisCsv(snapshots);
                 StringBuilder document = new StringBuilder();
                 document.AppendLine("# Range Bar Diagnostic");
                 document.AppendLine();
@@ -1321,11 +1345,16 @@ namespace PowerLanguage.Indicator
                 document.AppendLine(m_ActiveRangeReport);
                 document.AppendLine("```");
                 document.AppendLine();
-                document.AppendLine("## Per-Bar Data (CSV)");
-                document.AppendLine("```csv");
-                document.Append(csv.ToString());
-                document.AppendLine("```");
+                document.AppendLine("## Analysis Dataset");
+                document.AppendLine("The complete per-bar dataset is written beside this report as:");
+                document.AppendLine();
+                document.AppendLine("`" + Path.GetFileName(csvPath) + "`");
+                document.AppendLine();
+                document.AppendLine("Forward outcomes use the signal-bar close as the hypothetical entry, " +
+                    "evaluate the next completed bars only, and treat a bar touching both target " +
+                    "and stop as stop-first. They are research labels, not simulated live fills.");
                 File.WriteAllText(path, document.ToString());
+                File.WriteAllText(csvPath, csv.ToString());
                 return path;
             }
             catch (Exception exception)
@@ -1334,6 +1363,115 @@ namespace PowerLanguage.Indicator
                                  exception.Message);
                 return "";
             }
+        }
+
+        private string BuildAnalysisCsv(List<DiagnosticSnapshot> snapshots)
+        {
+            StringBuilder csv = new StringBuilder();
+            csv.AppendLine("Contract,BarNumber,Time,Open,High,Low,Close,RangeTicks,TrendDirection," +
+                "EMA8,EMA24,EMA50,Slope8,Slope24,Slope50,Separation8_24Ticks," +
+                "Separation8_50Ticks,Separation24_50Ticks,LowToEMA8Ticks,HighToEMA8Ticks," +
+                "CloseToEMA8Ticks,LowToEMA24Ticks,HighToEMA24Ticks,CloseToEMA24Ticks," +
+                "LowToEMA50Ticks,HighToEMA50Ticks,CloseToEMA50Ticks,CrossesEMA8,CrossesEMA24," +
+                "CrossesEMA50,BullishOrder,BearishOrder,CompactLongPB,CompactShortPB,GeneralPB," +
+                "Ema8Bounce,Ema24Bounce,Ema50Bounce,OutcomeDirection,OutcomeEntryPrice," +
+                "OutcomeHorizonBars,OutcomeBarsAvailable,OutcomeComplete,ForwardMFETicks," +
+                "ForwardMAETicks,TargetTicks,StopTicks,TargetStopResult");
+
+            for (int index = 0; index < snapshots.Count; index++)
+            {
+                DiagnosticSnapshot snapshot = snapshots[index];
+                int direction = snapshot.TrendDirection;
+                ForwardOutcome outcome = GetForwardOutcome(snapshots, index, direction);
+                csv.AppendFormat(CultureInfo.InvariantCulture,
+                    "{0},{1},{2:yyyy-MM-dd HH:mm:ss.fff},{3},{4},{5},{6},{7},{8},{9},{10},{11}," +
+                    "{12},{13},{14},{15},{16},{17},{18},{19},{20},{21},{22},{23},{24},{25},{26}," +
+                    "{27},{28},{29},{30},{31},{32},{33},{34},{35},{36},{37},{38},{39},{40},{41},{42}," +
+                    "{43},{44},{45},{46},{47}\r\n",
+                    CsvText(Bars.Info.Name), snapshot.BarNumber, snapshot.Time,
+                    CsvNumber(snapshot.Open), CsvNumber(snapshot.High), CsvNumber(snapshot.Low),
+                    CsvNumber(snapshot.Close), CsvNumber(snapshot.RangeTicks), snapshot.TrendDirection,
+                    CsvNumber(snapshot.FastEma), CsvNumber(snapshot.SlowEma), CsvNumber(snapshot.TrendEma),
+                    CsvNumber(snapshot.FastSlope), CsvNumber(snapshot.SlowSlope), CsvNumber(snapshot.TrendSlope),
+                    CsvNumber(snapshot.Separation824), CsvNumber(snapshot.Separation850), CsvNumber(snapshot.Separation2450),
+                    CsvNumber(snapshot.LowToEma8Ticks), CsvNumber(snapshot.HighToEma8Ticks), CsvNumber(snapshot.CloseToEma8Ticks),
+                    CsvNumber(snapshot.LowToEma24Ticks), CsvNumber(snapshot.HighToEma24Ticks), CsvNumber(snapshot.CloseToEma24Ticks),
+                    CsvNumber(snapshot.LowToEma50Ticks), CsvNumber(snapshot.HighToEma50Ticks), CsvNumber(snapshot.CloseToEma50Ticks),
+                    snapshot.CrossesEma8, snapshot.CrossesEma24, snapshot.CrossesEma50,
+                    snapshot.BullishOrder, snapshot.BearishOrder, snapshot.CompactLongPB,
+                    snapshot.CompactShortPB, snapshot.GeneralPB, snapshot.Ema8Bounce,
+                    snapshot.Ema24Bounce, snapshot.Ema50Bounce, outcome.Direction,
+                    CsvNumber(outcome.EntryPrice), outcome.HorizonBars, outcome.BarsAvailable,
+                    outcome.Complete, CsvNumber(outcome.MfeTicks), CsvNumber(outcome.MaeTicks),
+                    CsvNumber(outcome.TargetTicks), CsvNumber(outcome.StopTicks), outcome.Result);
+            }
+            return csv.ToString();
+        }
+
+        private class ForwardOutcome
+        {
+            public int Direction;
+            public double EntryPrice;
+            public int HorizonBars;
+            public int BarsAvailable;
+            public bool Complete;
+            public double MfeTicks;
+            public double MaeTicks;
+            public double TargetTicks;
+            public double StopTicks;
+            public string Result;
+        }
+
+        private ForwardOutcome GetForwardOutcome(List<DiagnosticSnapshot> snapshots,
+                                                  int index, int direction)
+        {
+            ForwardOutcome result = new ForwardOutcome();
+            result.Direction = direction;
+            result.EntryPrice = snapshots[index].Close;
+            result.HorizonBars = Math.Max(1, OutcomeHorizonBars);
+            result.TargetTicks = Math.Max(0, OutcomeTargetTicks);
+            result.StopTicks = Math.Max(0, OutcomeStopTicks);
+            result.BarsAvailable = Math.Min(result.HorizonBars, snapshots.Count - index - 1);
+            result.Complete = result.BarsAvailable == result.HorizonBars;
+            result.MfeTicks = 0;
+            result.MaeTicks = 0;
+            result.Result = direction == 0 ? "NO_DIRECTION" :
+                            result.Complete ? "NONE" : "INCOMPLETE";
+            if (direction == 0) return result;
+
+            // All values are recorded in ticks against the same entry price.
+            // The range-bar OHLC sequence is unknown, so when both exits occur
+            // in a bar the conservative research label is stop-first.
+            double tickSize = 0.25;
+            if (Bars.Info.MinMove > 0 && Bars.Info.PriceScale > 0)
+                tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            for (int forward = 1; forward <= result.BarsAvailable; forward++)
+            {
+                DiagnosticSnapshot future = snapshots[index + forward];
+                double favorable = direction > 0
+                    ? (future.High - result.EntryPrice) / tickSize
+                    : (result.EntryPrice - future.Low) / tickSize;
+                double adverse = direction > 0
+                    ? (future.Low - result.EntryPrice) / tickSize
+                    : (result.EntryPrice - future.High) / tickSize;
+                result.MfeTicks = Math.Max(result.MfeTicks, favorable);
+                result.MaeTicks = Math.Min(result.MaeTicks, adverse);
+                bool hitTarget = result.TargetTicks > 0 && favorable >= result.TargetTicks;
+                bool hitStop = result.StopTicks > 0 && adverse <= -result.StopTicks;
+                if (hitStop) { result.Result = hitTarget ? "BOTH_STOP_FIRST" : "STOP"; break; }
+                if (hitTarget) { result.Result = "TARGET"; break; }
+            }
+            return result;
+        }
+
+        private string CsvNumber(double value)
+        {
+            return value.ToString("F6", CultureInfo.InvariantCulture);
+        }
+
+        private string CsvText(string value)
+        {
+            return "\"" + (value ?? "").Replace("\"", "\"\"") + "\"";
         }
 
         private void ShowDiagnosticWindow(string text, string title)
