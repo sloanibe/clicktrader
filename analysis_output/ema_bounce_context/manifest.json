@@ -1,0 +1,15 @@
+{
+  "diagnostic": "/mnt/c/rangebar_diagnostics/RangeBarDiagnostics_2026-09-13_122732.csv",
+  "outcomes": "/home/mark/dev/projects/clicktrader/analysis_output/ema_signal_stop_sweep_outcomes.csv",
+  "diagnostic_sha256": "edbc4db777a0d796305f9bc2e3b2083db2f2a4d79772e60823324a535c93bdac",
+  "outcomes_sha256": "7c4c17f4f98b395271f7ff6e6fe7e6d6db3748a84185e26f935e83fe95505137",
+  "script_sha256": "338c452b87a0570e34bc941a077af2fefb5df7f146ccfd0f7ad8e51787ebcb38",
+  "bootstrap": 2000,
+  "seed": 190926,
+  "split": "2026-08-23 23:59:59",
+  "validated_cached_signals": 2183,
+  "ema_signals": 1983,
+  "first": "2026-08-03 16:15:55.060",
+  "last": "2026-09-11 12:54:29.248",
+  "caveat": "Previously used sample; ask-only close-entry paths; overlapping signals; NONE=0 gross"
+}

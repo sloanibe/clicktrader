@@ -2,6 +2,10 @@
 
 ## Purpose
 
+For the September 19 recommendations on nearby swing levels, pullback speed
+and depth, and eventual volume confirmation, see
+[EMA bounce context research](ema_bounce_context_research.md).
+
 Build and validate a range-bar trading system that finds a high-quality
 continuation trade early in the session. The initial business objective is not
 maximum trade frequency: it is to give the day's *first* trade a strong chance
@@ -59,9 +63,40 @@ time/session context, and a defined recovery role.
 
 The primary display now also includes a separately optimized **24-EMA bounce
 family**. It treats the slower average as a deeper corrective location, allows
-one-, two-, or three-bar pullbacks when their slope/recovery profile supports
-them, and displays those candidates as black circles. This does not replace
-the higher-frequency orange 8-EMA family.
+one- through four-bar pullbacks when their slope/recovery and signal-bar shape
+support them. The 8-EMA family
+also uses separate rejection-tail and no-tail momentum branches, including a
+selective three-bar continuation. Shape is corroborating evidence rather than
+a stand-alone signal: broad long-tail populations were not inherently better.
+This does not replace the higher-frequency 8-EMA family.
+
+An independently derived **50-EMA deep-pullback family** is also supported by
+the current contract sample. It uses the 24/50 relationship for direction,
+requires full EMA order before the correction, and applies different
+shape/slope logic to one-, two-, and three-bar pullbacks. It contributed 363
+setups not already present in the expanded 8/24 display, at a 79.06% bar-level
+target rate. Raw-tick-resolved results were 79.66% with stable chronological
+and directional splits, but it has not been incorporated into trading/order
+logic.
+
+A narrowly defined 24-EMA shallow-probe rescue is also supported. For an
+otherwise-qualified two-bar pullback that fails the two-tick close-recovery
+gate, penetration of no more than one tick produced 21/27 targets with stable
+chronological results. The evidence did not support a generic long-tail
+exception.
+
+A separate **EMA-fan momentum pin** family is supported for bars that do not
+touch an EMA. It requires a three-to-five-tick directional tail, slopes of at
+least 60/45/39 degrees across the 8/24/50 fan, adequate EMA separation, the
+entire bar at least four ticks beyond the 8 EMA, and at least two ticks of close
+extension. It produced 206 candidates at 78.64%, with 78.79% across resolved
+raw-tick paths and stable time/direction splits. Because it cannot overlap an
+EMA touch by construction, it is a genuinely additive momentum opportunity.
+
+The combined quality-bounce study presents every qualifying family as a single
+directional arrow two ticks beyond the signal bar: lime up arrows for long
+signals and red down arrows for short signals. It is display-only and remains
+outside trading/order logic.
 
 The current protective-loss research assumption is **10 ticks**, equal to two
 5-tick range bars (not 10 full MES price points). For the present phase,
@@ -183,3 +218,54 @@ The goal is a simple, explainable system whose first daily trade is selective
 and repeatable. More trades, more parameters, or a more aggressive recovery
 rule are improvements only if they survive out-of-sample and tick-aware
 validation while preserving that principle.
+
+## Current momentum-pin caution
+
+The selected EMA-fan momentum-pin family requires the entire signal bar to be
+at least four ticks clear of the 8 EMA. A September 11 zero-body bearish example
+showed why visually compelling exceptions must be evaluated as populations.
+Reducing full-bar clearance to admit it broadly lowered the raw-tick hit rate
+from 78.79% to 73.43%. A tightly compensated zero-body exception lowered the
+combined rate only to 77.64%, but its incremental population split 60.00%
+development / 82.14% later. Keep that exception experimental and separately
+identified until it succeeds on new forward data; do not use the example's
+winning outcome to justify a retrospective production rule.
+
+## Current stop-loss conclusion
+
+A raw-tick sweep of all 2,183 current-display signals found no support for
+reducing the fixed ten-tick stop to seven ticks or less while retaining the
+five-tick target. Ten ticks produced 76.30% targets and +1.43 proxy ticks per
+selected signal; seven ticks produced 67.42% and +1.08. Results were stable
+across the development/later split and after a 12-bar signal lockout, and ten
+ticks remained best within every EMA family. A one-tick continuation entry and
+a signal-bar structural stop also failed. Keep ten ticks as the hard emergency
+stop unless new independent data overturns this result. Research early-failure
+exits and post-entry trade management separately rather than disguising them
+as a tighter fixed stop.
+
+## Current profit-runner conclusion
+
+Moving all entries from the fixed five-tick target to larger targets or a
+one-range-bar trail reduced average profit. EMA8, EMA24, and EMA50 bounces
+should retain the five-tick exit. Momentum pins are a plausible exception: a
+break-even floor armed at +5 followed by a completed-range-bar-close trail
+averaged +2.61 ticks over a 24-bar window versus +1.82 at the fixed target,
+with improvement in both chronological segments. The median was zero and the
+paired confidence interval included no improvement, so keep this pin-specific
+runner experimental. Its next test must be a chronological one-position-at-a-
+time simulation; independent signal paths do not account for runners blocking
+later entries or recovery opportunities.
+
+## Current time-of-day conclusion
+
+The available month does not support waiting five, ten, or fifteen minutes
+after the 06:30 Pacific/chart-time opening. In particular, the first signal
+after a ten-minute wait produced only 19 targets in 29 days, while signals in
+the first ten minutes were generally strong. The initial 06:30-06:31 minute
+was weaker and unstable; skipping only that minute produced 23/29 first-trade
+targets with a balanced development/later split. Treat a 06:31 start as the
+leading opening hypothesis, not a finalized optimum. Exploratory operating
+blocks of 06:31-06:45, 07:00-08:00, and 09:00-13:00 improved the historical
+population to 78.99%, but were selected from this sample and require forward
+and one-position-at-a-time validation before implementation.
