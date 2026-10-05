@@ -8,7 +8,8 @@ using PowerLanguage;
 namespace PowerLanguage.Indicator
 {
     // Marks the first chart bar at or after the configured session start and
-    // navigates between sessions with Left/Right Arrow plus a left-click.
+    // navigates between opening/off-hours boundaries with an arrow plus a left-click.
+    // Session inputs use the chart time zone; use Pacific time for 06:30/15:00.
     [SameAsSymbol(true)]
     [RecoverDrawings(false)]
     [MouseEvents(true)]
@@ -20,10 +21,12 @@ namespace PowerLanguage.Indicator
 
         [Input] public int SessionStartHour { get; set; }
         [Input] public int SessionStartMinute { get; set; }
+        [Input] public int OffHoursStartHour { get; set; }
+        [Input] public int OffHoursStartMinute { get; set; }
 
         private DateTime m_LastMarkedSessionDate = DateTime.MinValue;
-        private readonly List<int> m_SessionBarNumbers = new List<int>();
-        private readonly List<DateTime> m_SessionTimes = new List<DateTime>();
+        private readonly List<int> m_BoundaryBarNumbers = new List<int>();
+        private readonly List<DateTime> m_BoundaryTimes = new List<DateTime>();
         // Retain references so MultiCharts keeps all historical day labels
         // alive after the bar that created them has finished calculating.
         private readonly List<ITextObject> m_SessionDayLabels =
@@ -34,13 +37,15 @@ namespace PowerLanguage.Indicator
         {
             SessionStartHour = 6;
             SessionStartMinute = 30;
+            OffHoursStartHour = 15;
+            OffHoursStartMinute = 0;
         }
 
         protected override void StartCalc()
         {
             m_LastMarkedSessionDate = DateTime.MinValue;
-            m_SessionBarNumbers.Clear();
-            m_SessionTimes.Clear();
+            m_BoundaryBarNumbers.Clear();
+            m_BoundaryTimes.Clear();
             m_SessionDayLabels.Clear();
         }
 
@@ -53,16 +58,28 @@ namespace PowerLanguage.Indicator
                 .AddHours(SessionStartHour)
                 .AddMinutes(SessionStartMinute);
 
-            // Range bars do not necessarily print at exactly 06:30. Mark the
-            // first completed bar at or after 06:30 when the preceding bar is
-            // still before that session boundary.
-            if (currentBarTime < sessionStart || Bars.Time[1] >= sessionStart)
-                return;
-            if (m_LastMarkedSessionDate == sessionStart.Date) return;
+            DateTime offHoursStart = currentBarTime.Date
+                .AddHours(OffHoursStartHour)
+                .AddMinutes(OffHoursStartMinute);
 
-            DrawSessionLine(currentBarTime);
-            RememberSessionMarker(currentBarTime);
-            m_LastMarkedSessionDate = sessionStart.Date;
+            // Range bars need not print exactly on a boundary. Store the first
+            // completed bar crossing each boundary, in chronological order.
+            // Keep the existing day line/label only at the opening boundary.
+            if (CrossesBoundary(currentBarTime, sessionStart) &&
+                m_LastMarkedSessionDate != sessionStart.Date)
+            {
+                DrawSessionLine(currentBarTime);
+                RememberSessionMarker(currentBarTime);
+                m_LastMarkedSessionDate = sessionStart.Date;
+            }
+
+            if (CrossesBoundary(currentBarTime, offHoursStart))
+                RememberSessionMarker(currentBarTime);
+        }
+
+        private bool CrossesBoundary(DateTime currentBarTime, DateTime boundary)
+        {
+            return currentBarTime >= boundary && Bars.Time[1] < boundary;
         }
 
         private void RememberSessionMarker(DateTime sessionBarTime)
@@ -72,60 +89,49 @@ namespace PowerLanguage.Indicator
             // study's MaxBarsBack, so convert it to the absolute bar number
             // expected by ChartCommands.ScrollToBar.
             int absoluteBarNumber = Bars.CurrentBar + ExecInfo.MaxBarsBack;
-            if (m_SessionBarNumbers.Count > 0 &&
-                m_SessionBarNumbers[m_SessionBarNumbers.Count - 1] == absoluteBarNumber)
+            if (m_BoundaryBarNumbers.Count > 0 &&
+                m_BoundaryBarNumbers[m_BoundaryBarNumbers.Count - 1] == absoluteBarNumber)
                 return;
 
-            m_SessionBarNumbers.Add(absoluteBarNumber);
-            m_SessionTimes.Add(sessionBarTime);
-        }
-
-        private int FindSessionIndexAt(DateTime chartTime)
-        {
-            // Session markers are stored chronologically. The session that
-            // owns a chart location is the latest marker at or before the
-            // clicked time, including overnight bars before the next 06:30.
-            for (int index = m_SessionTimes.Count - 1; index >= 0; index--)
-            {
-                if (m_SessionTimes[index] <= chartTime) return index;
-            }
-            return -1;
+            m_BoundaryBarNumbers.Add(absoluteBarNumber);
+            m_BoundaryTimes.Add(sessionBarTime);
         }
 
         private bool NavigateToPreviousSession(DateTime chartTime)
         {
-            if (m_SessionBarNumbers.Count == 0) return false;
-
-            int currentSessionIndex = FindSessionIndexAt(chartTime);
-            if (currentSessionIndex <= 0) return false;
-
-            ScrollToSession(currentSessionIndex - 1);
-            return true;
+            // Strict comparison lets another click at a boundary move back
+            // again, instead of returning to the same marker.
+            for (int index = m_BoundaryTimes.Count - 1; index >= 0; index--)
+            {
+                if (m_BoundaryTimes[index] < chartTime)
+                {
+                    ScrollToSession(index);
+                    return true;
+                }
+            }
+            return false;
         }
 
         private bool NavigateToNextSession(DateTime chartTime)
         {
-            if (m_SessionBarNumbers.Count == 0) return false;
-
-            int currentSessionIndex = FindSessionIndexAt(chartTime);
-            // A click before the oldest known session can move forward to the
-            // first marker; otherwise advance from the clicked session.
-            int targetSessionIndex = currentSessionIndex < 0
-                ? 0
-                : currentSessionIndex + 1;
-            if (targetSessionIndex >= m_SessionBarNumbers.Count) return false;
-
-            ScrollToSession(targetSessionIndex);
-            return true;
+            for (int index = 0; index < m_BoundaryTimes.Count; index++)
+            {
+                if (m_BoundaryTimes[index] > chartTime)
+                {
+                    ScrollToSession(index);
+                    return true;
+                }
+            }
+            return false;
         }
 
         private void ScrollToSession(int sessionIndex)
         {
-            int targetBar = m_SessionBarNumbers[sessionIndex];
+            int targetBar = m_BoundaryBarNumbers[sessionIndex];
             ChartCommands.ScrollToBar(1, targetBar);
             Output.WriteLine(
                 "Range Session Navigator: ScrollToBar requested " +
-                m_SessionTimes[sessionIndex].ToString(
+                m_BoundaryTimes[sessionIndex].ToString(
                     "M/d/yyyy h:mm tt") + " at absolute bar " +
                 targetBar.ToString());
         }
@@ -151,7 +157,7 @@ namespace PowerLanguage.Indicator
             if (leftArrowHeld)
             {
                 if (!NavigateToPreviousSession(arg.point.Time))
-                    ShowChartMessage(arg.point, "NO EARLIER SESSION");
+                    ShowChartMessage(arg.point, "NO EARLIER SESSION BOUNDARY");
                 return;
             }
 
@@ -160,7 +166,7 @@ namespace PowerLanguage.Indicator
             if (rightArrowHeld)
             {
                 if (!NavigateToNextSession(arg.point.Time))
-                    ShowChartMessage(arg.point, "NO LATER SESSION");
+                    ShowChartMessage(arg.point, "NO LATER SESSION BOUNDARY");
                 return;
             }
         }

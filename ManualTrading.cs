@@ -21,8 +21,6 @@ namespace PowerLanguage.Indicator
 
         [Input] public int SessionStartHour { get; set; }
         [Input] public int SessionStartMinute { get; set; }
-        [Input] public int ProfitTargetTicks { get; set; }
-        [Input] public int MaximumLossTicks { get; set; }
         [Input] public double RoundTripCostDollars { get; set; }
 
         private sealed class BarValue
@@ -44,6 +42,7 @@ namespace PowerLanguage.Indicator
             public double EntryPrice;
             public double EntryHigh;
             public double EntryLow;
+            public int RangeTicks;
             public bool UseProfitTarget;
             public double TargetPrice;
             public double StopPrice;
@@ -76,8 +75,6 @@ namespace PowerLanguage.Indicator
         {
             SessionStartHour = 6;
             SessionStartMinute = 30;
-            ProfitTargetTicks = 8;
-            MaximumLossTicks = 16;
             RoundTripCostDollars = 0;
         }
 
@@ -125,10 +122,10 @@ namespace PowerLanguage.Indicator
                 double price = Bars.Close[0];
                 if (StopReached(m_ActiveTrade, price))
                     CloseTrade(m_ActiveTrade, currentBar, Bars.Time[0],
-                        StopFill(m_ActiveTrade, price), "16-tick stop");
+                        StopFill(m_ActiveTrade, price), "two-range-plus-one-tick stop");
                 else if (TargetReached(m_ActiveTrade, price))
                     CloseTrade(m_ActiveTrade, currentBar, Bars.Time[0],
-                        m_ActiveTrade.TargetPrice, "8-tick target");
+                        m_ActiveTrade.TargetPrice, "one-range target");
                 return;
             }
 
@@ -161,10 +158,9 @@ namespace PowerLanguage.Indicator
             bool down = IsHeld(arg.keys, Keys.Down);
             if (up == down) return;
 
-            if (ProfitTargetTicks <= 0 || MaximumLossTicks <= 0 ||
-                RoundTripCostDollars < 0)
+            if (RoundTripCostDollars < 0)
             {
-                ShowStatus(arg.point, "CHECK TARGET/STOP/COST INPUTS");
+                ShowStatus(arg.point, "CHECK COST INPUT");
                 return;
             }
 
@@ -207,6 +203,13 @@ namespace PowerLanguage.Indicator
                 }
             }
 
+            int rangeTicks = InferRangeTicks(bar.Number);
+            if (rangeTicks <= 0)
+            {
+                ShowStatus(arg.point, "CANNOT DETERMINE RANGE SIZE");
+                return;
+            }
+
             int direction = up ? 1 : -1;
             double dailyNet = GetDailyNet(sessionDate);
             ManualTrade trade = new ManualTrade();
@@ -217,9 +220,10 @@ namespace PowerLanguage.Indicator
             trade.EntryPrice = bar.Close;
             trade.EntryHigh = bar.High;
             trade.EntryLow = bar.Low;
+            trade.RangeTicks = rangeTicks;
             trade.UseProfitTarget = dailyNet >= -0.005;
-            trade.TargetPrice = bar.Close + direction * ProfitTargetTicks * m_TickSize;
-            trade.StopPrice = bar.Close - direction * MaximumLossTicks * m_TickSize;
+            trade.TargetPrice = bar.Close + direction * rangeTicks * m_TickSize;
+            trade.StopPrice = bar.Close - direction * (2.0 * rangeTicks + 1) * m_TickSize;
             trade.LastClosedBarProcessed = bar.Number;
 
             // Resolve old clicked bars against the bars already on the chart.
@@ -279,9 +283,45 @@ namespace PowerLanguage.Indicator
                 "Manual Trading: {0} @ {1:F2} on {2:yyyy-MM-dd HH:mm:ss.fff}; " +
                 "daily net at entry {3:C2}; {4}; replayed through bar {5}; {6}",
                 direction > 0 ? "LONG" : "SHORT", bar.Close, bar.Time,
-                dailyNet, trade.UseProfitTarget ? "+8/-16" :
-                "opposing close/-16", trade.LastClosedBarProcessed,
+                dailyNet, trade.UseProfitTarget ?
+                string.Format("+{0}/-{1} ticks", rangeTicks, 2L * rangeTicks + 1) :
+                string.Format("opposing close/-{0} ticks", 2L * rangeTicks + 1), trade.LastClosedBarProcessed,
                 trade.IsClosed ? "closed and tallied" : "still open"));
+        }
+
+        // Use the most common positive high-low range in the last 20
+        // completed bars at entry. Historical entries never use future bars.
+        // Ties favor the most recently seen size; forming bars are excluded.
+        private int InferRangeTicks(int entryBar)
+        {
+            const int lookback = 20;
+            Dictionary<int, int> counts = new Dictionary<int, int>();
+            List<int> recentSizes = new List<int>();
+            int first = Math.Max(m_FirstCompletedBar, entryBar - lookback + 1);
+            for (int number = entryBar; number >= first; number--)
+            {
+                BarValue bar;
+                if (!m_CompletedBars.TryGetValue(number, out bar)) continue;
+                double ticks = (bar.High - bar.Low) / m_TickSize;
+                if (Double.IsNaN(ticks) || Double.IsInfinity(ticks) ||
+                    ticks < 0.5 || ticks > Int32.MaxValue) continue;
+                int size = (int)Math.Round(ticks, MidpointRounding.AwayFromZero);
+                if (size <= 0) continue;
+                int count;
+                counts.TryGetValue(size, out count);
+                counts[size] = count + 1;
+                recentSizes.Add(size);
+            }
+
+            int bestSize = 0;
+            int bestCount = 0;
+            foreach (int size in recentSizes)
+            {
+                if (counts[size] <= bestCount) continue;
+                bestSize = size;
+                bestCount = counts[size];
+            }
+            return bestSize;
         }
 
         private void ProcessCompletedBar(ManualTrade trade, BarValue bar)
@@ -296,19 +336,19 @@ namespace PowerLanguage.Indicator
             if (StopReached(trade, bar.Open))
             {
                 CloseTrade(trade, bar.Number, bar.Time,
-                    StopFill(trade, bar.Open), "16-tick stop gap");
+                    StopFill(trade, bar.Open), "two-range-plus-one-tick stop gap");
                 return;
             }
             if (StopTouched(trade, bar))
             {
                 CloseTrade(trade, bar.Number, bar.Time,
-                    trade.StopPrice, "16-tick stop");
+                    trade.StopPrice, "two-range-plus-one-tick stop");
                 return;
             }
             if (trade.UseProfitTarget && TargetTouched(trade, bar))
             {
                 CloseTrade(trade, bar.Number, bar.Time,
-                    trade.TargetPrice, "8-tick target");
+                    trade.TargetPrice, "one-range target");
                 return;
             }
             if (!trade.UseProfitTarget &&
@@ -325,13 +365,13 @@ namespace PowerLanguage.Indicator
             if (trade.IsClosed) return;
             if (StopReached(trade, bar.Open))
                 CloseTrade(trade, bar.Number, bar.Time,
-                    StopFill(trade, bar.Open), "16-tick stop gap");
+                    StopFill(trade, bar.Open), "two-range-plus-one-tick stop gap");
             else if (StopTouched(trade, bar))
                 CloseTrade(trade, bar.Number, bar.Time,
-                    trade.StopPrice, "16-tick stop");
+                    trade.StopPrice, "two-range-plus-one-tick stop");
             else if (trade.UseProfitTarget && TargetTouched(trade, bar))
                 CloseTrade(trade, bar.Number, bar.Time,
-                    trade.TargetPrice, "8-tick target");
+                    trade.TargetPrice, "one-range target");
         }
 
         private bool StopReached(ManualTrade trade, double price)

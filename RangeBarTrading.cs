@@ -30,9 +30,9 @@ namespace PowerLanguage.Strategy
         private static RangeBarTradingV3 s_LastActiveChart;
 
         // The only user-facing strategy settings.
+        // Zero measures completed chart bars; positive values override the range.
         [Input] public int RangeSizeTicks { get; set; }
-        // Retained in its original input slot to preserve saved MultiCharts
-        // settings. Protective distance is derived from the active range bar.
+        // Zero uses two ranges plus one tick; positive values override the stop.
         [Input] public int ProtectiveStopLossTicks { get; set; }
         [Input] public int ProfitTargetTicks { get; set; }
         // Retained in its original input slot to preserve saved MultiCharts
@@ -44,12 +44,12 @@ namespace PowerLanguage.Strategy
         // Set true on the ask chart and false on the bid chart. Entry routing
         // is restricted to the corresponding buy-only or sell-only direction.
         [Input] public bool IsAskChart { get; set; }
-        // When enabled, every trade exits on a completed opposite-color bar
-        // instead of using either the normal or recovery profit target.
+        // Legacy EMA setups use this profit-mode switch. Shift and pin trades
+        // instead use the session P&L category latched at their entry fill.
         [Input] public bool UseOppositeColorExitForProfits { get; set; }
-        // Optional confirmation for a manual Shift-click range projection.
-        // When enabled, wait for one tick beyond the projected range-bar
-        // completion instead of entering at the completion price itself.
+        // Manual entries on ranges of four ticks or less always require
+        // one tick beyond completion. This enables the same confirmation
+        // for larger ranges as well.
         [Input] public bool ShiftProjectionRequireOneTickConfirmation { get; set; }
 
         // Fixed internal behavior; these are intentionally not exposed in the
@@ -59,6 +59,7 @@ namespace PowerLanguage.Strategy
         private const int RecoverySessionProfitGoalTicks = 5;
         private const int OppositeColorExitMinimumProfitTicks = 5;
         private const int OneBarProfitTargetTicks = 5;
+        private const int SessionProfitTargetTicks = 4;
         private const int HudRefreshMilliseconds = 100;
         private const bool ShowHUD = true;
         // PB shapes scale from the original five-tick definitions.  For
@@ -145,6 +146,9 @@ namespace PowerLanguage.Strategy
         // closes, the delta is the result of that one completed trade.
         private double m_ClosedEquityAtEntry = 0;
         private bool m_RecoveryModeActive = false;
+        // Shift and pin entries latch their P&L category at the fill.
+        private bool m_SessionProfitRuleActive = false;
+        private int m_ProfitRuleEntryBar = -1;
         private bool m_ColorCloseExitRequested = false;
         private bool m_OppositeColorProfitArmed = false;
         private double m_RecoverySessionPnlAtEntry = 0;
@@ -157,6 +161,8 @@ namespace PowerLanguage.Strategy
         private bool m_BuyOrderActive = false;
         private bool m_SellOrderActive = false;
         private bool m_AutoEntryArmed = false;
+        // Ctrl-click watches only the explicitly defined 4-tick PB0/PB1 setup.
+        private bool m_FourTickPinBarMode = false;
         private int m_ArmedDirection = 0;
         private int m_PinProjectionBar = -1;
         private int m_PinProjectionDirection = 0;
@@ -192,7 +198,7 @@ namespace PowerLanguage.Strategy
         private int m_ShiftProjectionBar = -1;
         private EEntrySetup m_ActiveEntrySetup = EEntrySetup.None;
         private bool m_FlattenRequested = false;
-        // Persistent kill mode entered by Ctrl-click while armed or in a
+        // Persistent kill mode entered by disarming or by emergency flatten in a
         // position. It suppresses every entry/exit order and flattens any open
         // or late-arriving fill until the user explicitly arms again.
         // Start locked.  A newly loaded/recalculated signal must never arm or
@@ -201,6 +207,8 @@ namespace PowerLanguage.Strategy
         private bool m_StartupOrderCancellationRequested = false;
         private bool m_DraggingTarget = false;
         private bool m_HudDisplayEnabled = true;
+        private string m_ClickFeedback = null;
+        private DateTime m_ClickFeedbackExpiresAt = DateTime.MinValue;
         private DateTime m_LastHudRefreshAt = DateTime.MinValue;
         private int m_HudAnchorBar = -1;
         private int m_HudLayoutBar = -1;
@@ -226,8 +234,12 @@ namespace PowerLanguage.Strategy
         private ITextObject m_ProjectedEntryLabel;
         private ITrendLineObject m_ShiftTailLine;
         private ITrendLineObject m_ShiftCompletionLine;
+        private ITrendLineObject m_ShiftTargetLine;
+        private ITrendLineObject m_ShiftStopLine;
         private ITrendLineObject m_PinBarTailLine;
         private ITrendLineObject m_PinBarCompletionLine;
+        private ITrendLineObject m_PinBarStopLine;
+        private ITrendLineObject m_PinBarTargetLine;
         private ITextObject m_PinBarLabel;
         private ITrendLineObject m_EmaBounceTailLine;
         private ITrendLineObject m_EmaBounceCompletionLine;
@@ -247,8 +259,8 @@ namespace PowerLanguage.Strategy
 
         public RangeBarTradingV3(object ctx) : base(ctx)
         {
-            RangeSizeTicks = 5;
-            ProtectiveStopLossTicks = 12;
+            RangeSizeTicks = 0;
+            ProtectiveStopLossTicks = 0;
             ProfitTargetTicks = 0;
             AutoProtectiveStopOn1BarProfit = true;
             // Start with every automated setup disabled.  A newly applied
@@ -316,11 +328,14 @@ namespace PowerLanguage.Strategy
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
             if (tickSize <= 0) tickSize = 0.25;
 
-            // Only a completed range bar establishes the chart's actual
-            // range. Until then, GetActiveRangeTicks uses RangeSizeTicks as
-            // its safe startup fallback rather than a partial live bar.
-            if (Bars.Status == EBarState.Close)
-                m_AutoRangeTicks = Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize;
+            // Measure completed bars only: a forming bar can be smaller than
+            // the chart's configured range. Ignore empty/invalid measurements.
+            if (Bars.Status == EBarState.Close) {
+                double measuredTicks = Math.Round(
+                    Math.Abs(Bars.High[0] - Bars.Low[0]) / tickSize);
+                if (measuredTicks > 0 && !double.IsInfinity(measuredTicks))
+                    m_AutoRangeTicks = measuredTicks;
+            }
             // Do not create drawings or query the broker during historical
             // calculation.  MultiCharts can remain stuck in "Calculating" if
             // the order tracker is touched in that pass.
@@ -349,7 +364,7 @@ namespace PowerLanguage.Strategy
                 ClearPendingEntry();
             }
 
-            if (!EnablePinBarTrading) {
+            if (!EnablePinBarTrading && !m_FourTickPinBarMode) {
                 m_PinProjectionBar = -1;
                 m_PinProjectionDirection = 0;
                 m_PinProjectionTailReached = false;
@@ -377,9 +392,11 @@ namespace PowerLanguage.Strategy
                 }
             }
 
-            if (!EnablePinBarTrading && !Enable24EMABounceTrading && !Enable8EMABounceTrading &&
+            if (!m_FourTickPinBarMode && !EnablePinBarTrading &&
+                !Enable24EMABounceTrading && !Enable8EMABounceTrading &&
                 currentPosition == 0 && !m_ShiftProjectionActive) {
                 m_AutoEntryArmed = false;
+                m_FourTickPinBarMode = false;
                 m_ArmedDirection = 0;
             }
 
@@ -464,10 +481,14 @@ namespace PowerLanguage.Strategy
                 double sessionPnlAtEntry = m_HasFlatSessionPnlSnapshot
                     ? m_FlatSessionPnlSnapshot
                     : UpdateAndGetGlobalPnL(StrategyInfo.OpenEquity);
+                EEntrySetup filledEntrySetup = m_ActiveEntrySetup;
+                m_SessionProfitRuleActive =
+                    filledEntrySetup == EEntrySetup.ShiftProjection ||
+                    filledEntrySetup == EEntrySetup.PinBar;
+                m_ProfitRuleEntryBar = Bars.CurrentBar;
                 int activeProfitTargetTicks = GetProfitTargetTicksForNewTrade(
                     sessionPnlAtEntry, tickSize);
                 double targetDist = activeProfitTargetTicks * tickSize;
-                EEntrySetup filledEntrySetup = m_ActiveEntrySetup;
                 int filledPinBodyTicks = m_StagedPinBodyTicks;
                 m_ClosedEquityAtEntry = StrategyInfo.ClosedEquity;
                 m_RecoverySessionPnlAtEntry = sessionPnlAtEntry;
@@ -488,6 +509,7 @@ namespace PowerLanguage.Strategy
                 // management must continue normally, but no subsequent entry
                 // may be staged without another deliberate arm action.
                 m_AutoEntryArmed = false;
+                m_FourTickPinBarMode = false;
                 m_ArmedDirection = 0;
                 m_ColorCloseExitRequested = false;
                 m_OppositeColorProfitArmed = false;
@@ -497,7 +519,9 @@ namespace PowerLanguage.Strategy
                 m_ShiftProjectionActive = false;
                 m_ShiftProjectionBar = -1;
                 if (m_GoSignalMarker != null) m_GoSignalMarker.Delete();
-                ClearProjectedEntryLine(); UpdateTargetLine(); UpdateStopLine();
+                ClearProjectedEntryLine();
+                ClearPinBarProjectionLines();
+                UpdateTargetLine(); UpdateStopLine();
                 DrawFilledEntryMarkers(currentPosition, entryPrice, tickSize,
                                        filledEntrySetup, filledPinBodyTicks);
                 m_StagedPinBodyTicks = 0;
@@ -553,6 +577,7 @@ namespace PowerLanguage.Strategy
                 m_KillModeActive = true;
                 m_FlattenRequested = false;
                 m_AutoEntryArmed = false;
+                m_FourTickPinBarMode = false;
                 m_ArmedDirection = 0;
                 m_ProtectiveStopPrice = m_ProfitTargetPrice = 0; 
                 m_BuyOrderActive = m_SellOrderActive = false; 
@@ -563,6 +588,7 @@ namespace PowerLanguage.Strategy
                 m_ShiftProjectionBar = -1;
                 m_LastSentPrice = 0; 
                 m_RecoveryModeActive = false;
+                m_SessionProfitRuleActive = false;
                 m_ColorCloseExitRequested = false;
                 m_OppositeColorProfitArmed = false;
                 m_RecoverySessionPnlAtEntry = 0;
@@ -575,7 +601,7 @@ namespace PowerLanguage.Strategy
 
         private void CheckForHiddenPierceSignals(double tickSize) {
             double activeTicks = GetActiveRangeTicks(tickSize);
-            if (activeTicks <= 0) activeTicks = 7;
+            if (activeTicks <= 0) return;
             double alpha5 = 2.0 / 9.0; double alpha15 = 2.0 / 25.0;
             
             double highest10 = Bars.High.Highest(10);
@@ -705,24 +731,17 @@ namespace PowerLanguage.Strategy
             }
 
             if (arg.buttons != MouseButtons.Left) return;
-            if ((arg.keys & Keys.Control) == Keys.Control) {
-                int currentPosition = StrategyInfo.MarketPosition;
-                if (currentPosition != 0 || HasWorkingStrategyOrders()) {
-                    // With a position or any broker-side working strategy
-                    // order, Ctrl-click uses the full emergency path: cancel
-                    // all strategy orders, then flatten until confirmed flat.
-                    ActivateEmergencyFlatten(false);
-                } else if (m_AutoEntryArmed) {
-                    // No working order exists, so this is only a disarm.
-                    ActivateKillMode(currentPosition);
-                } else if (EnablePinBarTrading || Enable24EMABounceTrading || Enable8EMABounceTrading) {
-                    // Flat and unarmed: latch the 24 EMA direction and begin
-                    // waiting persistently for an enabled automated setup.
-                    ArmAutomatedEntryMode(tickSize);
-                }
+            if (IsControlClick(arg.keys)) {
+                m_HudDisplayEnabled = true;
+                m_ClickFeedback = null;
+                if (StrategyInfo.MarketPosition != 0)
+                    SetClickFeedback("CTRL IGNORED | POSITION ALREADY OPEN");
+                ToggleFourTickPinBarWatch(tickSize);
                 if (ShowHUD && m_HudDisplayEnabled) UpdateHUD(true);
             }
             else if (IsShiftClick(arg.keys)) {
+                m_HudDisplayEnabled = true;
+                m_ClickFeedback = null;
                 if (m_ShiftProjectionActive)
                     ClearShiftProjectionEntry();
                 else
@@ -761,6 +780,7 @@ namespace PowerLanguage.Strategy
             // only removes a pending entry and prevents the next automatic
             // entry from being sent by the chart that was left behind.
             m_AutoEntryArmed = false;
+            m_FourTickPinBarMode = false;
             m_ArmedDirection = 0;
             m_BuyOrderActive = m_SellOrderActive = false;
             m_ActiveEntrySetup = EEntrySetup.None;
@@ -779,25 +799,55 @@ namespace PowerLanguage.Strategy
             }
         }
 
+        private void ToggleFourTickPinBarWatch(double tickSize) {
+            // Ctrl-click now controls setup watching; Esc/F12 remain flatten.
+            // Never disturb the exits of an existing position.
+            if (StrategyInfo.MarketPosition != 0) return;
+            CancelWorkingEntryOrders();
+            if (m_AutoEntryArmed && m_FourTickPinBarMode) {
+                ActivateKillMode(0);
+                return;
+            }
+
+            ClearPendingEntry();
+            ClearPinBarProjectionLines();
+            ResetEmaBounceProjection();
+            ResetEma8BounceProjection();
+            ClearEma8BounceProjectionLines();
+            ClearEmergencyIndicator();
+            m_ShiftProjectionActive = false;
+            m_ShiftProjectionBar = -1;
+            m_KillModeActive = false;
+            m_FlattenRequested = false;
+            m_AutoEntryArmed = true;
+            m_FourTickPinBarMode = true;
+            m_HudDisplayEnabled = true;
+            m_ArmedDirection = IsAskChart ? 1 : -1;
+            m_PinProjectionBar = -1;
+            m_PinProjectionQualified = false;
+            RefreshSetupCandidates(tickSize);
+        }
+
         private void ArmAutomatedEntryMode(double tickSize,
                                            int requestedDirection = 0) {
+            int direction = requestedDirection != 0
+                ? requestedDirection
+                : m_SlowEMA[0] >= m_SlowEMA[1] ? 1 : -1;
+            // Reject the opposite chart side before changing the armed,
+            // emergency, or pending-entry state.
+            if (!IsEntryDirectionAllowed(direction)) return;
+
+            m_FourTickPinBarMode = false;
             ClearEmergencyIndicator();
             m_KillModeActive = false;
             m_FlattenRequested = false;
             m_AutoEntryArmed = true;
-            // Preserve the existing semantics for a normal Ctrl-click:
-            // flat/rising 24 EMA is bullish; falling 24 EMA is bearish. A
-            // Shift projection already has an explicit, permitted direction,
+            // Legacy automatic modes use the 24 EMA direction: flat/rising
+            // is bullish; falling is bearish. A Shift projection already
+            // has an explicit, permitted direction,
             // so use that direction when it also transitions from unarmed to
             // armed.
-            m_ArmedDirection = requestedDirection != 0
-                ? requestedDirection
-                : m_SlowEMA[0] >= m_SlowEMA[1] ? 1 : -1;
-            if (!IsEntryDirectionAllowed(m_ArmedDirection)) {
-                m_AutoEntryArmed = false;
-                m_ArmedDirection = 0;
-                return;
-            }
+            m_ArmedDirection = direction;
             m_PinProjectionBar = Bars.CurrentBar;
             m_PinProjectionDirection = m_ArmedDirection;
             m_PinProjectionTailReached = false;
@@ -866,10 +916,11 @@ namespace PowerLanguage.Strategy
         }
 
         private void RefreshSetupCandidates(double tickSize) {
-            if (!EnablePinBarTrading && !Enable24EMABounceTrading &&
+            if (!m_FourTickPinBarMode && !EnablePinBarTrading && !Enable24EMABounceTrading &&
                 !Enable8EMABounceTrading && StrategyInfo.MarketPosition == 0 &&
                 !m_ShiftProjectionActive) {
                 m_AutoEntryArmed = false;
+                m_FourTickPinBarMode = false;
                 m_ArmedDirection = 0;
             }
             ResetAutomaticEntryCandidates();
@@ -887,7 +938,8 @@ namespace PowerLanguage.Strategy
         private int GetActivePinBarRangeTicks() {
             // Prefer the configured ATIC/range-bar size. When the strategy is
             // set to auto-detect, use the live measured range instead.
-            return Math.Max(1, (int)Math.Round(GetActiveRangeTicks(0.25)));
+            double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            return Math.Max(1, (int)Math.Round(GetActiveRangeTicks(tickSize)));
         }
 
         private int GetPinBarPB2BodyTicks(int rangeTicks) {
@@ -916,6 +968,7 @@ namespace PowerLanguage.Strategy
             m_KillModeActive = true;
             m_FlattenRequested = currentPosition != 0;
             m_AutoEntryArmed = false;
+            m_FourTickPinBarMode = false;
             m_ArmedDirection = 0;
             m_PinProjectionBar = -1;
             m_PinProjectionDirection = 0;
@@ -934,6 +987,7 @@ namespace PowerLanguage.Strategy
             m_StopPrice = m_LastSentPrice = 0;
             m_ProtectiveStopPrice = m_ProfitTargetPrice = 0;
             m_RecoveryModeActive = false;
+            m_SessionProfitRuleActive = false;
             m_ColorCloseExitRequested = false;
             m_RecoverySessionPnlAtEntry = 0;
             m_DraggingTarget = false;
@@ -1172,9 +1226,110 @@ namespace PowerLanguage.Strategy
             m_EmergencyMessageExpiresAt = DateTime.MinValue;
         }
 
+        private void UpdateFourTickPinBarProjection(double tickSize,
+                                                    int currentPosition) {
+            double tailPrice = 0;
+            double completionPrice = 0;
+            int bodyTicks = 0;
+            int direction = m_ArmedDirection;
+            bool valid = m_AutoEntryArmed && currentPosition == 0 &&
+                         !m_ShiftProjectionActive && !m_KillModeActive &&
+                         Bars.CurrentBar > 1 && m_FastEMA != null &&
+                         m_SlowEMA != null && m_ProfileEMA != null &&
+                         GetActiveRangeTicks(tickSize) == 4 &&
+                         IsEntryDirectionAllowed(direction) &&
+                         IsFourTickPinBarContextValid(
+                             direction, m_FastEMA[0], m_SlowEMA[0], m_ProfileEMA[0],
+                             Bars.Open[1], Bars.Close[1]) &&
+                         TryGetFourTickPinBarProjection(
+                             direction, tickSize, Bars.Open[0], Bars.High[0],
+                             Bars.Low[0], Bars.Close[0],
+                             direction > 0 ? Bars.Low[1] : Bars.High[1],
+                             m_FastEMA[0], Bars.Status == EBarState.Close,
+                             out tailPrice, out completionPrice, out bodyTicks);
+            if (!valid) {
+                ClearPinBarProjectionLines();
+                // Cancel before clearing the setup so no obsolete stop is
+                // left working when a live tail or EMA check fails.
+                if (currentPosition == 0 && m_ActiveEntrySetup == EEntrySetup.PinBar) {
+                    CancelWorkingEntryOrders();
+                    ClearPendingEntry();
+                }
+                return;
+            }
+
+            m_PinProjectionBar = Bars.CurrentBar;
+            m_PinProjectionDirection = direction;
+            m_PinProjectionTailTicks = 4 - bodyTicks;
+            m_PinEntryCandidateValid = true;
+            m_PinEntryCandidateDirection = direction;
+            m_PinEntryCandidatePrice = completionPrice;
+            m_PinEntryCandidateBodyTicks = bodyTicks;
+            UpdatePinBarTailProjectionLine(tailPrice);
+            UpdatePinBarProjectionLine(ref m_PinBarCompletionLine,
+                                       completionPrice, true);
+            UpdatePinBarProjectionLabel(completionPrice, direction, true, bodyTicks);
+            UpdateSessionExitProjectionLines(ref m_PinBarStopLine,
+                                             ref m_PinBarTargetLine,
+                                             completionPrice, direction, tickSize);
+        }
+
+        private static bool IsFourTickPinBarContextValid(
+            int direction, double ema8, double ema24, double ema50,
+            double previousOpen, double previousClose) {
+            // Strict EMA ordering; touching EMAs do not satisfy the stack.
+            // A doji is permitted, since it has no opposite bar color.
+            return direction > 0
+                ? ema8 > ema24 && ema24 > ema50 && previousClose >= previousOpen
+                : direction < 0 && ema8 < ema24 && ema24 < ema50 &&
+                  previousClose <= previousOpen;
+        }
+
+        // A direct reversal from the live extreme must finish a single-tail
+        // four-tick bar: 3-tail/1-body or 4-tail/0-body. Re-evaluate every tick;
+        // neither qualification nor the EMA check is latched from an old tick.
+        private static bool TryGetFourTickPinBarProjection(
+            int direction, double tickSize, double open, double high,
+            double low, double close, double previousTail, double fastEma,
+            bool barClosed, out double tailPrice, out double completionPrice,
+            out int bodyTicks) {
+            tailPrice = completionPrice = 0;
+            bodyTicks = 0;
+            if (tickSize <= 0 || (direction != 1 && direction != -1)) return false;
+            // Numerical roundoff only: do not allow a fraction of a tick to
+            // penetrate the EMA or the preceding bar's extreme.
+            double epsilon = tickSize * 0.000001;
+            double liveTail = direction > 0 ? low : high;
+            double tailTicks = direction * (open - liveTail) / tickSize;
+            int roundedTailTicks = (int)Math.Round(tailTicks);
+            if ((roundedTailTicks != 3 && roundedTailTicks != 4) ||
+                Math.Abs(tailTicks - roundedTailTicks) > 0.000001) return false;
+            if (direction > 0
+                ? liveTail < previousTail - epsilon || liveTail < fastEma - epsilon
+                : liveTail > previousTail + epsilon || liveTail > fastEma + epsilon)
+                return false;
+
+            double completion = Math.Round(
+                (liveTail + direction * 4 * tickSize) / tickSize) * tickSize;
+            // A wick beyond the projected body-side boundary makes this
+            // shape impossible, even if the tail subsequently reverses.
+            if (direction > 0 ? high > completion + epsilon : low < completion - epsilon)
+                return false;
+            // A completed bar that closed at the tail is not a pin reversal.
+            if (barClosed && Math.Abs(close - completion) > epsilon) return false;
+            tailPrice = liveTail;
+            completionPrice = completion;
+            bodyTicks = 4 - roundedTailTicks;
+            return true;
+        }
+
         private void UpdatePinBarProjection(double tickSize, int currentPosition) {
+            if (m_FourTickPinBarMode) {
+                UpdateFourTickPinBarProjection(tickSize, currentPosition);
+                return;
+            }
             if (!EnablePinBarTrading || currentPosition != 0 ||
-                m_ShiftProjectionActive) {
+                m_ShiftProjectionActive || GetActiveRangeTicks(tickSize) <= 0) {
                 ClearPinBarProjectionLines();
                 return;
             }
@@ -1671,8 +1826,8 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdateEmaBounceProjection(double tickSize, int currentPosition) {
-            if (!Enable24EMABounceTrading || currentPosition != 0 ||
-                m_ShiftProjectionActive) {
+            if (m_FourTickPinBarMode || !Enable24EMABounceTrading || currentPosition != 0 ||
+                m_ShiftProjectionActive || GetActiveRangeTicks(tickSize) <= 0) {
                 ClearEmaBounceProjectionLines();
                 return;
             }
@@ -1775,8 +1930,8 @@ namespace PowerLanguage.Strategy
         // could finish as a qualifying 8 EMA bounce, then stage its breakout
         // only after the projected tail has actually been reached.
         private void UpdateEma8BounceProjection(double tickSize, int currentPosition) {
-            if (!Enable8EMABounceTrading || currentPosition != 0 ||
-                m_ShiftProjectionActive) {
+            if (m_FourTickPinBarMode || !Enable8EMABounceTrading || currentPosition != 0 ||
+                m_ShiftProjectionActive || GetActiveRangeTicks(tickSize) <= 0) {
                 ClearEma8BounceProjectionLines();
                 return;
             }
@@ -2454,21 +2609,35 @@ namespace PowerLanguage.Strategy
         }
 
         private void StartShiftProjectionEntry(double tickSize) {
-            if (StrategyInfo.MarketPosition != 0) return;
+            if (StrategyInfo.MarketPosition != 0) {
+                SetClickFeedback("SHIFT BLOCKED | POSITION ALREADY OPEN");
+                return;
+            }
+            if (GetActiveRangeTicks(tickSize) <= 0) {
+                SetClickFeedback("SHIFT BLOCKED | WAITING FOR RANGE");
+                return;
+            }
 
             // Manual entries retain the EMA-side safety gate: buy only above
             // the 24 EMA and sell only below it. The chart role then limits
             // that permitted direction to its buy-only or sell-only side.
             int direction = m_FastEMA[0] > m_SlowEMA[0] ? 1 :
                             m_FastEMA[0] < m_SlowEMA[0] ? -1 : 0;
-            if (direction == 0 || !IsEntryDirectionAllowed(direction)) return;
+            if (direction == 0 || !IsEntryDirectionAllowed(direction)) {
+                SetClickFeedback(IsAskChart
+                    ? "SHIFT BLOCKED | ASK REQUIRES EMA8 ABOVE EMA24"
+                    : "SHIFT BLOCKED | BID REQUIRES EMA8 BELOW EMA24");
+                return;
+            }
 
-            // Shift replaces a pending entry with a single manually requested
-            // projection. If it begins from UNARMED, it also latches the
-            // projection's permitted direction for the automatic PB/EMA
-            // setup modes that follow.
-            if (!m_AutoEntryArmed)
-                ArmAutomatedEntryMode(tickSize, direction);
+            // Manual mode replaces automation; it must never restore a
+            // previous pin/EMA watch when cancelled, expired, or invalidated.
+            m_AutoEntryArmed = false;
+            m_FourTickPinBarMode = false;
+            m_ArmedDirection = 0;
+            ResetAutomaticEntryCandidates();
+            m_EmaBounceOrderBar = -1;
+            m_PinBarOrderBar = -1;
 
             ClearEmergencyIndicator();
             m_KillModeActive = false;
@@ -2477,6 +2646,7 @@ namespace PowerLanguage.Strategy
             ClearPendingEntry();
             ClearPinBarProjectionLines();
             ClearEmaBounceProjectionLines();
+            ClearEma8BounceProjectionLines();
             m_ShiftProjectionActive = true;
             m_ShiftProjectionBar = Bars.CurrentBar;
             UpdateShiftProjectionEntry(tickSize, StrategyInfo.MarketPosition);
@@ -2486,7 +2656,8 @@ namespace PowerLanguage.Strategy
 
         private void UpdateShiftProjectionEntry(double tickSize, int currentPosition) {
             if (!m_ShiftProjectionActive) return;
-            if (currentPosition != 0 || m_ShiftProjectionBar != Bars.CurrentBar) {
+            if (currentPosition != 0 || m_ShiftProjectionBar != Bars.CurrentBar ||
+                GetActiveRangeTicks(tickSize) <= 0) {
                 ClearShiftProjectionEntry();
                 return;
             }
@@ -2523,7 +2694,11 @@ namespace PowerLanguage.Strategy
                 projectedLow = RoundToTick(projectedHigh - range, tickSize);
             }
             double completionPrice = direction > 0 ? projectedHigh : projectedLow;
-            double entryPrice = ShiftProjectionRequireOneTickConfirmation
+            // Small ranges always confirm one tick beyond completion. The
+            // same entry price drives both the drawing and the native order.
+            bool requireConfirmation = rangeTicks <= 4 ||
+                                       ShiftProjectionRequireOneTickConfirmation;
+            double entryPrice = requireConfirmation
                 ? RoundToTick(completionPrice + (direction > 0 ? tickSize : -tickSize),
                               tickSize)
                 : completionPrice;
@@ -2540,7 +2715,8 @@ namespace PowerLanguage.Strategy
             m_StopPrice = entryPrice;
             m_LastSentPrice = 0;
             double tailPrice = direction > 0 ? projectedLow : projectedHigh;
-            UpdateShiftProjectionLines(tailPrice, entryPrice, direction);
+            UpdateShiftProjectionLines(tailPrice, entryPrice, direction,
+                                       tickSize);
         }
 
         private void SubmitShiftProjectionEntryNow() {
@@ -2654,6 +2830,8 @@ namespace PowerLanguage.Strategy
         }
 
         private void ClearPinBarProjectionLines() {
+            if (m_PinBarStopLine != null) { m_PinBarStopLine.Delete(); m_PinBarStopLine = null; }
+            if (m_PinBarTargetLine != null) { m_PinBarTargetLine.Delete(); m_PinBarTargetLine = null; }
             if (m_PinBarTailLine != null) { m_PinBarTailLine.Delete(); m_PinBarTailLine = null; }
             if (m_PinBarCompletionLine != null) { m_PinBarCompletionLine.Delete(); m_PinBarCompletionLine = null; }
             if (m_PinBarLabel != null) { m_PinBarLabel.Delete(); m_PinBarLabel = null; }
@@ -2669,6 +2847,8 @@ namespace PowerLanguage.Strategy
                 ChartPoint point = new ChartPoint(Bars.Time[0], price);
                 string text = "PB" + GetPinBarDisplayLevel(
                     GetActivePinBarRangeTicks(), bodyTicks);
+                if (m_FourTickPinBarMode)
+                    text += direction > 0 ? " BUY" : " SELL";
                 ITextObject label = m_PinBarLabel;
                 if (label == null) {
                     label = DrwText.Create(point, text);
@@ -2763,6 +2943,13 @@ namespace PowerLanguage.Strategy
 
             if (StrategyInfo.MarketPosition == 0) return;
 
+            // Filled Shift and pin trades keep their entry-time P&L rule,
+            // regardless of changes to the legacy global profit switch.
+            if (m_SessionProfitRuleActive) {
+                SubmitActiveExitOrders(StrategyInfo.MarketPosition);
+                return;
+            }
+
             if (UseOppositeColorExitForProfits) {
                 // Let-it-run mode: remove the fixed target and let the
                 // opposite-color trailing stop arm from live price action.
@@ -2836,13 +3023,47 @@ namespace PowerLanguage.Strategy
 
         private int GetProfitTargetTicksForNewTrade(double sessionPnlAtEntry,
                                                      double tickSize) {
+            if (m_SessionProfitRuleActive)
+                return GetSessionProfitTargetTicks(sessionPnlAtEntry);
             if (UseOppositeColorExitForProfits) return 0;
             return OneBarProfitTargetTicks;
         }
 
+        private static int GetSessionProfitTargetTicks(double sessionPnlAtEntry) {
+            return sessionPnlAtEntry < 0 ? 0 : SessionProfitTargetTicks;
+        }
+
+        private static bool IsOpposingColorClose(int currentPosition,
+                                                 bool barClosed,
+                                                 double open, double close) {
+            return barClosed && (currentPosition > 0 ? close < open
+                               : currentPosition < 0 && close > open);
+        }
+
+        private void UpdateSessionProfitExit(int currentPosition) {
+            m_OppositeColorStopPrice = 0;
+            ClearRecoveryColorStopProjection();
+            if (currentPosition == 0 || !m_RecoveryModeActive) return;
+            // Recovery trades wait for a confirmed opposite-color close,
+            // without a minimum favorable move or an extra confirmation tick.
+            if (Bars.CurrentBar > m_ProfitRuleEntryBar &&
+                IsOpposingColorClose(currentPosition, Bars.Status == EBarState.Close,
+                                     Bars.Open[0], Bars.Close[0]))
+                m_ColorCloseExitRequested = true;
+            if (m_ColorCloseExitRequested && Bars.LastBarOnChart) {
+                if (currentPosition > 0) m_CloseLongNextBar.Send();
+                else m_CloseShortNextBar.Send();
+            }
+        }
+
         private void UpdateOppositeColorExitManagement(int currentPosition,
                                                        double tickSize) {
-            bool colorCloseExitActive = UseOppositeColorExitForProfits;
+            if (m_SessionProfitRuleActive) {
+                UpdateSessionProfitExit(currentPosition);
+                return;
+            }
+            bool colorCloseExitActive = UseOppositeColorExitForProfits &&
+                                        !m_SessionProfitRuleActive;
             if (!colorCloseExitActive || currentPosition == 0) {
                 m_OppositeColorStopPrice = 0;
                 ClearRecoveryColorStopProjection();
@@ -2968,15 +3189,38 @@ namespace PowerLanguage.Strategy
             m_ActiveTradeEntryArrow = null;
         }
 
+        private static bool HasModifier(Keys eventKeys, Keys liveModifiers,
+                                        Keys modifier, Keys key, Keys leftKey,
+                                        Keys rightKey) {
+            Keys keyCode = eventKeys & Keys.KeyCode;
+            return ((eventKeys | liveModifiers) & modifier) == modifier ||
+                   keyCode == key || keyCode == leftKey || keyCode == rightKey;
+        }
+
+        private bool IsModifierHeld(Keys eventKeys, Keys modifier, Keys key,
+                                    Keys leftKey, Keys rightKey) {
+            if (HasModifier(eventKeys, System.Windows.Forms.Control.ModifierKeys,
+                            modifier, key, leftKey, rightKey)) return true;
+            try {
+                return (GetAsyncKeyState((int)key) & 0x8000) != 0;
+            } catch {
+                return false;
+            }
+        }
+
+        private bool IsControlClick(Keys keys) {
+            return IsModifierHeld(keys, Keys.Control, Keys.ControlKey,
+                                  Keys.LControlKey, Keys.RControlKey);
+        }
+
         private bool IsShiftClick(Keys keys) {
-            // MultiCharts does not always include Shift in arg.keys, so use
-            // the live Windows modifier state as a fallback.
-            Keys liveModifiers = System.Windows.Forms.Control.ModifierKeys;
-            Keys keyCode = keys & Keys.KeyCode;
-            Keys liveKeyCode = liveModifiers & Keys.KeyCode;
-            return ((keys | liveModifiers) & Keys.Shift) == Keys.Shift ||
-                   keyCode == Keys.ShiftKey ||
-                   liveKeyCode == Keys.ShiftKey;
+            return IsModifierHeld(keys, Keys.Shift, Keys.ShiftKey,
+                                  Keys.LShiftKey, Keys.RShiftKey);
+        }
+
+        private void SetClickFeedback(string message) {
+            m_ClickFeedback = message;
+            m_ClickFeedbackExpiresAt = DateTime.UtcNow.AddSeconds(5);
         }
 
         private void UpdateTargetLine() {
@@ -3083,20 +3327,25 @@ namespace PowerLanguage.Strategy
         }
 
         private double GetActiveRangeTicks(double tickSize) {
-            // The completed bar reveals the actual ATIC/range-bar size. Use
-            // it once available so a strategy copied from a 5-tick MES chart
-            // automatically follows an 8-tick MYM/M2K chart without relying
-            // on a contract-name exception. The input remains the startup
-            // fallback before any completed bar has been observed.
+            if (RangeSizeTicks > 0) return RangeSizeTicks;
             if (m_AutoRangeTicks > 0) return m_AutoRangeTicks;
-            return RangeSizeTicks > 0 ? RangeSizeTicks : 7;
+
+            // Mouse events may arrive before a completed-bar CalcBar pass.
+            // Read the preceding completed bar, never the partial live bar.
+            if (Bars.CurrentBar > 1 && tickSize > 0) {
+                double measuredTicks = Math.Round(
+                    Math.Abs(Bars.High[1] - Bars.Low[1]) / tickSize);
+                if (measuredTicks > 0 && !double.IsInfinity(measuredTicks))
+                    m_AutoRangeTicks = measuredTicks;
+            }
+            // No guessed range: entry projections wait for a measurement.
+            return m_AutoRangeTicks;
         }
 
         private int GetProtectiveStopLossTicks(double tickSize) {
-            int rangeTicks = Math.Max(1, (int)Math.Round(
-                GetActiveRangeTicks(tickSize)));
-            // Two full range bars beyond entry, plus one confirmation tick.
-            return (2 * rangeTicks) + 1;
+            if (ProtectiveStopLossTicks > 0) return ProtectiveStopLossTicks;
+            int rangeTicks = (int)Math.Round(GetActiveRangeTicks(tickSize));
+            return rangeTicks > 0 ? (2 * rangeTicks) + 1 : 0;
         }
 
         private void UpdateProjectedEntryLine() {
@@ -3136,17 +3385,39 @@ namespace PowerLanguage.Strategy
             ClearShiftProjectionLines();
         }
 
+        private void UpdateSessionExitProjectionLines(
+            ref ITrendLineObject stopLine, ref ITrendLineObject targetLine,
+            double entryPrice, int direction, double tickSize) {
+            double stopPrice = RoundToTick(entryPrice - direction *
+                GetProtectiveStopLossTicks(tickSize) * tickSize, tickSize);
+            UpdateShiftProjectionLine(ref stopLine, stopPrice,
+                                      Color.Gray, ETLStyle.ToolDashed, 1);
+            int targetTicks = GetSessionProfitTargetTicks(
+                UpdateAndGetGlobalPnL(StrategyInfo.OpenEquity));
+            if (targetTicks == 0) {
+                if (targetLine != null) { targetLine.Delete(); targetLine = null; }
+                return;
+            }
+            double targetPrice = RoundToTick(
+                entryPrice + direction * targetTicks * tickSize, tickSize);
+            UpdateShiftProjectionLine(ref targetLine, targetPrice,
+                                      Color.Gray, ETLStyle.ToolDashed, 1);
+        }
+
         private void UpdateShiftProjectionLines(double tailPrice,
                                                 double completionPrice,
-                                                int direction) {
+                                                int direction,
+                                                double tickSize) {
             UpdateShiftProjectionLine(ref m_ShiftTailLine, tailPrice,
                                       Color.DarkGray, ETLStyle.ToolDashed, 1);
             UpdateShiftProjectionLine(ref m_ShiftCompletionLine, completionPrice,
                                       Color.Green, ETLStyle.ToolSolid, 2);
+            UpdateSessionExitProjectionLines(ref m_ShiftStopLine,
+                                             ref m_ShiftTargetLine,
+                                             completionPrice, direction, tickSize);
 
-            string entryLabelText = m_AutoEntryArmed
-                ? (direction > 0 ? "SHIFT BUY" : "SHIFT SELL")
-                : (direction > 0 ? "UNARMED SHIFT BUY" : "UNARMED SHIFT SELL");
+            string entryLabelText = direction > 0
+                ? "MANUAL SHIFT BUY" : "MANUAL SHIFT SELL";
             ChartPoint entryPoint = new ChartPoint(Bars.Time[0], completionPrice);
             if (m_ProjectedEntryLabel == null) {
                 m_ProjectedEntryLabel = DrwText.Create(entryPoint, entryLabelText);
@@ -3186,6 +3457,14 @@ namespace PowerLanguage.Strategy
         }
 
         private void ClearShiftProjectionLines() {
+            if (m_ShiftTargetLine != null) {
+                m_ShiftTargetLine.Delete();
+                m_ShiftTargetLine = null;
+            }
+            if (m_ShiftStopLine != null) {
+                m_ShiftStopLine.Delete();
+                m_ShiftStopLine = null;
+            }
             if (m_ShiftTailLine != null) {
                 m_ShiftTailLine.Delete();
                 m_ShiftTailLine = null;
@@ -3216,18 +3495,16 @@ namespace PowerLanguage.Strategy
             // automatic entries were still unarmed.
             string status = "UNARMED | " + setupScope;
             if (m_AutoEntryArmed)
-                status = m_ArmedDirection > 0 ? "ARMED BUY" : "ARMED SELL";
+                status = m_FourTickPinBarMode
+                    ? "ARMED | WAITING FOR 4-TICK PIN BARS"
+                    : m_ArmedDirection > 0 ? "ARMED BUY" : "ARMED SELL";
             if (m_BuyOrderActive)
                 status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce
                     ? (m_AutoEntryArmed ? "ARMED | 24 EMA ENTRY BUY" : "24 EMA ENTRY BUY") :
                     m_ActiveEntrySetup == EEntrySetup.Ema8Bounce
                         ? (m_AutoEntryArmed ? "ARMED | 8 EMA ENTRY BUY" : "8 EMA ENTRY BUY") :
                     m_ActiveEntrySetup == EEntrySetup.ShiftProjection
-                        ? (m_AutoEntryArmed
-                            ? (m_ArmedDirection > 0
-                                ? "ARMED BUY | SHIFT ENTRY BUY"
-                                : "ARMED SELL | SHIFT ENTRY BUY")
-                            : "UNARMED SHIFT ENTRY BUY")
+                        ? "MANUAL | SHIFT ENTRY BUY"
                         : (m_AutoEntryArmed ? "ARMED | PIN ENTRY BUY" : "PIN ENTRY BUY");
             if (m_SellOrderActive)
                 status = m_ActiveEntrySetup == EEntrySetup.Ema24Bounce
@@ -3235,26 +3512,40 @@ namespace PowerLanguage.Strategy
                     m_ActiveEntrySetup == EEntrySetup.Ema8Bounce
                         ? (m_AutoEntryArmed ? "ARMED | 8 EMA ENTRY SELL" : "8 EMA ENTRY SELL") :
                     m_ActiveEntrySetup == EEntrySetup.ShiftProjection
-                        ? (m_AutoEntryArmed
-                            ? (m_ArmedDirection > 0
-                                ? "ARMED BUY | SHIFT ENTRY SELL"
-                                : "ARMED SELL | SHIFT ENTRY SELL")
-                            : "UNARMED SHIFT ENTRY SELL")
+                        ? "MANUAL | SHIFT ENTRY SELL"
                         : (m_AutoEntryArmed ? "ARMED | PIN ENTRY SELL" : "PIN ENTRY SELL");
+            if (m_FourTickPinBarMode && m_AutoEntryArmed) {
+                if (m_ActiveEntrySetup == EEntrySetup.PinBar)
+                    status = "ARMED | 4-TICK PIN ENTRY " +
+                             (m_BuyOrderActive ? "BUY" : "SELL");
+                else if (!m_ShiftProjectionActive && GetActiveRangeTicks(tickSize) != 4)
+                    status = "ARMED | 4-TICK PIN BARS REQUIRE 4-TICK RANGE";
+            }
             if (StrategyInfo.MarketPosition != 0) {
-                status = UseOppositeColorExitForProfits
-                    ? "IN TRADE | LET PROFITS RUN"
-                    : "IN TRADE | 5-TICK PROFIT";
+                status = m_SessionProfitRuleActive
+                    ? (m_RecoveryModeActive ? "IN TRADE | OPPOSITE-COLOR CLOSE"
+                                            : "IN TRADE | 4-TICK PROFIT")
+                    : UseOppositeColorExitForProfits
+                        ? "IN TRADE | LET PROFITS RUN"
+                        : "IN TRADE | 5-TICK PROFIT";
             }
             if (m_KillModeActive)
                 status = m_FlattenRequested
                     ? "FLATTENING"
                     : "UNARMED";
-            status += " | STOP " + GetProtectiveStopLossTicks(tickSize) + "T";
+            status += GetActiveRangeTicks(tickSize) > 0
+                ? " | STOP " + GetProtectiveStopLossTicks(tickSize) + "T"
+                : " | WAITING FOR RANGE";
+            if (m_ClickFeedback != null && now < m_ClickFeedbackExpiresAt)
+                status += " | " + m_ClickFeedback;
             string chartRole = IsAskChart ? "ASK / BUY ONLY" : "BID / SELL ONLY";
-            string profitMode = UseOppositeColorExitForProfits
-                ? "LET RUN"
-                : "5T PROFIT";
+            bool sessionProfitPreview = m_ShiftProjectionActive || m_FourTickPinBarMode;
+            string profitMode = m_SessionProfitRuleActive || sessionProfitPreview
+                ? ((m_SessionProfitRuleActive ? m_RecoveryModeActive : pnl < 0)
+                    ? "OPPOSITE-COLOR CLOSE" : "4T PROFIT")
+                : UseOppositeColorExitForProfits
+                    ? "LET RUN"
+                    : "5T PROFIT";
             string strategyText = string.Format("{0} | {1} | {2} | Session PnL: {3:C2}",
                                                 status, chartRole, profitMode, pnl);
             // MultiCharts lays out separate text objects according to the
@@ -3307,6 +3598,7 @@ namespace PowerLanguage.Strategy
         }
 
         private string GetEnabledSetupScope() {
+            if (m_FourTickPinBarMode) return "4-TICK PB WATCH";
             string scope = "";
             if (EnablePinBarTrading) scope = "PB";
             if (Enable24EMABounceTrading)
@@ -3416,10 +3708,10 @@ namespace PowerLanguage.Strategy
                                 actionPadding + (EnablePinBarTrading ? "PB ON" : "PB OFF") + "\n" +
                                 actionPadding + (Enable24EMABounceTrading ? "24 EMA ON" : "24 EMA OFF") + "\n" +
                                 actionPadding + (Enable8EMABounceTrading ? "8 EMA ON" : "8 EMA OFF") + "\n" +
-                                actionPadding + "Toggle Profit: " +
+                                actionPadding + "EMA Profit: " +
                                 (UseOppositeColorExitForProfits ? "LET RUN" : "5T PROFIT") + "\n" +
                                 actionPadding + "Manual\n" +
-                                actionPadding + "Arm/Disarm\n" +
+                                actionPadding + "4-Tick PB Arm/Disarm\n" +
                                 actionPadding + "Toggle HUD\n" +
                                 actionPadding + "Flatten";
             ChartPoint point = GetStatusLabelPoint(tickSize, 18);
