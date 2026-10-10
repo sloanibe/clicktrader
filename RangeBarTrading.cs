@@ -32,7 +32,8 @@ namespace PowerLanguage.Strategy
         // The only user-facing strategy settings.
         // Zero measures completed chart bars; positive values override the range.
         [Input] public int RangeSizeTicks { get; set; }
-        // Zero uses two ranges plus one tick; positive values override the stop.
+        // Zero uses two ranges plus one tick. Positive values may widen the
+        // stop, but cannot reduce that distance or the nine-tick minimum.
         [Input] public int ProtectiveStopLossTicks { get; set; }
         [Input] public int ProfitTargetTicks { get; set; }
         // Retained in its original input slot to preserve saved MultiCharts
@@ -55,6 +56,7 @@ namespace PowerLanguage.Strategy
         // Fixed internal behavior; these are intentionally not exposed in the
         // Strategy Properties dialog.
         private const int OrderQuantity = 1;
+        private const int MinimumAutomaticLossTicks = 9;
         private const int ProximityTicks = 5;
         private const int RecoverySessionProfitGoalTicks = 5;
         private const int OppositeColorExitMinimumProfitTicks = 5;
@@ -803,12 +805,24 @@ namespace PowerLanguage.Strategy
             // Ctrl-click now controls setup watching; Esc/F12 remain flatten.
             // Never disturb the exits of an existing position.
             if (StrategyInfo.MarketPosition != 0) return;
-            CancelWorkingEntryOrders();
             if (m_AutoEntryArmed && m_FourTickPinBarMode) {
+                CancelWorkingEntryOrders();
                 ActivateKillMode(0);
                 return;
             }
 
+            int direction = IsAskChart ? 1 : -1;
+            if (Bars.CurrentBar <= 1 || m_FastEMA == null ||
+                m_SlowEMA == null ||
+                !IsFourTickPinBarEmaOrderValid(direction,
+                    m_FastEMA[0], m_SlowEMA[0])) {
+                SetClickFeedback(IsAskChart
+                    ? "CTRL BLOCKED | ASK REQUIRES EMA8 > EMA24"
+                    : "CTRL BLOCKED | BID REQUIRES EMA8 < EMA24");
+                return;
+            }
+
+            CancelWorkingEntryOrders();
             ClearPendingEntry();
             ClearPinBarProjectionLines();
             ResetEmaBounceProjection();
@@ -822,7 +836,7 @@ namespace PowerLanguage.Strategy
             m_AutoEntryArmed = true;
             m_FourTickPinBarMode = true;
             m_HudDisplayEnabled = true;
-            m_ArmedDirection = IsAskChart ? 1 : -1;
+            m_ArmedDirection = direction;
             m_PinProjectionBar = -1;
             m_PinProjectionQualified = false;
             RefreshSetupCandidates(tickSize);
@@ -1235,11 +1249,11 @@ namespace PowerLanguage.Strategy
             bool valid = m_AutoEntryArmed && currentPosition == 0 &&
                          !m_ShiftProjectionActive && !m_KillModeActive &&
                          Bars.CurrentBar > 1 && m_FastEMA != null &&
-                         m_SlowEMA != null && m_ProfileEMA != null &&
+                         m_SlowEMA != null &&
                          GetActiveRangeTicks(tickSize) == 4 &&
                          IsEntryDirectionAllowed(direction) &&
                          IsFourTickPinBarContextValid(
-                             direction, m_FastEMA[0], m_SlowEMA[0], m_ProfileEMA[0],
+                             direction, m_FastEMA[0], m_SlowEMA[0],
                              Bars.Open[1], Bars.Close[1]) &&
                          TryGetFourTickPinBarProjection(
                              direction, tickSize, Bars.Open[0], Bars.High[0],
@@ -1274,15 +1288,22 @@ namespace PowerLanguage.Strategy
                                              completionPrice, direction, tickSize);
         }
 
-        private static bool IsFourTickPinBarContextValid(
-            int direction, double ema8, double ema24, double ema50,
-            double previousOpen, double previousClose) {
-            // Strict EMA ordering; touching EMAs do not satisfy the stack.
-            // A doji is permitted, since it has no opposite bar color.
+        private static bool IsFourTickPinBarEmaOrderValid(
+            int direction, double ema8, double ema24) {
+            // The 50 EMA filter is temporarily disabled for Ctrl-click pins.
+            // Strict ordering: touching EMAs cannot arm or qualify a setup.
             return direction > 0
-                ? ema8 > ema24 && ema24 > ema50 && previousClose >= previousOpen
-                : direction < 0 && ema8 < ema24 && ema24 < ema50 &&
-                  previousClose <= previousOpen;
+                ? ema8 > ema24
+                : direction < 0 && ema8 < ema24;
+        }
+
+        private static bool IsFourTickPinBarContextValid(
+            int direction, double ema8, double ema24,
+            double previousOpen, double previousClose) {
+            // A doji is permitted, since it has no opposite bar color.
+            return IsFourTickPinBarEmaOrderValid(direction, ema8, ema24) &&
+                   (direction > 0 ? previousClose >= previousOpen
+                                  : previousClose <= previousOpen);
         }
 
         // A direct reversal from the live extreme must finish a single-tail
@@ -3040,12 +3061,18 @@ namespace PowerLanguage.Strategy
                                : currentPosition < 0 && close > open);
         }
 
-        private void UpdateSessionProfitExit(int currentPosition) {
+        private void UpdateSessionProfitExit(int currentPosition, double tickSize) {
             m_OppositeColorStopPrice = 0;
             ClearRecoveryColorStopProjection();
             if (currentPosition == 0 || !m_RecoveryModeActive) return;
-            // Recovery trades wait for a confirmed opposite-color close,
-            // without a minimum favorable move or an extra confirmation tick.
+            // A negative session changes profit-taking, not loss protection.
+            // Only a profitable trade may exit on an opposite-color close;
+            // every losing trade remains protected by its native stop.
+            double entryPrice = StrategyInfo.AvgEntryPrice;
+            double tradeProfit = currentPosition > 0
+                ? Bars.Close[0] - entryPrice
+                : entryPrice - Bars.Close[0];
+            if (entryPrice <= 0 || tradeProfit <= tickSize * 1e-6) return;
             if (Bars.CurrentBar > m_ProfitRuleEntryBar &&
                 IsOpposingColorClose(currentPosition, Bars.Status == EBarState.Close,
                                      Bars.Open[0], Bars.Close[0]))
@@ -3059,7 +3086,7 @@ namespace PowerLanguage.Strategy
         private void UpdateOppositeColorExitManagement(int currentPosition,
                                                        double tickSize) {
             if (m_SessionProfitRuleActive) {
-                UpdateSessionProfitExit(currentPosition);
+                UpdateSessionProfitExit(currentPosition, tickSize);
                 return;
             }
             bool colorCloseExitActive = UseOppositeColorExitForProfits &&
@@ -3101,6 +3128,10 @@ namespace PowerLanguage.Strategy
             double stagedReversalStop = currentPosition > 0
                 ? RoundToTick(projectedOppositeClose - tickSize, tickSize)
                 : RoundToTick(projectedOppositeClose + tickSize, tickSize);
+            // Arming the profit trail must not install a tighter losing stop.
+            // Clamp before ratcheting so a later bar cannot retain such a stop.
+            stagedReversalStop = ClampAutomaticLossExitPrice(currentPosition,
+                entryPrice, stagedReversalStop, tickSize);
             if (currentPosition > 0) {
                 if (m_OppositeColorStopPrice <= 0 ||
                     stagedReversalStop > m_OppositeColorStopPrice)
@@ -3343,9 +3374,20 @@ namespace PowerLanguage.Strategy
         }
 
         private int GetProtectiveStopLossTicks(double tickSize) {
-            if (ProtectiveStopLossTicks > 0) return ProtectiveStopLossTicks;
             int rangeTicks = (int)Math.Round(GetActiveRangeTicks(tickSize));
-            return rangeTicks > 0 ? (2 * rangeTicks) + 1 : 0;
+            int minimumStopTicks = Math.Max(MinimumAutomaticLossTicks,
+                                            (2 * rangeTicks) + 1);
+            return Math.Max(minimumStopTicks, ProtectiveStopLossTicks);
+        }
+
+        private static double ClampAutomaticLossExitPrice(int currentPosition,
+            double entryPrice, double exitPrice, double tickSize) {
+            double direction = currentPosition > 0 ? 1 : -1;
+            double result = direction * (exitPrice - entryPrice);
+            double minimumLoss = MinimumAutomaticLossTicks * tickSize;
+            return result < -1e-8 && result > -minimumLoss
+                ? entryPrice - direction * minimumLoss
+                : exitPrice;
         }
 
         private void UpdateProjectedEntryLine() {

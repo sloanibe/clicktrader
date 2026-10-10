@@ -29,13 +29,15 @@ def main():
     suites = {
         "ClickModifierTests": ("HasModifier",),
         "PinBarArmingTests": ("ArmAutomatedEntryMode", "ToggleFourTickPinBarWatch",
-                              "IsEntryDirectionAllowed"),
+                              "IsEntryDirectionAllowed", "IsFourTickPinBarEmaOrderValid"),
         "ShiftManualEntryTests": ("StartShiftProjectionEntry", "UpdateShiftProjectionEntry", "SubmitShiftProjectionEntryNow", "ClearShiftProjectionEntry"),
         "FourTickPinBarTests": ("UpdateFourTickPinBarProjection", "TryGetFourTickPinBarProjection",
-                                "IsFourTickPinBarContextValid"),
+                                "IsFourTickPinBarContextValid", "IsFourTickPinBarEmaOrderValid"),
         "SessionProfitRuleTests": ("GetProfitTargetTicksForNewTrade", "GetSessionProfitTargetTicks",
-                                   "IsOpposingColorClose", "UpdateSessionProfitExit",
+                                   "IsOpposingColorClose", "UpdateSessionProfitExit", "ClampAutomaticLossExitPrice",
                                    "UpdateSessionExitProjectionLines", "ClearPinBarProjectionLines"),
+        "AutomaticLossExitTests": ("GetProtectiveStopLossTicks", "ClampAutomaticLossExitPrice",
+                                   "UpdateOppositeColorExitManagement", "SubmitActiveExitOrders"),
     }
     csc = Path("/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe")
     windows = not shutil.which("mcs") and csc.exists()

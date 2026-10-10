@@ -22,6 +22,11 @@ namespace PowerLanguage.Indicator
         [Input] public int SessionStartHour { get; set; }
         [Input] public int SessionStartMinute { get; set; }
         [Input] public double RoundTripCostDollars { get; set; }
+        [Input] public int ProtectiveStopLossTicks { get; set; }
+
+        // Match RangeBarTrading's Shift/pin session-P&L exit rules.
+        private const int SessionProfitTargetTicks = 4;
+        private const int MinimumAutomaticLossTicks = 9;
 
         private sealed class BarValue
         {
@@ -76,6 +81,7 @@ namespace PowerLanguage.Indicator
             SessionStartHour = 6;
             SessionStartMinute = 30;
             RoundTripCostDollars = 0;
+            ProtectiveStopLossTicks = 0;
         }
 
         protected override void StartCalc()
@@ -122,10 +128,10 @@ namespace PowerLanguage.Indicator
                 double price = Bars.Close[0];
                 if (StopReached(m_ActiveTrade, price))
                     CloseTrade(m_ActiveTrade, currentBar, Bars.Time[0],
-                        StopFill(m_ActiveTrade, price), "two-range-plus-one-tick stop");
+                        StopFill(m_ActiveTrade, price), "protective stop");
                 else if (TargetReached(m_ActiveTrade, price))
                     CloseTrade(m_ActiveTrade, currentBar, Bars.Time[0],
-                        m_ActiveTrade.TargetPrice, "one-range target");
+                        m_ActiveTrade.TargetPrice, "four-tick target");
                 return;
             }
 
@@ -221,9 +227,8 @@ namespace PowerLanguage.Indicator
             trade.EntryHigh = bar.High;
             trade.EntryLow = bar.Low;
             trade.RangeTicks = rangeTicks;
-            trade.UseProfitTarget = dailyNet >= -0.005;
-            trade.TargetPrice = bar.Close + direction * rangeTicks * m_TickSize;
-            trade.StopPrice = bar.Close - direction * (2.0 * rangeTicks + 1) * m_TickSize;
+            int stopTicks = GetProtectiveStopLossTicks(rangeTicks);
+            ConfigureTradeExits(trade, dailyNet);
             trade.LastClosedBarProcessed = bar.Number;
 
             // Resolve old clicked bars against the bars already on the chart.
@@ -284,8 +289,8 @@ namespace PowerLanguage.Indicator
                 "daily net at entry {3:C2}; {4}; replayed through bar {5}; {6}",
                 direction > 0 ? "LONG" : "SHORT", bar.Close, bar.Time,
                 dailyNet, trade.UseProfitTarget ?
-                string.Format("+{0}/-{1} ticks", rangeTicks, 2L * rangeTicks + 1) :
-                string.Format("opposing close/-{0} ticks", 2L * rangeTicks + 1), trade.LastClosedBarProcessed,
+                string.Format("+{0}/-{1} ticks", SessionProfitTargetTicks, stopTicks) :
+                string.Format("profitable opposing close/-{0} ticks", stopTicks), trade.LastClosedBarProcessed,
                 trade.IsClosed ? "closed and tallied" : "still open"));
         }
 
@@ -324,6 +329,29 @@ namespace PowerLanguage.Indicator
             return bestSize;
         }
 
+        private void ConfigureTradeExits(ManualTrade trade, double dailyNet)
+        {
+            trade.UseProfitTarget = dailyNet >= 0;
+            trade.TargetPrice = trade.EntryPrice +
+                trade.Direction * SessionProfitTargetTicks * m_TickSize;
+            trade.StopPrice = trade.EntryPrice -
+                trade.Direction * GetProtectiveStopLossTicks(trade.RangeTicks) * m_TickSize;
+        }
+
+        private int GetProtectiveStopLossTicks(int rangeTicks)
+        {
+            return Math.Max(Math.Max(MinimumAutomaticLossTicks, (2 * rangeTicks) + 1),
+                            ProtectiveStopLossTicks);
+        }
+
+        private static bool IsOpposingColorClose(int currentPosition,
+                                                 bool barClosed,
+                                                 double open, double close)
+        {
+            return barClosed && (currentPosition > 0 ? close < open
+                               : currentPosition < 0 && close > open);
+        }
+
         private void ProcessCompletedBar(ManualTrade trade, BarValue bar)
         {
             if (trade.IsClosed || bar.Number <= trade.EntryBar ||
@@ -336,24 +364,26 @@ namespace PowerLanguage.Indicator
             if (StopReached(trade, bar.Open))
             {
                 CloseTrade(trade, bar.Number, bar.Time,
-                    StopFill(trade, bar.Open), "two-range-plus-one-tick stop gap");
+                    StopFill(trade, bar.Open), "protective stop gap");
                 return;
             }
             if (StopTouched(trade, bar))
             {
                 CloseTrade(trade, bar.Number, bar.Time,
-                    trade.StopPrice, "two-range-plus-one-tick stop");
+                    trade.StopPrice, "protective stop");
                 return;
             }
             if (trade.UseProfitTarget && TargetTouched(trade, bar))
             {
                 CloseTrade(trade, bar.Number, bar.Time,
-                    trade.TargetPrice, "one-range target");
+                    trade.TargetPrice, "four-tick target");
                 return;
             }
-            if (!trade.UseProfitTarget &&
-                ((trade.Direction > 0 && bar.Close < bar.Open) ||
-                 (trade.Direction < 0 && bar.Close > bar.Open)))
+            // Recovery changes profit-taking only. A reversal while losing or
+            // at break-even must not replace the protective stop with a loss.
+            double tradeProfit = trade.Direction * (bar.Close - trade.EntryPrice);
+            if (!trade.UseProfitTarget && tradeProfit > m_TickSize * 1e-6 &&
+                IsOpposingColorClose(trade.Direction, true, bar.Open, bar.Close))
             {
                 CloseTrade(trade, bar.Number, bar.Time,
                     bar.Close, "opposing-color close");
@@ -365,13 +395,13 @@ namespace PowerLanguage.Indicator
             if (trade.IsClosed) return;
             if (StopReached(trade, bar.Open))
                 CloseTrade(trade, bar.Number, bar.Time,
-                    StopFill(trade, bar.Open), "two-range-plus-one-tick stop gap");
+                    StopFill(trade, bar.Open), "protective stop gap");
             else if (StopTouched(trade, bar))
                 CloseTrade(trade, bar.Number, bar.Time,
-                    trade.StopPrice, "two-range-plus-one-tick stop");
+                    trade.StopPrice, "protective stop");
             else if (trade.UseProfitTarget && TargetTouched(trade, bar))
                 CloseTrade(trade, bar.Number, bar.Time,
-                    trade.TargetPrice, "one-range target");
+                    trade.TargetPrice, "four-tick target");
         }
 
         private bool StopReached(ManualTrade trade, double price)

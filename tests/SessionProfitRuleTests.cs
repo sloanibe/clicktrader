@@ -3,6 +3,7 @@ using System.Drawing;
 
 class SessionProfitRuleTests {
     const int SessionProfitTargetTicks = 4, OneBarProfitTargetTicks = 5;
+    const int MinimumAutomaticLossTicks = 9;
     enum EBarState { Open, Close }
     enum ETLStyle { ToolDashed }
     class ITrendLineObject {
@@ -16,7 +17,7 @@ class SessionProfitRuleTests {
         public EBarState Status = EBarState.Open;
         public double[] Open = {100}, Close = {99.75};
     }
-    class StrategyData { public double OpenEquity; }
+    class StrategyData { public double OpenEquity, AvgEntryPrice = 100; }
     class CloseOrder { public int Sends; public void Send() { Sends++; } }
     BarData Bars = new BarData();
     StrategyData StrategyInfo = new StrategyData();
@@ -76,39 +77,54 @@ class SessionProfitRuleTests {
             Check(target != null, "nonnegative preview recreates target");
 
             var recovery = new SessionProfitRuleTests();
-            recovery.Bars.Close[0] = 100 - side * .25;
-            recovery.UpdateSessionProfitExit(side);
-            Check(recovery.m_CloseLongNextBar.Sends + recovery.m_CloseShortNextBar.Sends == 0,
-                  "forming opposite color cannot exit");
-            recovery.Bars.Status = EBarState.Close;
-            recovery.Bars.Close[0] = 100;
-            recovery.UpdateSessionProfitExit(side);
-            Check(!recovery.m_ColorCloseExitRequested, "doji cannot exit");
-            Check(recovery.m_OppositeColorStopPrice == 0, "no legacy reversal stop");
+            recovery.Bars.Open[0] = 100 + side;
             recovery.Bars.Close[0] = 100 + side * .25;
-            recovery.UpdateSessionProfitExit(side);
-            Check(!recovery.m_ColorCloseExitRequested, "same color cannot exit");
-            recovery.Bars.Close[0] = 100 - side * .25;
+            recovery.UpdateSessionProfitExit(side, .25);
+            Check(!recovery.m_ColorCloseExitRequested, "forming profitable opposite bar cannot exit");
+            recovery.Bars.Status = EBarState.Close;
+            foreach (int resultTicks in new[] {-17, -9, -8, -1, 0}) {
+                recovery.Bars.Close[0] = 100 + side * resultTicks * .25;
+                recovery.UpdateSessionProfitExit(side, .25);
+                Check(!recovery.m_ColorCloseExitRequested,
+                      "losing or break-even opposite close leaves loss exit to protective stop");
+                Check(recovery.m_CloseLongNextBar.Sends + recovery.m_CloseShortNextBar.Sends == 0,
+                      "no recovery market order at a loss or break-even");
+            }
+            Check(recovery.m_OppositeColorStopPrice == 0, "no legacy reversal stop");
+            recovery.Bars.Close[0] = recovery.Bars.Open[0];
+            recovery.UpdateSessionProfitExit(side, .25);
+            Check(!recovery.m_ColorCloseExitRequested, "profitable doji cannot exit");
+            recovery.Bars.Close[0] = 100 + side * 1.25;
+            recovery.UpdateSessionProfitExit(side, .25);
+            Check(!recovery.m_ColorCloseExitRequested, "profitable same color cannot exit");
+            recovery.Bars.Close[0] = 100 + side * .25;
             recovery.Bars.CurrentBar = recovery.m_ProfitRuleEntryBar;
-            recovery.UpdateSessionProfitExit(side);
-            Check(!recovery.m_ColorCloseExitRequested, "entry bar is not a later reversal");
+            recovery.UpdateSessionProfitExit(side, .25);
+            Check(!recovery.m_ColorCloseExitRequested, "entry bar cannot request profit exit");
             recovery.Bars.CurrentBar++;
-            recovery.UpdateSessionProfitExit(side);
-            Check(recovery.m_ColorCloseExitRequested, "opposite close exits without minimum profit");
+            recovery.UpdateSessionProfitExit(side, .25);
+            Check(recovery.m_ColorCloseExitRequested, "later profitable opposite close requests exit");
             Check((side > 0 ? recovery.m_CloseLongNextBar.Sends : recovery.m_CloseShortNextBar.Sends) == 1,
-                  "correct close order submitted");
+                  "correct profit close order submitted");
             recovery.Bars.Status = EBarState.Open;
-            recovery.UpdateSessionProfitExit(side);
+            foreach (int resultTicks in new[] {-1, 0}) {
+                recovery.Bars.Close[0] = 100 + side * resultTicks * .25;
+                recovery.UpdateSessionProfitExit(side, .25);
+                Check((side > 0 ? recovery.m_CloseLongNextBar.Sends : recovery.m_CloseShortNextBar.Sends) == 1,
+                      "pending profit exit cannot resend at a loss or break-even");
+            }
+            recovery.Bars.Close[0] = 100 + side * .25;
+            recovery.UpdateSessionProfitExit(side, .25);
             Check((side > 0 ? recovery.m_CloseLongNextBar.Sends : recovery.m_CloseShortNextBar.Sends) == 2,
-                  "exit request persists until fill");
-            recovery.UpdateSessionProfitExit(0);
+                  "pending exit resends while still profitable");
+            recovery.UpdateSessionProfitExit(0, .25);
             Check(recovery.m_CloseLongNextBar.Sends + recovery.m_CloseShortNextBar.Sends == 2,
                   "flat position sends no close");
             var profitable = new SessionProfitRuleTests();
             profitable.m_RecoveryModeActive = false;
             profitable.Bars.Status = EBarState.Close;
             profitable.Bars.Close[0] = 100 - side * .25;
-            profitable.UpdateSessionProfitExit(side);
+            profitable.UpdateSessionProfitExit(side, .25);
             Check(!profitable.m_ColorCloseExitRequested, "fixed-target trade ignores opposite close");
         }
         var guides = new SessionProfitRuleTests();

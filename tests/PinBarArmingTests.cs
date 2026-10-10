@@ -8,7 +8,9 @@ class PinBarArmingTests {
     class PositionData { public int MarketPosition; }
     BarData Bars = new BarData();
     PositionData StrategyInfo = new PositionData();
-    double[] m_SlowEMA = {100, 99};
+    double[] m_SlowEMA = {100, 99}, m_FastEMA = {101}, m_ProfileEMA = {99};
+    string feedback;
+    void SetClickFeedback(string message) { feedback = message; }
     bool IsAskChart = true;
     bool m_FourTickPinBarMode, m_AutoEntryArmed, m_HudDisplayEnabled;
     bool m_KillModeActive = true, m_FlattenRequested = true;
@@ -76,10 +78,15 @@ class PinBarArmingTests {
             }
 
             var watch = new PinBarArmingTests { IsAskChart = ask };
+            watch.m_FastEMA[0] = 100 + allowed;
+            watch.m_ProfileEMA[0] = 100 - allowed;
             watch.ToggleFourTickPinBarWatch(.25);
             Check(watch.m_AutoEntryArmed && watch.m_FourTickPinBarMode &&
                   watch.m_ArmedDirection == allowed && watch.refreshes == 1,
                   "Ctrl-click watch uses permitted chart direction");
+            // Disarming must remain available even after the EMA stack flips.
+            watch.m_FastEMA[0] = 100 - allowed;
+            watch.m_ProfileEMA[0] = 100 + allowed;
             watch.ToggleFourTickPinBarWatch(.25);
             Check(!watch.m_AutoEntryArmed && watch.m_ArmedDirection == 0,
                   "second Ctrl-click disarms");
@@ -87,6 +94,45 @@ class PinBarArmingTests {
             watch.ToggleFourTickPinBarWatch(.25);
             Check(!watch.m_AutoEntryArmed && watch.cancellations == 2,
                   "Ctrl-click leaves open position alone");
+        }
+        foreach (bool ask in new[] {true, false}) {
+            foreach (double fast in new[] {99.0, 100.0, 101.0}) {
+                foreach (double profile in new[] {99.0, 100.0, 101.0}) {
+                    var attempt = new PinBarArmingTests { IsAskChart = ask };
+                    attempt.m_FastEMA[0] = fast;
+                    attempt.m_ProfileEMA[0] = profile;
+                    bool valid = ask ? fast > 100 : fast < 100;
+                    attempt.ToggleFourTickPinBarWatch(.25);
+                    Check(attempt.m_AutoEntryArmed == valid &&
+                          attempt.m_FourTickPinBarMode == valid,
+                          "Ctrl arming uses 8/24 ordering regardless of the 50 EMA");
+                    if (!valid) {
+                        Check(attempt.cancellations == 0 && attempt.refreshes == 0 &&
+                              attempt.m_KillModeActive && attempt.m_FlattenRequested &&
+                              attempt.m_ArmedDirection == 0 &&
+                              attempt.feedback.Contains(ask ? "ASK REQUIRES" : "BID REQUIRES"),
+                              "rejected Ctrl click explains gate without changing execution state");
+                        attempt.m_ShiftProjectionActive = true;
+                        attempt.m_ActiveEntrySetup = EEntrySetup.PinBar;
+                        attempt.m_StopPrice = 101;
+                        attempt.ToggleFourTickPinBarWatch(.25);
+                        Check(attempt.m_ShiftProjectionActive && attempt.m_StopPrice == 101 &&
+                              attempt.cancellations == 0,
+                              "rejected arming preserves existing pending entry");
+                    }
+                }
+            }
+            var no50 = new PinBarArmingTests { IsAskChart = ask };
+            no50.m_FastEMA[0] = ask ? 101 : 99;
+            no50.m_ProfileEMA = null;
+            no50.ToggleFourTickPinBarWatch(.25);
+            Check(no50.m_AutoEntryArmed && no50.m_FourTickPinBarMode,
+                  "Ctrl watch can arm without a 50 EMA instance");
+            var startup = new PinBarArmingTests { IsAskChart = ask };
+            startup.Bars.CurrentBar = 1;
+            startup.ToggleFourTickPinBarWatch(.25);
+            Check(!startup.m_AutoEntryArmed && startup.feedback != null,
+                  "startup cannot arm before EMA data is ready");
         }
         Console.WriteLine("PASS: " + checks + " pin-bar arming assertions");
     }

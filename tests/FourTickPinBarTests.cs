@@ -87,23 +87,19 @@ class FourTickPinBarTests {
         }
 
         foreach (int side in new[] {1, -1}) {
-            double ema8 = 100 + side * .5, ema24 = 100 + side * .25, ema50 = 100;
-            Check(IsFourTickPinBarContextValid(side, ema8, ema24, ema50, 100, 100 + side * .25),
-                  "ordered EMAs with matching prior color");
-            Check(IsFourTickPinBarContextValid(side, ema8, ema24, ema50, 100, 100),
-                  "ordered EMAs allow prior doji");
-            Check(!IsFourTickPinBarContextValid(side, ema8, ema24, ema50, 100, 100 - side * .25),
+            double ema8 = 100 + side * .5, ema24 = 100 + side * .25;
+            Check(IsFourTickPinBarContextValid(side, ema8, ema24, 100, 100 + side * .25),
+                  "ordered 8/24 EMAs with matching prior color");
+            Check(IsFourTickPinBarContextValid(side, ema8, ema24, 100, 100),
+                  "ordered 8/24 EMAs allow prior doji");
+            Check(!IsFourTickPinBarContextValid(side, ema8, ema24, 100, 100 - side * .25),
                   "opposite prior color rejected");
-            Check(!IsFourTickPinBarContextValid(side, ema24, ema24, ema50, 100, 100),
+            Check(!IsFourTickPinBarContextValid(side, ema24, ema24, 100, 100),
                   "8 equals 24 rejected");
-            Check(!IsFourTickPinBarContextValid(side, ema8, ema24, ema24, 100, 100),
-                  "24 equals 50 rejected");
-            Check(!IsFourTickPinBarContextValid(side, ema50, ema24, ema50, 100, 100),
+            Check(!IsFourTickPinBarContextValid(side, 100, ema24, 100, 100),
                   "8 on wrong side rejected");
-            Check(!IsFourTickPinBarContextValid(side, ema8, ema24, ema8, 100, 100),
-                  "50 on wrong side rejected");
         }
-        Check(!IsFourTickPinBarContextValid(0, 100, 99, 98, 100, 100), "no direction rejected");
+        Check(!IsFourTickPinBarContextValid(0, 100, 99, 100, 100), "no direction rejected");
 
         var signal = new FourTickPinBarTests();
         signal.UpdateFourTickPinBarProjection(.25, 0);
@@ -179,6 +175,16 @@ class FourTickPinBarTests {
             watch.Bars.Close[1] = 100 + side * .25;
             watch.UpdateFourTickPinBarProjection(.25, 0);
             Check(watch.drawingVisible, "valid trend and prior color draws setup");
+            foreach (double profile in new[] {98.0, 100.0, 102.0}) {
+                watch.m_ProfileEMA[0] = profile;
+                watch.UpdateFourTickPinBarProjection(.25, 0);
+                Check(watch.drawingVisible && watch.m_PinEntryCandidateValid,
+                      "live pin qualifies regardless of 50 EMA ordering");
+            }
+            watch.m_ProfileEMA = null;
+            watch.UpdateFourTickPinBarProjection(.25, 0);
+            Check(watch.drawingVisible && watch.m_PinEntryCandidateValid,
+                  "live pin qualifies without a 50 EMA instance");
             watch.m_ActiveEntrySetup = EEntrySetup.PinBar;
             watch.m_SlowEMA[0] = watch.m_FastEMA[0];
             watch.m_PinEntryCandidateValid = false;
@@ -199,10 +205,10 @@ class FourTickPinBarTests {
             watch.UpdateFourTickPinBarProjection(.25, 0);
             Check(watch.drawingVisible, "preceding doji qualifies");
             watch.m_ActiveEntrySetup = EEntrySetup.PinBar;
-            watch.m_ProfileEMA = null;
+            watch.m_SlowEMA = null;
             watch.UpdateFourTickPinBarProjection(.25, 0);
             Check(!watch.drawingVisible && watch.cancellations == 3 && watch.m_AutoEntryArmed,
-                  "missing EMA clears pending setup safely");
+                  "missing 24 EMA clears pending setup safely");
         }
         Console.WriteLine("PASS: " + checks + " pin-bar assertions");
     }
