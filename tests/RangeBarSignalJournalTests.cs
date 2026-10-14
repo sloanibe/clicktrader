@@ -53,6 +53,15 @@ class RangeBarSignalJournalTests {
             Check(records[0].BarNumber == 10 && records[0].FillBarNumber == 11 && records[0].High < records[0].Price,
                 "intended pin bar remains distinct from next-bar confirmation price");
             Check(records[0].FinalBar, "next-bar fill finalizes setup snapshot");
+            Check(records[0].FillAnchor != null && records[0].FillAnchor.BarNumber == 11 && records[0].FillAnchor.Open == 101 &&
+                !records[0].FillAnchor.FinalBar, "entry callback separately persists its forming recorded fill bar");
+            DateTime setupTime = records[0].BarTime;
+            signal.Bars.Status = EBarState.Close; signal.Bars.Time[0] = signal.Bars.Time[0].AddSeconds(1);
+            signal.MaintainTradeHistory(); signal.Idle();
+            records = RangeBarJournal.Fills(RangeBarJournal.Read(path));
+            Check(records.Count == 1 && records[0].BarTime == setupTime && records[0].FillAnchor.FinalBar &&
+                records[0].FillAnchor.BarTime == signal.Bars.Time[0], "later fill-bar completion updates only its own anchor without moving the setup bar");
+
             string tradeId = records[0].TradeId;
             var restarted = new RangeBarSignalJournalTests {TradeHistoryDirectory = folder};
             restarted.OnBrokerStategyOrderFilled(false, 1, 102); restarted.Idle();

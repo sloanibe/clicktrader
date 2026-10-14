@@ -4,6 +4,9 @@ The signal writes one persistent, readable record per trade in
 `C:\rangebar_entries` (`/mnt/c/rangebar_entries` from this WSL workspace).
 The indicator reads that same file and plots the entry, correlated exits, and
 intended entry bar. File operations run on a background worker.
+`RangeBarTrading` no longer draws its older filled-trade arrows or trade-type
+labels; execution annotations come from this indicator. Setup previews,
+stop/target control lines, and the signal HUD remain available.
 
 ## Installation and migration
 
@@ -86,7 +89,9 @@ Positive results show `+2 ticks`, losses show `-2 ticks`, and break-even shows
 `0 ticks`, before fees. With partial fills, entry/exit summary prices are
 quantity-weighted averages and the exit time is the final close confirmation.
 The reader retains individual fill prices and anchors internally for exact
-partial-exit annotations; the human summary still shows one exit line. Profit
+partial-exit annotations; the human summary still shows one exit line. New compact
+metadata also retains separate recorded fill-bar anchors (`at=`) so horizontal
+and vertical entry markers can use different candles after reload. Profit
 in ticks accumulates the realized movement across matched units, not an average
 per contract. The current signal submits one contract.
 
@@ -165,19 +170,29 @@ application restarts. Files are never automatically deleted or rotated.
 
 ## Chart annotations and inputs
 
-Black horizontal arrowheads have no shafts: entries point right at the intended
-candle's left edge, exits point left at the exit candle's right edge, at their
-confirmed prices. Black vertical arrows point up at buy-entry lows or down at
+White horizontal arrowheads have no shafts: entries point right at the recorded
+fill candle's left edge, exits point left at the recorded exit candle's right edge,
+at their confirmed prices. Black vertical arrows point up at buy-entry lows or down at
 sell-entry highs, regardless of tail length. Black labels read `P1 in 100` /
 `P1 out 101` or `M2 in 102` / `M2 out 101`; other types use `T`. Green connectors
 mean zero/positive price result; red means loss, before fees. Labels stay attached
 beside their arrows; dense clusters can overlap. Informational boxes stay hidden
 unless enabled.
 
+Vertical entry arrows use the intended setup bar; horizontal entry heads use
+the separately recorded fill bar. Their labels and connector endpoints use that
+same horizontal anchor. Both snapshots are saved and finalized independently,
+including when the intended bar closes before the entry confirmation's bar.
 Journal bar placement uses saved timestamps and OHLC, with native tick IDs where
 available. Forming snapshots use their preceding completed bar. Missing or
 ambiguous identities are not shifted to neighboring candles by a price guess.
-Reload the same range and quote side for reliable identity matching.
+Reload the same range and quote side for reliable identity matching. Earlier
+detailed records retaining setup/fill calculation numbers can use their relative
+bar offset. For earlier compact entry records without fill-bar identity, if the
+setup bar cannot contain the fill price but the immediate next bar can, the
+horizontal arrow uses that next bar. This is a price-based inference, not a
+recovered execution timestamp. Otherwise those records retain their prior
+placement. Vertical setup arrows and exit markers do not use this fallback.
 
 | Input | Default | Behavior |
 | --- | --- | --- |
@@ -219,7 +234,8 @@ python3 tools/check_four_tick_pinbar.py
 ```
 
 Tests cover compact closed summaries with signed long/short tick results,
-indicator decoding and partial-exit anchors, unfinished-trade preservation,
+indicator decoding, separate setup/fill anchors and their finalization,
+white horizontal heads with black vertical arrows/labels, partial-exit anchors, unfinished-trade preservation,
 single-record consolidation with a missing exit, multiple/stale bar updates, legacy compatibility, partial quantities and weighted results, restart
 recovery, duplicate retries, file deletion, concurrent/blocked writes, atomic
 replacement, chart drawing, and bid-entry routing when the false input arrives
@@ -227,7 +243,7 @@ after order construction. Both studies compile against the installed SDK.
 Fixtures use temporary directories and simulated broker callbacks, not live
 trades or the real journal folder. The isolation check verifies that committed
 inputs and other trading logic remain unchanged outside the approved direction
-repair and history hooks. Live verification requires the running application.
+repair, history hooks, and removal of legacy execution annotations. Live verification requires the running application.
 
 Reference: [MultiCharts .NET Programming Guide, broker fill events](https://download.multicharts.com/downloads/MultiCharts.NET-ProgrammingGuide-v1.1.pdf)
 and installed `PLTypes.xml` / `PLStudiesProxy.xml` API documentation.

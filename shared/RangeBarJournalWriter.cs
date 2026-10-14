@@ -103,6 +103,7 @@
                 foreach (var active in state.Active) if (active.EventId == r.Target) {
                     active.BarTime = r.BarTime; active.TickId = r.TickId; active.Open = r.Open; active.High = r.High;
                     active.Low = r.Low; active.Close = r.Close; active.FinalBar = r.FinalBar;
+                    active.FillAnchor = r.FillAnchor == null ? active.FillAnchor : r.FillAnchor.Copy();
                 }
                 return;
             }

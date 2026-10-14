@@ -123,6 +123,29 @@ static class RangeBarTradeConsolidationTests {
             var shortSnapshot = RangeBarJournal.Read(partial);
             Check(Count(System.IO.File.ReadAllText(partial), "  Exit:") == 1 && shortSnapshot.Count == 3,
                 "multiple partial exits have one human exit summary while indicator preserves all actual fill prices");
+            string anchored = RangeBarJournal.FileName(directory, "separate anchors");
+            var staged = RangeBarJournalTests.Record("separate", "entry", 1, 101.25, time); staged.FinalBar = true;
+            staged.BarNumber = 10; staged.BarTime = time; staged.High = 101;
+            staged.FillAnchor = new RangeBarJournalRecord {BarNumber = 11, BarTime = time.AddSeconds(1),
+                Open = 101, High = 102, Low = 101, Close = 102, FinalBar = true, TickId = 12};
+            var decodedLegacy = RangeBarJournal.Decode(RangeBarJournal.Encode(staged));
+            Check(decodedLegacy.FillAnchor != null && decodedLegacy.FillAnchor.BarNumber == 11 && decodedLegacy.BarNumber == 10,
+                "labeled event codec retains both setup and fill-bar identities");
+            RangeBarJournal.Append(anchored, staged);
+            var openAnchors = RangeBarJournal.Read(anchored);
+            Check(openAnchors.Count == 1 && openAnchors[0].FillAnchor.TickId == 12 && openAnchors[0].FillAnchor.High == 102,
+                "open detailed record preserves actual fill-bar timestamp, normalized tick ID and shape");
+            var anchorClose = RangeBarJournalTests.Record("separate", "exit", -1, 102, time.AddSeconds(2)); anchorClose.FinalBar = true;
+            anchorClose.FillAnchor = new RangeBarJournalRecord {BarNumber = 12, BarTime = time.AddSeconds(3),
+                Open = 102, High = 103, Low = 102, Close = 103, FinalBar = true, TickId = 4};
+            RangeBarJournal.Append(anchored, anchorClose);
+            var compactAnchors = RangeBarJournal.Read(anchored);
+            Check(System.IO.File.ReadAllText(anchored).Contains("BEGIN RANGE BAR TRADE (RBJ4)") && compactAnchors.Count == 2 &&
+                compactAnchors[0].FillAnchor.BarTime == staged.FillAnchor.BarTime && compactAnchors[0].FillAnchor.TickId == 12 &&
+                compactAnchors[1].FillAnchor.BarNumber == 12 && compactAnchors[0].BarNumber == 10,
+                "closed compact record preserves independent entry and exit fill anchors for the indicator after reload");
+            var clone = compactAnchors[0].Copy(); clone.FillAnchor.High = 999;
+            Check(compactAnchors[0].FillAnchor.High == 102, "queued bar anchors are independent snapshots, not shared mutable objects");
             string absent = RangeBarJournal.FileName(directory, "absent"); RangeBarJournal.Consolidate(absent);
             Check(!System.IO.File.Exists(absent), "cleanup of an absent history never creates a fake trade file");
         } finally { System.IO.Directory.Delete(directory, true); }

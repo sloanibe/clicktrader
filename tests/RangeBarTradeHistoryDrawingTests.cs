@@ -70,7 +70,7 @@ class RangeBarTradeHistoryDrawingTests {
         var drawer = new HistoryDrawer(); drawer.Publish(frame);
         using (var bitmap = new Bitmap(1100, 380))
         using (var graphics = Graphics.FromImage(bitmap)) {
-            graphics.Clear(Color.White);
+            graphics.Clear(Color.Silver);
             // Borrow a bitmap Graphics without constructing native chart HDCs.
             // DrawContext's production fields are readonly; populate this test
             // instance through reflection and never call its native Free().
@@ -79,40 +79,40 @@ class RangeBarTradeHistoryDrawingTests {
             typeof(DrawContext).GetField("Environment").SetValue(context, environment);
             typeof(DrawContext).GetField("DrawRect").SetValue(context, new RectangleF(0, 0, 1100, 380));
             typeof(DrawContext).GetField("FullRect").SetValue(context, new RectangleF(0, 0, 1100, 380));
-            typeof(DrawContext).GetField("BackGround").SetValue(context, Color.White);
+            typeof(DrawContext).GetField("BackGround").SetValue(context, Color.Silver);
             drawer.Draw(context, EDrawPhases.Final);
-            if (bitmap.GetPixel(488, 180).ToArgb() != Color.Black.ToArgb())
+            if (bitmap.GetPixel(488, 180).ToArgb() != Color.White.ToArgb())
                 throw new Exception("entry arrowhead must touch left candle edge at reported price");
-            if (bitmap.GetPixel(512, 220).ToArgb() != Color.Black.ToArgb())
+            if (bitmap.GetPixel(512, 220).ToArgb() != Color.White.ToArgb())
                 throw new Exception("exit arrowhead must touch right candle edge at reported price");
-            if (bitmap.GetPixel(500, 180).ToArgb() != Color.White.ToArgb())
+            if (bitmap.GetPixel(500, 180).ToArgb() != Color.Silver.ToArgb())
                 throw new Exception("entry must remain outside candle center");
-            if (bitmap.GetPixel(480, 180).ToArgb() != Color.Black.ToArgb() ||
-                bitmap.GetPixel(520, 220).ToArgb() != Color.Black.ToArgb())
+            if (bitmap.GetPixel(480, 180).ToArgb() != Color.White.ToArgb() ||
+                bitmap.GetPixel(520, 220).ToArgb() != Color.White.ToArgb())
                 throw new Exception("entry arrow must point right and exit arrow left, including short trades");
-            if (bitmap.GetPixel(467, 180).ToArgb() != Color.White.ToArgb() ||
-                bitmap.GetPixel(533, 220).ToArgb() != Color.White.ToArgb())
+            if (bitmap.GetPixel(467, 180).ToArgb() != Color.Silver.ToArgb() ||
+                bitmap.GetPixel(533, 220).ToArgb() != Color.Silver.ToArgb())
                 throw new Exception("horizontal arrowheads must not have shafts");
-            if (bitmap.GetPixel(462, 180).ToArgb() != Color.White.ToArgb() ||
-                bitmap.GetPixel(537, 220).ToArgb() != Color.White.ToArgb())
+            if (bitmap.GetPixel(462, 180).ToArgb() != Color.Silver.ToArgb() ||
+                bitmap.GetPixel(537, 220).ToArgb() != Color.Silver.ToArgb())
                 throw new Exception("markers must use candle edges instead of intrabar time displacement");
             environment.Spacing = 14; environment.CloseDistance = 100; frame.CandleEdgeOffset = 0;
-            graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
-            if (bitmap.GetPixel(493, 180).ToArgb() != Color.Black.ToArgb() ||
-                bitmap.GetPixel(507, 220).ToArgb() != Color.Black.ToArgb())
+            graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            if (bitmap.GetPixel(493, 180).ToArgb() != Color.White.ToArgb() ||
+                bitmap.GetPixel(507, 220).ToArgb() != Color.White.ToArgb())
                 throw new Exception("automatic candle width must follow center spacing, not close-tick extent");
             environment.Spacing = 150; environment.CloseDistance = 10; frame.CandleEdgeOffset = 10;
-            graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
             if (!ConnectorHasColor(bitmap, 500, 200, true))
                 throw new Exception("profitable short connector must be green");
             exit.Price = 104;
             frame.View = HistoryMatching.Build(new List<HistoryExecution> {entry, exit}, day.Date, new Dictionary<string, int>());
-            graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
             if (!ConnectorHasColor(bitmap, 500, 160, false))
                 throw new Exception("losing short connector must be red");
             exit.Price = 102;
             frame.View = HistoryMatching.Build(new List<HistoryExecution> {entry, exit}, day.Date, new Dictionary<string, int>());
-            graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
             if (!ConnectorHasColor(bitmap, 500, 180, true))
                 throw new Exception("break-even connector must be green");
             frame.ShowEntryBarArrows = true;
@@ -124,7 +124,7 @@ class RangeBarTradeHistoryDrawingTests {
                     Close = side > 0 ? 103 : 99
                 };
                 frame.View = HistoryMatching.Build(new List<HistoryExecution> {entry, exit}, day.Date, new Dictionary<string, int>());
-                graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+                graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
                 int tipY = side > 0 ? 240 : 160;
                 int shaftY = tipY + side * 10;
                 if (bitmap.GetPixel(500, tipY).ToArgb() != Color.Black.ToArgb() ||
@@ -133,11 +133,12 @@ class RangeBarTradeHistoryDrawingTests {
             }
             frame.View = HistoryMatching.Build(new List<HistoryExecution> {exit}, day.Date,
                 new Dictionary<string, int> { {exit.Scope, -exit.Side} });
-            graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
-            if (bitmap.GetPixel(500, 160).ToArgb() != Color.White.ToArgb() ||
-                bitmap.GetPixel(500, 240).ToArgb() != Color.White.ToArgb())
+            graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            if (bitmap.GetPixel(500, 160).ToArgb() != Color.Silver.ToArgb() ||
+                bitmap.GetPixel(500, 240).ToArgb() != Color.Silver.ToArgb())
                 throw new Exception("exit-only order must not get an entry-bar extreme arrow");
-            // Explicit setup-bar identity must override both callback timing and fill-price containment.
+            // Older compact records lack a fill anchor. Their horizontal entry
+            // can move to the next price-compatible bar without moving the setup arrow.
             Bar[] savedJournalBars = environment.Data.Data;
             environment.Data.Data = new[] {
                 new Bar {Time = day, Open = 99, High = 100, Low = 99, Close = 100, State = EBarState.Close},
@@ -148,11 +149,61 @@ class RangeBarTradeHistoryDrawingTests {
                 Setup = "pin bar", Observed = day.AddSeconds(15), BarTime = day.AddSeconds(10), FinalBar = true,
                 Open = 100, High = 101, Low = 100, Close = 101, Price = 101.25};
             frame.View = HistoryMatching.BuildJournal(new List<RangeBarJournalRecord> {journalEntry}, day.Date);
-            graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
-            if (bitmap.GetPixel(638, 195).ToArgb() != Color.Black.ToArgb() ||
+            graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            if (bitmap.GetPixel(788, 195).ToArgb() != Color.White.ToArgb() ||
                 bitmap.GetPixel(650, 220).ToArgb() != Color.Black.ToArgb() ||
-                bitmap.GetPixel(800, 200).ToArgb() != Color.White.ToArgb())
-                throw new Exception("journal arrows must mark intended bar even when fill price is inside the next bar");
+                bitmap.GetPixel(638, 195).ToArgb() != Color.Silver.ToArgb())
+                throw new Exception("legacy horizontal entry must follow fill price to next bar while setup arrow stays put");
+            journalEntry.Price = 100.75;
+            if (HistoryDrawer.LocateHorizontalJournalBar(environment.Data.Data, journalEntry) != 1)
+                throw new Exception("same-bar legacy fill must stay on setup bar");
+            journalEntry.Price = 102.25;
+            if (HistoryDrawer.LocateHorizontalJournalBar(environment.Data.Data, journalEntry) != 1)
+                throw new Exception("legacy fallback must not guess when next bar cannot contain the price");
+            journalEntry.Price = 101.25;
+            journalEntry.Kind = "exit";
+            if (HistoryDrawer.LocateHorizontalJournalBar(environment.Data.Data, journalEntry) != 1)
+                throw new Exception("legacy entry fallback must not move exit markers");
+            journalEntry.Kind = "entry";
+            var oldShort = new RangeBarJournalRecord {Kind = "entry", Side = -1, Price = 7764.25,
+                FinalBar = true, BarTime = day, Open = 7765, High = 7765.5, Low = 7764.5, Close = 7764.5};
+            var shortBars = new[] {
+                new Bar {Time = day, Open = 7765, High = 7765.5, Low = 7764.5, Close = 7764.5},
+                new Bar {Time = day.AddSeconds(10), Open = 7764.25, High = 7764.75, Low = 7763.75, Close = 7764.75}
+            };
+            if (HistoryDrawer.LocateHorizontalJournalBar(shortBars, oldShort) != 1 ||
+                HistoryDrawer.LocateJournalBar(shortBars, oldShort) != 0)
+                throw new Exception("legacy short one tick below setup low must attach horizontal entry to next bar only");
+            // Separate intended setup (bar 1) from recorded fill (bar 2), for both entry directions.
+            journalEntry.FillAnchor = new RangeBarJournalRecord {BarTime = day.AddSeconds(20), FinalBar = true,
+                Open = 101, High = 102, Low = 101, Close = 102, BarNumber = 11};
+            foreach (int side in new[] {1, -1}) {
+                journalEntry.Side = side;
+                frame.View = HistoryMatching.BuildJournal(new List<RangeBarJournalRecord> {journalEntry}, day.Date);
+                graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+                int setupY = side > 0 ? 220 : 200;
+                if (bitmap.GetPixel(650, setupY).ToArgb() != Color.Black.ToArgb() ||
+                    bitmap.GetPixel(788, 195).ToArgb() != Color.White.ToArgb() ||
+                    bitmap.GetPixel(638, 195).ToArgb() != Color.Silver.ToArgb())
+                    throw new Exception("black setup arrow must stay on intended bar while white entry head moves to the recorded fill bar");
+            }
+            journalEntry.Side = 1;
+            var splitExit = new RangeBarJournalRecord {TradeId = journalEntry.TradeId, Kind = "exit", Side = -1, Quantity = 1,
+                Setup = "pin bar", Price = 102, Observed = day.AddSeconds(25), BarTime = day.AddSeconds(20), FinalBar = true,
+                Open = 101, High = 102, Low = 101, Close = 102};
+            frame.View = HistoryMatching.BuildJournal(new List<RangeBarJournalRecord> {journalEntry, splitExit}, day.Date);
+            frame.ShowLabels = true;
+            graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            if (bitmap.GetPixel(812, 180).ToArgb() != Color.White.ToArgb() || !ConnectorHasColor(bitmap, 799, 188, true))
+                throw new Exception("white exit and profit connector must follow actual horizontal fill anchors");
+            int attachedLabel = 0, oldLabel = 0;
+            for (int x = 695; x < 775; x++) for (int y = 188; y <= 203; y++)
+                if (bitmap.GetPixel(x, y).ToArgb() == Color.Black.ToArgb()) attachedLabel++;
+            for (int x = 545; x < 625; x++) for (int y = 188; y <= 203; y++)
+                if (bitmap.GetPixel(x, y).ToArgb() == Color.Black.ToArgb()) oldLabel++;
+            if (attachedLabel == 0 || oldLabel != 0) throw new Exception("entry label must stay black and move beside the white fill-bar arrow");
+            frame.ShowLabels = false;
+            journalEntry.FillAnchor = null;
             if (HistoryDrawer.LocateJournalBar(environment.Data.Data, journalEntry) != 1)
                 throw new Exception("explicit journal bar must survive native index lookup without price heuristic");
             journalEntry.FinalBar = false; journalEntry.BarTime = day.AddSeconds(5);
@@ -183,14 +234,14 @@ class RangeBarTradeHistoryDrawingTests {
             environment.Data.LookupPreviousBar = true;
             frame.ShowLabels = false;
             frame.View = HistoryMatching.Build(new List<HistoryExecution> {entry, exit}, day.Date, new Dictionary<string, int>());
-            graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
             if (bitmap.GetPixel(650, 240).ToArgb() != Color.Black.ToArgb() ||
                 bitmap.GetPixel(650, 250).ToArgb() != Color.Black.ToArgb())
                 throw new Exception("PB1 upward arrow must be at actual pin bar low");
-            if (bitmap.GetPixel(638, 220).ToArgb() != Color.Black.ToArgb())
+            if (bitmap.GetPixel(638, 220).ToArgb() != Color.White.ToArgb())
                 throw new Exception("PB1 horizontal entry must share actual pin bar assignment");
-            if (bitmap.GetPixel(500, 235).ToArgb() != Color.White.ToArgb() ||
-                bitmap.GetPixel(488, 220).ToArgb() != Color.White.ToArgb())
+            if (bitmap.GetPixel(500, 235).ToArgb() != Color.Silver.ToArgb() ||
+                bitmap.GetPixel(488, 220).ToArgb() != Color.Silver.ToArgb())
                 throw new Exception("previous bar must not carry PB1 entry markers");
             // A doji/full-tail pin and a larger-body manual entry must also
             // stay on their selected native index when time lookup is earlier.
@@ -198,16 +249,16 @@ class RangeBarTradeHistoryDrawingTests {
                 environment.Data.Data[1].Open = manualEntry ? 99.25 : 100;
                 entry.Name = manualEntry ? "manual" : "pin bar";
                 frame.View = HistoryMatching.Build(new List<HistoryExecution> {entry}, day.Date, new Dictionary<string, int>());
-                graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+                graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
                 if (bitmap.GetPixel(650, 240).ToArgb() != Color.Black.ToArgb() ||
-                    bitmap.GetPixel(500, 235).ToArgb() != Color.White.ToArgb())
+                    bitmap.GetPixel(500, 235).ToArgb() != Color.Silver.ToArgb())
                     throw new Exception("entry-bar assignment must apply to every tail and entry type");
             }
             // A fresh live fill remains on the forming bar until completion.
             environment.Data.Data[2].State = EBarState.Open;
             entry.Time = day.AddSeconds(22); entry.Price = 100.75;
             frame.View = HistoryMatching.Build(new List<HistoryExecution> {entry}, day.Date, new Dictionary<string, int>());
-            graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
             if (bitmap.GetPixel(800, 220).ToArgb() != Color.Black.ToArgb())
                 throw new Exception("current forming-bar entry must not disappear while awaiting close time");
             // User's recorded first-trade price/time, paired with SYNTHETIC
@@ -223,17 +274,17 @@ class RangeBarTradeHistoryDrawingTests {
             entry.Time = recordedMinute.AddSeconds(27).AddMilliseconds(94);
             frame.BarTimestampIsClose = false;
             frame.View = HistoryMatching.Build(new List<HistoryExecution> {entry}, day.Date, new Dictionary<string, int>());
-            graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
             if (bitmap.GetPixel(650, 235).ToArgb() != Color.Black.ToArgb() ||
-                bitmap.GetPixel(500, 245).ToArgb() != Color.White.ToArgb())
+                bitmap.GetPixel(500, 245).ToArgb() != Color.Silver.ToArgb())
                 throw new Exception("vertical marker must use unique neighbor containing the executed price");
-            if (bitmap.GetPixel(638, 215).ToArgb() != Color.Black.ToArgb() ||
-                bitmap.GetPixel(488, 215).ToArgb() != Color.White.ToArgb())
+            if (bitmap.GetPixel(638, 215).ToArgb() != Color.White.ToArgb() ||
+                bitmap.GetPixel(488, 215).ToArgb() != Color.Silver.ToArgb())
                 throw new Exception("horizontal entry head must touch the same corrected candle as vertical arrow");
             // A corrected entry must also work with vertical markers hidden.
             frame.ShowEntryBarArrows = false;
-            graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
-            if (bitmap.GetPixel(638, 215).ToArgb() != Color.Black.ToArgb())
+            graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            if (bitmap.GetPixel(638, 215).ToArgb() != Color.White.ToArgb())
                 throw new Exception("horizontal entry correction must not depend on vertical-arrow visibility");
             frame.ShowEntryBarArrows = true;
             var resolve = typeof(HistoryDrawer).GetMethod("ResolveEntryBar",
@@ -254,7 +305,7 @@ class RangeBarTradeHistoryDrawingTests {
             entry.Side = -1; exit.Side = 1;
             exit.Price = 100;
             frame.View = HistoryMatching.Build(new List<HistoryExecution> {entry, exit}, day.Date, new Dictionary<string, int>());
-            graphics.Clear(Color.White);
+            graphics.Clear(Color.Silver);
             frame.ShowLabels = true; drawer.Publish(frame);
             drawer.Draw(context, EDrawPhases.Final);
             int top = 380, bottom = -1, right = -1;
@@ -265,7 +316,7 @@ class RangeBarTradeHistoryDrawingTests {
             if (bottom < 0 || Math.Abs((top + bottom) / 2.0 - 180) > 4 || right < 465)
                 throw new Exception("entry label must be vertically centered and immediately left of arrowhead");
             // Preview includes a synthetic candle so edge contact is visible.
-            graphics.Clear(Color.White);
+            graphics.Clear(Color.Silver);
             graphics.FillRectangle(Brushes.Gainsboro, 490, 160, 20, 80);
             graphics.DrawRectangle(Pens.Gray, 490, 160, 20, 80);
             drawer.Draw(context, EDrawPhases.Final);

@@ -10,7 +10,12 @@
         public double SubmittedPrice, PreviousOpen, PreviousHigh, PreviousLow, PreviousClose;
         public bool FinalBar;
         public string AppliedUpdates = "";
-        public RangeBarJournalRecord Copy() { return (RangeBarJournalRecord)MemberwiseClone(); }
+        public RangeBarJournalRecord FillAnchor;
+        public RangeBarJournalRecord Copy() {
+            var copy = (RangeBarJournalRecord)MemberwiseClone();
+            copy.FillAnchor = FillAnchor == null ? null : FillAnchor.Copy();
+            return copy;
+        }
     }
     internal static class RangeBarJournal {
         private static readonly System.Globalization.CultureInfo CI = System.Globalization.CultureInfo.InvariantCulture;
@@ -91,6 +96,7 @@
                 if (i == 24) value = record.FinalBar ? "yes" : "no";
                 text.Append("  ").Append(Fields[i - 1]).Append(": ").Append(value).Append("\r\n");
             }
+            if (record.FillAnchor != null) Field(text, "Fill bar anchor", Quote(EncodeAnchor(record.FillAnchor)));
             return text.Append(End).ToString();
         }
         public static RangeBarJournalRecord Decode(string text) {
@@ -107,6 +113,9 @@
                 if (values.ContainsKey(key)) throw new FormatException("Duplicate journal field");
                 values[key] = line.Substring(colon + 1).Trim();
             }
+            string anchorText;
+            values.TryGetValue("Fill bar anchor", out anchorText);
+            values.Remove("Fill bar anchor");
             if (values.Count != Fields.Length) throw new FormatException("Incomplete journal fields");
             var parts = new string[Fields.Length + 1]; parts[0] = "RBJ1";
             for (int i = 1; i < parts.Length; i++) {
@@ -127,7 +136,9 @@
                 }
                 parts[i] = value;
             }
-            return DecodeLegacy(string.Join("\t", parts));
+            var decoded = DecodeLegacy(string.Join("\t", parts));
+            if (anchorText != null) decoded.FillAnchor = DecodeAnchor(decoded, Unquote(anchorText));
+            return decoded;
         }
         public static string Hash(string value) {
             using (var hash = System.Security.Cryptography.SHA256.Create())
@@ -199,6 +210,9 @@
             if (HasUpdate(target, update.EventId)) return;
             target.AppliedUpdates = string.IsNullOrEmpty(target.AppliedUpdates) ? update.EventId : target.AppliedUpdates + "," + update.EventId;
             // A stale observation must not replace a newer/finalized bar snapshot.
+            if (update.FillAnchor != null && (target.FillAnchor == null ||
+                ((!target.FillAnchor.FinalBar || update.FillAnchor.FinalBar) && update.FillAnchor.BarTime >= target.FillAnchor.BarTime)))
+                target.FillAnchor = update.FillAnchor.Copy();
             if ((target.FinalBar && !update.FinalBar) || update.BarTime < target.BarTime) return;
             target.BarTime = update.BarTime; target.TickId = update.TickId; target.Open = update.Open; target.High = update.High;
             target.Low = update.Low; target.Close = update.Close; target.FinalBar = update.FinalBar;
@@ -299,9 +313,39 @@
                         Field(text, prefix + Fields[i - 1], value);
                     }
                     Field(text, prefix + "Applied update IDs", Quote(fill.AppliedUpdates ?? ""));
+                    if (fill.FillAnchor != null) Field(text, prefix + "Fill bar anchor", Quote(EncodeAnchor(fill.FillAnchor)));
                 }
             }
             return text.Append(TradeEnd).ToString();
+        }
+        private static string EncodeAnchor(RangeBarJournalRecord anchor) {
+            var fields = new List<string> { TimeText(anchor.BarTime), anchor.BarNumber.ToString(CI), anchor.TickId.ToString(CI),
+                D(anchor.Open), D(anchor.High), D(anchor.Low), D(anchor.Close), anchor.FinalBar ? "1" : "0" };
+            if (!anchor.FinalBar) fields.AddRange(new[] {TimeText(anchor.PreviousBarTime), D(anchor.PreviousOpen),
+                D(anchor.PreviousHigh), D(anchor.PreviousLow), D(anchor.PreviousClose)});
+            return string.Join("|", fields.ToArray());
+        }
+        private static RangeBarJournalRecord DecodeAnchor(RangeBarJournalRecord owner, string text) {
+            string[] p = text.Split('|');
+            if (p.Length != 8 && p.Length != 13) throw new FormatException("Incomplete fill-bar anchor");
+            var anchor = owner.Copy(); anchor.FillAnchor = null;
+            anchor.BarTime = DateTime.Parse(p[0], CI, System.Globalization.DateTimeStyles.RoundtripKind);
+            anchor.BarNumber = int.Parse(p[1], CI); anchor.TickId = uint.Parse(p[2], CI);
+            anchor.Open = double.Parse(p[3], CI); anchor.High = double.Parse(p[4], CI);
+            anchor.Low = double.Parse(p[5], CI); anchor.Close = double.Parse(p[6], CI);
+            if (p[7] != "1" && p[7] != "0") throw new FormatException("Invalid fill-bar state");
+            anchor.FinalBar = p[7] == "1";
+            if (anchor.BarTime == DateTime.MinValue || anchor.BarNumber < 0 ||
+                double.IsNaN(anchor.Open) || double.IsInfinity(anchor.Open) || double.IsNaN(anchor.High) || double.IsInfinity(anchor.High) ||
+                double.IsNaN(anchor.Low) || double.IsInfinity(anchor.Low) || double.IsNaN(anchor.Close) || double.IsInfinity(anchor.Close) || anchor.High < anchor.Low)
+                throw new FormatException("Invalid fill-bar values");
+            anchor.PreviousBarTime = DateTime.MinValue; anchor.PreviousOpen = anchor.PreviousHigh = anchor.PreviousLow = anchor.PreviousClose = 0;
+            if (p.Length == 13) {
+                anchor.PreviousBarTime = DateTime.Parse(p[8], CI, System.Globalization.DateTimeStyles.RoundtripKind);
+                anchor.PreviousOpen = double.Parse(p[9], CI); anchor.PreviousHigh = double.Parse(p[10], CI);
+                anchor.PreviousLow = double.Parse(p[11], CI); anchor.PreviousClose = double.Parse(p[12], CI);
+            } else if (!anchor.FinalBar) throw new FormatException("Missing forming fill-bar context");
+            return anchor;
         }
         private static readonly int[] CompactFields = {1, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 24};
         private static string CompactText(RangeBarJournalRecord common, List<RangeBarJournalRecord> entry,
@@ -323,6 +367,7 @@
                 parts.Add(S(fill.AppliedUpdates));
                 if (!fill.FinalBar) for (int i = 29; i <= 33; i++) parts.Add(original[i]);
                 metadata.Append(';').Append(kind).Append('=').Append(string.Join("|", parts.ToArray()));
+                if (fill.FillAnchor != null) metadata.Append(";at=").Append(S(fill.EventId)).Append('|').Append(EncodeAnchor(fill.FillAnchor));
             }
             Field(text, "Chart metadata", metadata.ToString());
             return text.Append(TradeEnd).ToString();
@@ -340,11 +385,19 @@
             if (metadata == null) throw new FormatException("Missing chart metadata");
             var common = new Dictionary<string, string>(StringComparer.Ordinal);
             var fillTokens = new List<string>();
+            var anchors = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (string token in metadata.Split(';')) {
                 int equals = token.IndexOf('=');
                 if (equals <= 0) throw new FormatException("Invalid compact metadata");
                 string key = token.Substring(0, equals), value = token.Substring(equals + 1);
                 if (key == "in" || key == "out") fillTokens.Add(token);
+                else if (key == "at") {
+                    int divider = value.IndexOf('|');
+                    if (divider <= 0) throw new FormatException("Invalid anchor owner");
+                    string owner = Uri.UnescapeDataString(value.Substring(0, divider));
+                    if (anchors.ContainsKey(owner)) throw new FormatException("Duplicate fill anchor");
+                    anchors[owner] = value.Substring(divider + 1);
+                }
                 else { if (common.ContainsKey(key)) throw new FormatException("Duplicate compact scope"); common[key] = value; }
             }
             foreach (string key in new[] {"id", "type", "profile", "account", "symbol", "stream", "chart", "range", "tick"})
@@ -367,12 +420,15 @@
                 else if (parts[24] != "1") throw new FormatException("Missing forming-bar identity");
                 var fill = DecodeLegacy(string.Join("\t", parts)); fill.AppliedUpdates = Uri.UnescapeDataString(compact[13]);
                 if (!seen.Add(fill.EventId)) throw new FormatException("Duplicate compact fill");
+                string anchor;
+                if (anchors.TryGetValue(fill.EventId, out anchor)) fill.FillAnchor = DecodeAnchor(fill, anchor);
                 if (kind == "in") {
                     if (direction != 0 && direction != fill.Side) throw new FormatException("Conflicting entries");
                     direction = fill.Side; entered += fill.Quantity;
                 } else exited += fill.Quantity;
                 result.Add(fill);
             }
+            foreach (string owner in anchors.Keys) if (!seen.Contains(owner)) throw new FormatException("Unknown anchor owner");
             if (entered <= 0 || entered != exited) throw new FormatException("Compact record is not fully closed");
             foreach (var fill in result) if (fill.Side != (fill.Kind == "entry" ? direction : -direction))
                 throw new FormatException("Compact close has wrong direction");
@@ -414,7 +470,10 @@
                     var fill = DecodeLegacy(string.Join("\t", parts));
                     string updates;
                     if (!values.TryGetValue(prefix + "Applied update IDs", out updates)) throw new FormatException("Missing update identities");
-                    fill.AppliedUpdates = Unquote(updates); result.Add(fill);
+                    fill.AppliedUpdates = Unquote(updates);
+                    string anchor;
+                    if (values.TryGetValue(prefix + "Fill bar anchor", out anchor)) fill.FillAnchor = DecodeAnchor(fill, Unquote(anchor));
+                    result.Add(fill);
                 }
             }
             if (result.Count == 0) throw new FormatException("Empty trade record");

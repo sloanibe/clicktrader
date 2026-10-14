@@ -159,9 +159,6 @@ namespace PowerLanguage.Strategy
         private double m_ProtectiveStopPrice = 0;
         private double m_ProfitTargetPrice = 0;
         private double m_LastSentPrice = 0;
-        // Snapshot the realized strategy P&L when a position opens.  When it
-        // closes, the delta is the result of that one completed trade.
-        private double m_ClosedEquityAtEntry = 0;
         private bool m_RecoveryModeActive = false;
         // Shift and pin entries latch their P&L category at the fill.
         private bool m_SessionProfitRuleActive = false;
@@ -204,7 +201,6 @@ namespace PowerLanguage.Strategy
         private int m_PinEntryCandidateDirection = 0;
         private double m_PinEntryCandidatePrice = 0;
         private int m_PinEntryCandidateBodyTicks = 0;
-        private int m_StagedPinBodyTicks = 0;
         private bool m_EmaEntryCandidateValid = false;
         private int m_EmaEntryCandidateDirection = 0;
         private double m_EmaEntryCandidatePrice = 0;
@@ -264,15 +260,10 @@ namespace PowerLanguage.Strategy
         private ITrendLineObject m_Ema8BounceTailLine;
         private ITrendLineObject m_Ema8BounceCompletionLine;
         private ITextObject m_Ema8BounceLabel;
-        private ITrendLineObject m_GoSignalMarker;
         private ITextObject m_HUDLabel;
         private ITextObject m_ControlsHintLabel;
         private ITextObject m_ControlsActionHintLabel;
         private ITextObject m_EmergencyLabel;
-        // Filled-trade annotations are retained after the position closes so
-        // the chart keeps a clean record of executed entries.
-        private readonly List<IDrawObject> m_TradeEntryMarkers = new List<IDrawObject>();
-        private IArrowObject m_ActiveTradeEntryArrow;
 
         public RangeBarTradingV3(object ctx) : base(ctx)
         {
@@ -338,7 +329,6 @@ namespace PowerLanguage.Strategy
             ClearPinBarProjectionLines();
             ClearEmaBounceProjectionLines();
             ClearEma8BounceProjectionLines();
-            if (m_GoSignalMarker != null) { m_GoSignalMarker.Delete(); m_GoSignalMarker = null; }
         }
 
         protected override void CalcBar()
@@ -508,8 +498,6 @@ namespace PowerLanguage.Strategy
                 int activeProfitTargetTicks = GetProfitTargetTicksForNewTrade(
                     sessionPnlAtEntry, tickSize);
                 double targetDist = activeProfitTargetTicks * tickSize;
-                int filledPinBodyTicks = m_StagedPinBodyTicks;
-                m_ClosedEquityAtEntry = StrategyInfo.ClosedEquity;
                 m_RecoverySessionPnlAtEntry = sessionPnlAtEntry;
                 m_RecoveryModeActive = sessionPnlAtEntry < 0;
                 m_OppositeColorStopPrice = 0;
@@ -537,13 +525,9 @@ namespace PowerLanguage.Strategy
                 m_PinBarOrderBar = -1;
                 m_ShiftProjectionActive = false;
                 m_ShiftProjectionBar = -1;
-                if (m_GoSignalMarker != null) m_GoSignalMarker.Delete();
                 ClearProjectedEntryLine();
                 ClearPinBarProjectionLines();
                 UpdateTargetLine(); UpdateStopLine();
-                DrawFilledEntryMarkers(currentPosition, entryPrice, tickSize,
-                                       filledEntrySetup, filledPinBodyTicks);
-                m_StagedPinBodyTicks = 0;
             }
 
             UpdateOppositeColorExitManagement(currentPosition, tickSize);
@@ -589,7 +573,6 @@ namespace PowerLanguage.Strategy
             }
 
             if (currentPosition == 0 && m_LastMarketPosition != 0) { 
-                FinalizeActiveTradeEntryMarker();
                 // Require a deliberate re-arm after every completed trade.
                 // This applies equally to profit targets, protective stops,
                 // and any other path that takes the strategy flat.
@@ -617,81 +600,6 @@ namespace PowerLanguage.Strategy
             m_LastMarketPosition = currentPosition;
             if (ShowHUD && m_HudDisplayEnabled) UpdateHUD();
             MaintainTradeHistory();
-        }
-
-        private void CheckForHiddenPierceSignals(double tickSize) {
-            double activeTicks = GetActiveRangeTicks(tickSize);
-            if (activeTicks <= 0) return;
-            double alpha5 = 2.0 / 9.0; double alpha15 = 2.0 / 25.0;
-            
-            double highest10 = Bars.High.Highest(10);
-            double lowest10 = Bars.Low.Lowest(10);
-            double range10 = (highest10 - lowest10) / tickSize;
-            bool expansionValid = range10 >= MinExpansionTicks;
-
-            // PROJECT BULLISH
-            double projCloseBull = Bars.Low[0] + (activeTicks * tickSize);
-            double projEma5Bull = m_FastEMA[0] + alpha5 * (projCloseBull - m_FastEMA[0]);
-            double projEma15Bull = m_SlowEMA[0] + alpha15 * (projCloseBull - m_SlowEMA[0]);
-
-            // CALCULATE ANGLES (BULLISH)
-            double a60 = GetAngle(m_MasterEMA[0], m_MasterEMA[3], 3, tickSize);
-            double a15 = GetAngle(m_SlowEMA[0], m_SlowEMA[3], 3, tickSize);
-            double a5  = GetAngle(m_FastEMA[0], m_FastEMA[3], 3, tickSize);
-            
-            bool fanStackBull = m_FastEMA[0] > m_SlowEMA[0] && m_SlowEMA[0] > m_MasterEMA[0]; 
-            bool breadth15_60B = (m_SlowEMA[0] - m_MasterEMA[0]) >= (MinBreadth_15_60 * tickSize);
-            bool breadth5_15B = (m_FastEMA[0] - m_SlowEMA[0]) >= (MinBreadth_5_15 * tickSize);
-            
-            bool angleValidBull = a60 >= 45 && a15 >= 45 && a5 >= 45;
-
-            if (expansionValid && fanStackBull && breadth15_60B && breadth5_15B && angleValidBull) {
-                if (projEma15Bull > Bars.Low[0]) { 
-                    m_BuyOrderActive = true;
-                    if (m_GoSignalMarker == null) {
-                        m_GoSignalMarker = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], Bars.Low[0] - (3 * tickSize)), new ChartPoint(Bars.Time[0].AddMinutes(0), Bars.Low[0] - (3 * tickSize)));
-                        m_GoSignalMarker.Color = Color.RoyalBlue; m_GoSignalMarker.Size = 12;
-                    }
-                } else if (m_FastEMA[0] > m_FastEMA[1] && projEma5Bull > Bars.Low[0]) { 
-                    m_BuyOrderActive = true;
-                    if (m_GoSignalMarker == null) {
-                        m_GoSignalMarker = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], Bars.Low[0] - (3 * tickSize)), new ChartPoint(Bars.Time[0].AddMinutes(0), Bars.Low[0] - (3 * tickSize)));
-                        m_GoSignalMarker.Color = Color.Cyan; m_GoSignalMarker.Size = 10;
-                    }
-                } 
-            } else {
-                // PROJECT BEARISH
-                double projCloseBear = Bars.High[0] - (activeTicks * tickSize);
-                double projEma5Bear = m_FastEMA[0] + alpha5 * (projCloseBear - m_FastEMA[0]);
-                double projEma15Bear = m_SlowEMA[0] + alpha15 * (projCloseBear - m_SlowEMA[0]);
-                
-                // CALCULATE ANGLES (BEARISH)
-                double a60S = GetAngle(m_MasterEMA[0], m_MasterEMA[3], 3, tickSize);
-                double a15S = GetAngle(m_SlowEMA[0], m_SlowEMA[3], 3, tickSize);
-                double a5S  = GetAngle(m_FastEMA[0], m_FastEMA[3], 3, tickSize);
-
-                bool fanStackBear = m_FastEMA[0] < m_SlowEMA[0] && m_SlowEMA[0] < m_MasterEMA[0]; 
-                bool breadth15_60S = (m_MasterEMA[0] - m_SlowEMA[0]) >= (MinBreadth_15_60 * tickSize);
-                bool breadth5_15S = (m_SlowEMA[0] - m_FastEMA[0]) >= (MinBreadth_5_15 * tickSize);
-                
-                bool angleValidBear = a60S <= -45 && a15S <= -45 && a5S <= -45;
-
-                if (expansionValid && fanStackBear && breadth15_60S && breadth5_15S && angleValidBear) {
-                    if (projEma15Bear < Bars.High[0]) { 
-                        m_SellOrderActive = true;
-                        if (m_GoSignalMarker == null) {
-                            m_GoSignalMarker = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], Bars.High[0] + (3 * tickSize)), new ChartPoint(Bars.Time[0].AddMinutes(0), Bars.High[0] + (3 * tickSize)));
-                            m_GoSignalMarker.Color = Color.DeepPink; m_GoSignalMarker.Size = 12;
-                        }
-                    } else if (m_FastEMA[0] < m_FastEMA[1] && projEma5Bear < Bars.High[0]) { 
-                        m_SellOrderActive = true;
-                        if (m_GoSignalMarker == null) {
-                            m_GoSignalMarker = DrwTrendLine.Create(new ChartPoint(Bars.Time[0], Bars.High[0] + (3 * tickSize)), new ChartPoint(Bars.Time[0].AddMinutes(0), Bars.High[0] + (3 * tickSize)));
-                            m_GoSignalMarker.Color = Color.Magenta; m_GoSignalMarker.Size = 10;
-                        }
-                    }
-                } else if (m_GoSignalMarker != null) { m_GoSignalMarker.Delete(); m_GoSignalMarker = null; }
-            }
         }
 
     protected override void OnMouseEvent(MouseClickArgs arg) {
@@ -1854,9 +1762,6 @@ namespace PowerLanguage.Strategy
 
             m_ActiveEntrySetup = EEntrySetup.PinBar;
             m_PinBarOrderBar = Bars.CurrentBar;
-            m_StagedPinBodyTicks = Math.Max(0,
-                                             GetActivePinBarRangeTicks() -
-                                             m_PinProjectionTailTicks);
             m_BuyOrderActive = direction > 0;
             m_SellOrderActive = direction < 0;
             m_StopPrice = RoundToTick(
@@ -2430,14 +2335,11 @@ namespace PowerLanguage.Strategy
             if (selectedSetup == EEntrySetup.PinBar)
             {
                 m_PinBarOrderBar = Bars.CurrentBar;
-                m_StagedPinBodyTicks = m_PinEntryCandidateBodyTicks;
             }
             else if (selectedSetup == EEntrySetup.Ema24Bounce) {
                 m_EmaBounceOrderBar = Bars.CurrentBar;
-                m_StagedPinBodyTicks = 0;
             } else {
                 m_Ema8BounceOrderBar = Bars.CurrentBar;
-                m_StagedPinBodyTicks = 0;
             }
         }
 
@@ -2649,8 +2551,6 @@ namespace PowerLanguage.Strategy
         }
 
         private void ClearPendingEntry() {
-            if (m_ActiveEntrySetup == EEntrySetup.PinBar)
-                m_StagedPinBodyTicks = 0;
             m_BuyOrderActive = m_SellOrderActive = false;
             m_ActiveEntrySetup = EEntrySetup.None;
             m_StopPrice = m_LastSentPrice = 0;
@@ -2851,12 +2751,14 @@ namespace PowerLanguage.Strategy
                 record.Side = side; record.Quantity = quantity; record.Price = avg_fill_price;
                 record.FillBarTime = Bars.Time[0]; record.FillBarNumber = Bars.CurrentBar;
                 record.FillTickId = Bars.TickIDValue & 0x7fffffff;
+                var actualBar = record.Copy(); actualBar.FillAnchor = null; actualBar.BarNumber = Bars.CurrentBar;
+                SnapshotHistoryBar(actualBar, 0); record.FillAnchor = actualBar;
                 if (entry && m_HistoryIntent != null) {
                     int back = Bars.CurrentBar - record.BarNumber;
                     if (back >= 0 && back <= Bars.CurrentBar) SnapshotHistoryBar(record, back);
                 } else { record.BarNumber = Bars.CurrentBar; SnapshotHistoryBar(record, 0); }
                 m_HistoryWriter.Enqueue(TradeHistoryDirectory, record);
-                if (!record.FinalBar) m_HistoryBars.Add(record.Copy());
+                if (!record.FinalBar || !record.FillAnchor.FinalBar) m_HistoryBars.Add(record.Copy());
                 if (!entry) m_HistoryIntent = null;
             } catch (Exception ex) { ReportHistoryError(ex.Message); }
         }
@@ -2873,9 +2775,18 @@ namespace PowerLanguage.Strategy
                 }
                 for (int i = m_HistoryBars.Count - 1; i >= 0; i--) {
                     var record = m_HistoryBars[i];
+                    bool ready = true;
                     int back = Bars.CurrentBar - record.BarNumber;
-                    if (back < 0 || (back == 0 && Bars.Status != EBarState.Close)) continue;
-                    SnapshotHistoryBar(record, back);
+                    if (!record.FinalBar) {
+                        if (back < 0 || (back == 0 && Bars.Status != EBarState.Close)) ready = false;
+                        else SnapshotHistoryBar(record, back);
+                    }
+                    if (record.FillAnchor != null && !record.FillAnchor.FinalBar) {
+                        int fillBack = Bars.CurrentBar - record.FillAnchor.BarNumber;
+                        if (fillBack < 0 || (fillBack == 0 && Bars.Status != EBarState.Close)) ready = false;
+                        else SnapshotHistoryBar(record.FillAnchor, fillBack);
+                    }
+                    if (!ready) continue;
                     record.Target = record.EventId; record.EventId = Guid.NewGuid().ToString("N"); record.Kind = "bar";
                     m_HistoryWriter.Enqueue(TradeHistoryDirectory, record); m_HistoryBars.RemoveAt(i);
                 }
@@ -3324,81 +3235,6 @@ namespace PowerLanguage.Strategy
             }
             UpdateRecoveryColorStopProjection(m_OppositeColorStopPrice,
                                                currentPosition);
-        }
-
-        private void DrawFilledEntryMarkers(int currentPosition, double entryPrice,
-                                            double tickSize, EEntrySetup entrySetup,
-                                            int pinBodyTicks) {
-            // With intrabar order generation, the position transition is
-            // observed on the fill calculation of the live range bar. Anchor
-            // every marker to that bar, rather than placing pin and manual
-            // entries one completed bar early.
-            const int barsBack = 0;
-
-            // This is a visual trade-result marker, not the broker fill
-            // marker. Keep it outside the entry bar so a red/green result
-            // arrow never obscures the candle: below the tail for longs and
-            // above the tail for shorts.
-            double directionPrice = currentPosition > 0
-                ? Bars.Low[barsBack] - tickSize
-                : Bars.High[barsBack] + tickSize;
-            IArrowObject directionMarker = DrwArrow.Create(
-                new ChartPoint(Bars.Time[barsBack], directionPrice), currentPosition < 0);
-            // The result is not known until the position closes.  It is then
-            // changed to green for profit or red for a loss/break-even trade.
-            directionMarker.Color = Color.DimGray;
-            directionMarker.Size = 5;
-            m_TradeEntryMarkers.Add(directionMarker);
-            m_ActiveTradeEntryArrow = directionMarker;
-
-            string entryType = entrySetup == EEntrySetup.PinBar
-                ? "P" + GetPinBarDisplayLevel(GetActivePinBarRangeTicks(),
-                                                Math.Max(0, pinBodyTicks))
-                :
-                               entrySetup == EEntrySetup.Ema24Bounce ? "B" :
-                               entrySetup == EEntrySetup.Ema8Bounce ? "B8" :
-                               entrySetup == EEntrySetup.ShiftProjection ? "M" :
-                               "?";
-            // Pin annotations are two ticks outside the tail itself. Other
-            // entry types retain their existing two-tick spacing from arrow.
-            double entryTypePrice = entrySetup == EEntrySetup.PinBar
-                ? (currentPosition > 0
-                    ? Bars.Low[barsBack] - (2 * tickSize)
-                    : Bars.High[barsBack] + (2 * tickSize))
-                : (currentPosition > 0
-                    ? directionPrice - (2 * tickSize)
-                    : directionPrice + (2 * tickSize));
-            ITextObject entryTypeMarker = DrwText.Create(
-                new ChartPoint(Bars.Time[barsBack], entryTypePrice), entryType);
-            entryTypeMarker.Color = Color.Black;
-            entryTypeMarker.Size = 6;
-            entryTypeMarker.HStyle = ETextStyleH.Center;
-            entryTypeMarker.VStyle = currentPosition > 0
-                ? ETextStyleV.Below
-                : ETextStyleV.Above;
-            m_TradeEntryMarkers.Add(entryTypeMarker);
-
-        }
-
-        private void ClearFilledEntryMarkers() {
-            foreach (IDrawObject marker in m_TradeEntryMarkers) {
-                if (marker != null) marker.Delete();
-            }
-            m_TradeEntryMarkers.Clear();
-            m_ActiveTradeEntryArrow = null;
-        }
-
-        private void FinalizeActiveTradeEntryMarker() {
-            if (m_ActiveTradeEntryArrow == null) return;
-
-            // A positive closed-equity change is a profitable completed
-            // trade.  Break-even is intentionally shown as red, per the
-            // requested successful/unsuccessful classification.
-            double realizedTradeProfit = StrategyInfo.ClosedEquity - m_ClosedEquityAtEntry;
-            m_ActiveTradeEntryArrow.Color = realizedTradeProfit > 0
-                ? Color.LimeGreen
-                : Color.Red;
-            m_ActiveTradeEntryArrow = null;
         }
 
         private static bool HasModifier(Keys eventKeys, Keys liveModifiers,
@@ -4003,7 +3839,6 @@ namespace PowerLanguage.Strategy
             if (s_LastActiveChart == this) s_LastActiveChart = null;
             RemoveGlobalPnLContributor();
             ClearTradingDrawings();
-            ClearFilledEntryMarkers();
         }
 
         private double UpdateAndGetGlobalPnL(double localPnL) {
@@ -4035,7 +3870,12 @@ namespace PowerLanguage.Strategy
         public double SubmittedPrice, PreviousOpen, PreviousHigh, PreviousLow, PreviousClose;
         public bool FinalBar;
         public string AppliedUpdates = "";
-        public RangeBarJournalRecord Copy() { return (RangeBarJournalRecord)MemberwiseClone(); }
+        public RangeBarJournalRecord FillAnchor;
+        public RangeBarJournalRecord Copy() {
+            var copy = (RangeBarJournalRecord)MemberwiseClone();
+            copy.FillAnchor = FillAnchor == null ? null : FillAnchor.Copy();
+            return copy;
+        }
     }
     internal static class RangeBarJournal {
         private static readonly System.Globalization.CultureInfo CI = System.Globalization.CultureInfo.InvariantCulture;
@@ -4116,6 +3956,7 @@ namespace PowerLanguage.Strategy
                 if (i == 24) value = record.FinalBar ? "yes" : "no";
                 text.Append("  ").Append(Fields[i - 1]).Append(": ").Append(value).Append("\r\n");
             }
+            if (record.FillAnchor != null) Field(text, "Fill bar anchor", Quote(EncodeAnchor(record.FillAnchor)));
             return text.Append(End).ToString();
         }
         public static RangeBarJournalRecord Decode(string text) {
@@ -4132,6 +3973,9 @@ namespace PowerLanguage.Strategy
                 if (values.ContainsKey(key)) throw new FormatException("Duplicate journal field");
                 values[key] = line.Substring(colon + 1).Trim();
             }
+            string anchorText;
+            values.TryGetValue("Fill bar anchor", out anchorText);
+            values.Remove("Fill bar anchor");
             if (values.Count != Fields.Length) throw new FormatException("Incomplete journal fields");
             var parts = new string[Fields.Length + 1]; parts[0] = "RBJ1";
             for (int i = 1; i < parts.Length; i++) {
@@ -4152,7 +3996,9 @@ namespace PowerLanguage.Strategy
                 }
                 parts[i] = value;
             }
-            return DecodeLegacy(string.Join("\t", parts));
+            var decoded = DecodeLegacy(string.Join("\t", parts));
+            if (anchorText != null) decoded.FillAnchor = DecodeAnchor(decoded, Unquote(anchorText));
+            return decoded;
         }
         public static string Hash(string value) {
             using (var hash = System.Security.Cryptography.SHA256.Create())
@@ -4224,6 +4070,9 @@ namespace PowerLanguage.Strategy
             if (HasUpdate(target, update.EventId)) return;
             target.AppliedUpdates = string.IsNullOrEmpty(target.AppliedUpdates) ? update.EventId : target.AppliedUpdates + "," + update.EventId;
             // A stale observation must not replace a newer/finalized bar snapshot.
+            if (update.FillAnchor != null && (target.FillAnchor == null ||
+                ((!target.FillAnchor.FinalBar || update.FillAnchor.FinalBar) && update.FillAnchor.BarTime >= target.FillAnchor.BarTime)))
+                target.FillAnchor = update.FillAnchor.Copy();
             if ((target.FinalBar && !update.FinalBar) || update.BarTime < target.BarTime) return;
             target.BarTime = update.BarTime; target.TickId = update.TickId; target.Open = update.Open; target.High = update.High;
             target.Low = update.Low; target.Close = update.Close; target.FinalBar = update.FinalBar;
@@ -4324,9 +4173,39 @@ namespace PowerLanguage.Strategy
                         Field(text, prefix + Fields[i - 1], value);
                     }
                     Field(text, prefix + "Applied update IDs", Quote(fill.AppliedUpdates ?? ""));
+                    if (fill.FillAnchor != null) Field(text, prefix + "Fill bar anchor", Quote(EncodeAnchor(fill.FillAnchor)));
                 }
             }
             return text.Append(TradeEnd).ToString();
+        }
+        private static string EncodeAnchor(RangeBarJournalRecord anchor) {
+            var fields = new List<string> { TimeText(anchor.BarTime), anchor.BarNumber.ToString(CI), anchor.TickId.ToString(CI),
+                D(anchor.Open), D(anchor.High), D(anchor.Low), D(anchor.Close), anchor.FinalBar ? "1" : "0" };
+            if (!anchor.FinalBar) fields.AddRange(new[] {TimeText(anchor.PreviousBarTime), D(anchor.PreviousOpen),
+                D(anchor.PreviousHigh), D(anchor.PreviousLow), D(anchor.PreviousClose)});
+            return string.Join("|", fields.ToArray());
+        }
+        private static RangeBarJournalRecord DecodeAnchor(RangeBarJournalRecord owner, string text) {
+            string[] p = text.Split('|');
+            if (p.Length != 8 && p.Length != 13) throw new FormatException("Incomplete fill-bar anchor");
+            var anchor = owner.Copy(); anchor.FillAnchor = null;
+            anchor.BarTime = DateTime.Parse(p[0], CI, System.Globalization.DateTimeStyles.RoundtripKind);
+            anchor.BarNumber = int.Parse(p[1], CI); anchor.TickId = uint.Parse(p[2], CI);
+            anchor.Open = double.Parse(p[3], CI); anchor.High = double.Parse(p[4], CI);
+            anchor.Low = double.Parse(p[5], CI); anchor.Close = double.Parse(p[6], CI);
+            if (p[7] != "1" && p[7] != "0") throw new FormatException("Invalid fill-bar state");
+            anchor.FinalBar = p[7] == "1";
+            if (anchor.BarTime == DateTime.MinValue || anchor.BarNumber < 0 ||
+                double.IsNaN(anchor.Open) || double.IsInfinity(anchor.Open) || double.IsNaN(anchor.High) || double.IsInfinity(anchor.High) ||
+                double.IsNaN(anchor.Low) || double.IsInfinity(anchor.Low) || double.IsNaN(anchor.Close) || double.IsInfinity(anchor.Close) || anchor.High < anchor.Low)
+                throw new FormatException("Invalid fill-bar values");
+            anchor.PreviousBarTime = DateTime.MinValue; anchor.PreviousOpen = anchor.PreviousHigh = anchor.PreviousLow = anchor.PreviousClose = 0;
+            if (p.Length == 13) {
+                anchor.PreviousBarTime = DateTime.Parse(p[8], CI, System.Globalization.DateTimeStyles.RoundtripKind);
+                anchor.PreviousOpen = double.Parse(p[9], CI); anchor.PreviousHigh = double.Parse(p[10], CI);
+                anchor.PreviousLow = double.Parse(p[11], CI); anchor.PreviousClose = double.Parse(p[12], CI);
+            } else if (!anchor.FinalBar) throw new FormatException("Missing forming fill-bar context");
+            return anchor;
         }
         private static readonly int[] CompactFields = {1, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 24};
         private static string CompactText(RangeBarJournalRecord common, List<RangeBarJournalRecord> entry,
@@ -4348,6 +4227,7 @@ namespace PowerLanguage.Strategy
                 parts.Add(S(fill.AppliedUpdates));
                 if (!fill.FinalBar) for (int i = 29; i <= 33; i++) parts.Add(original[i]);
                 metadata.Append(';').Append(kind).Append('=').Append(string.Join("|", parts.ToArray()));
+                if (fill.FillAnchor != null) metadata.Append(";at=").Append(S(fill.EventId)).Append('|').Append(EncodeAnchor(fill.FillAnchor));
             }
             Field(text, "Chart metadata", metadata.ToString());
             return text.Append(TradeEnd).ToString();
@@ -4365,11 +4245,19 @@ namespace PowerLanguage.Strategy
             if (metadata == null) throw new FormatException("Missing chart metadata");
             var common = new Dictionary<string, string>(StringComparer.Ordinal);
             var fillTokens = new List<string>();
+            var anchors = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (string token in metadata.Split(';')) {
                 int equals = token.IndexOf('=');
                 if (equals <= 0) throw new FormatException("Invalid compact metadata");
                 string key = token.Substring(0, equals), value = token.Substring(equals + 1);
                 if (key == "in" || key == "out") fillTokens.Add(token);
+                else if (key == "at") {
+                    int divider = value.IndexOf('|');
+                    if (divider <= 0) throw new FormatException("Invalid anchor owner");
+                    string owner = Uri.UnescapeDataString(value.Substring(0, divider));
+                    if (anchors.ContainsKey(owner)) throw new FormatException("Duplicate fill anchor");
+                    anchors[owner] = value.Substring(divider + 1);
+                }
                 else { if (common.ContainsKey(key)) throw new FormatException("Duplicate compact scope"); common[key] = value; }
             }
             foreach (string key in new[] {"id", "type", "profile", "account", "symbol", "stream", "chart", "range", "tick"})
@@ -4392,12 +4280,15 @@ namespace PowerLanguage.Strategy
                 else if (parts[24] != "1") throw new FormatException("Missing forming-bar identity");
                 var fill = DecodeLegacy(string.Join("\t", parts)); fill.AppliedUpdates = Uri.UnescapeDataString(compact[13]);
                 if (!seen.Add(fill.EventId)) throw new FormatException("Duplicate compact fill");
+                string anchor;
+                if (anchors.TryGetValue(fill.EventId, out anchor)) fill.FillAnchor = DecodeAnchor(fill, anchor);
                 if (kind == "in") {
                     if (direction != 0 && direction != fill.Side) throw new FormatException("Conflicting entries");
                     direction = fill.Side; entered += fill.Quantity;
                 } else exited += fill.Quantity;
                 result.Add(fill);
             }
+            foreach (string owner in anchors.Keys) if (!seen.Contains(owner)) throw new FormatException("Unknown anchor owner");
             if (entered <= 0 || entered != exited) throw new FormatException("Compact record is not fully closed");
             foreach (var fill in result) if (fill.Side != (fill.Kind == "entry" ? direction : -direction))
                 throw new FormatException("Compact close has wrong direction");
@@ -4439,7 +4330,10 @@ namespace PowerLanguage.Strategy
                     var fill = DecodeLegacy(string.Join("\t", parts));
                     string updates;
                     if (!values.TryGetValue(prefix + "Applied update IDs", out updates)) throw new FormatException("Missing update identities");
-                    fill.AppliedUpdates = Unquote(updates); result.Add(fill);
+                    fill.AppliedUpdates = Unquote(updates);
+                    string anchor;
+                    if (values.TryGetValue(prefix + "Fill bar anchor", out anchor)) fill.FillAnchor = DecodeAnchor(fill, Unquote(anchor));
+                    result.Add(fill);
                 }
             }
             if (result.Count == 0) throw new FormatException("Empty trade record");
@@ -4619,6 +4513,7 @@ namespace PowerLanguage.Strategy
                 foreach (var active in state.Active) if (active.EventId == r.Target) {
                     active.BarTime = r.BarTime; active.TickId = r.TickId; active.Open = r.Open; active.High = r.High;
                     active.Low = r.Low; active.Close = r.Close; active.FinalBar = r.FinalBar;
+                    active.FillAnchor = r.FillAnchor == null ? active.FillAnchor : r.FillAnchor.Copy();
                 }
                 return;
             }
