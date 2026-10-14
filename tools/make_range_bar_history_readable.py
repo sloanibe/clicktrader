@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Create readable .txt copies of legacy .rbj histories using the production store.
+"""Consolidate histories into one readable .txt record per trade using the production store.
 
 Original files are retained. Run with a Windows directory mounted in WSL;
-new signal versions also perform this conversion automatically on first append.
+New signal versions consolidate their stream automatically on first real-time calculation.
 """
 import argparse
 from pathlib import Path
@@ -32,7 +32,11 @@ class Program {
             var history = RangeBarJournal.Read(oldFile);
             if (history.Count == 0) continue;
             foreach (var record in history) RangeBarJournal.Append(target, record);
-            Console.WriteLine("Readable history: " + target);
+        }
+        foreach (string file in RangeBarJournal.HistoryFiles(args[0])) {
+            if (!file.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)) continue;
+            RangeBarJournal.Consolidate(file);
+            Console.WriteLine("Consolidated trade history: " + file);
         }
     }
 }

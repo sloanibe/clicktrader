@@ -42,7 +42,8 @@ def main():
                          "namespace PowerLanguage.Indicator {", model, (ROOT / "shared/RangeBarJournal.cs").read_text(),
                          (ROOT / "shared/RangeBarJournalWriter.cs").read_text(), "}",
                          (ROOT / "tests/RangeBarTradeHistoryTests.cs").read_text(),
-                         (ROOT / "tests/RangeBarJournalTests.cs").read_text(), signal_harness])
+                         (ROOT / "tests/RangeBarJournalTests.cs").read_text(),
+                         (ROOT / "tests/RangeBarTradeConsolidationTests.cs").read_text(), signal_harness])
     # C# using directives must precede namespaces; retain test directives up front.
     harness = harness.replace("}\nusing System;\nusing System.Collections.Generic;\nusing PowerLanguage.Indicator;",
                               "}")

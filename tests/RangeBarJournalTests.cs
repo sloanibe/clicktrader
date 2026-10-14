@@ -29,8 +29,8 @@ static class RangeBarJournalTests {
             Check(path.EndsWith(".txt"), "new histories have a text-editor-friendly extension");
             RangeBarJournal.Append(path, entry); RangeBarJournal.Append(path, entry);
             string contents = System.IO.File.ReadAllText(path);
-            Check(contents.StartsWith("RangeBar trade history") && contents.Contains("Event: ENTRY"),
-                "saved file has a title and labeled entry block");
+            Check(contents.StartsWith("RangeBar trade history") && contents.Contains("Status: OPEN"),
+                "saved file has a title and consolidated open trade");
             var encodeLegacy = typeof(RangeBarJournal).GetMethod("EncodeLegacy", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
             string migration = RangeBarJournal.FileName(directory, "migration");
             string oldFile = System.IO.Path.ChangeExtension(migration, ".rbj");
@@ -76,33 +76,35 @@ static class RangeBarJournalTests {
                 "bar finalization changes annotation without changing fill price or duplicating execution");
             string grouped = System.IO.File.ReadAllText(path);
             string rule = new string('=', 80);
-            string pinStart = "TRADE \"pin\" | \"pin bar\" | LONG";
-            string pinEnd = "END TRADE \"pin\" | COMPLETE";
-            string manualStart = "TRADE \"manual\" | \"manual\" | SHORT";
-            Check(grouped.Contains(rule + "\r\n" + pinStart) && grouped.Contains(pinEnd + "\r\n" + rule),
-                "equal-sign rules mark the complete trade group and its status");
-            int pinBegin = grouped.IndexOf(pinStart), pinFinish = grouped.IndexOf("END TRADE \"pin\"");
+            string pinStart = "id=pin;";
+            string pinEnd = "Profit: +3 ticks";
+            string manualStart = "id=manual;";
+            Check(grouped.Contains(rule + "\r\nBEGIN RANGE BAR TRADE (RBJ4)") && grouped.Contains(pinEnd),
+                "equal-sign rules mark each single consolidated trade record");
+            int pinBegin = grouped.IndexOf(pinStart), pinFinish = grouped.IndexOf("END RANGE BAR TRADE", pinBegin);
             int manualBegin = grouped.IndexOf(manualStart);
             Check(pinBegin < grouped.IndexOf(entry.EventId) && grouped.IndexOf(update.EventId) < pinFinish && pinFinish < manualBegin,
-                "late pin update stays inside its trade rather than after the overlapping manual trade");
+                "late pin update is folded into its trade's metadata before the next trade");
             Check(grouped.IndexOf(closePin.EventId) < pinFinish && grouped.IndexOf(closeManual.EventId) > manualBegin,
-                "entry and correlated exit are inside the same trade's rules");
+                "entry and correlated exit fill details are inside one trade record");
+            Check(!grouped.Contains("BEGIN RANGE BAR EVENT") && !grouped.Contains("Event: BAR UPDATE"),
+                "consolidated file contains no separate entry, exit or update events");
             var parsedGroups = RangeBarJournal.Read(path);
-            Check(parsedGroups.Count == 5 && HistoryMatching.BuildJournal(RangeBarJournal.Fills(parsedGroups), day).Pairs.Count == 2,
+            Check(parsedGroups.Count == 4 && HistoryMatching.BuildJournal(RangeBarJournal.Fills(parsedGroups), day).Pairs.Count == 2,
                 "trade separators add no executions and do not change indicator matching");
             Check(System.IO.Directory.GetFiles(directory, "*.tmp").Length == 0, "atomic group save cleans up its temporary file");
             string openText = System.IO.File.ReadAllText(migration);
-            Check(openText.Contains("END TRADE \"next day\" | OPEN"), "an open trade is not marked complete");
+            Check(openText.Contains("Trade ID: \"next day\"\r\n  Status: OPEN"), "an open trade is not marked complete");
             string pendingFile = RangeBarJournal.FileName(directory, "pending group");
             var pendingEntry = Record("pending", "entry", 1, 100, day); pendingEntry.FinalBar = true;
             var pendingExit = Record("pending", "exit", -1, 101, day.AddSeconds(1));
             RangeBarJournal.Append(pendingFile, pendingEntry); RangeBarJournal.Append(pendingFile, pendingExit);
-            Check(System.IO.File.ReadAllText(pendingFile).Contains("END TRADE \"pending\" | CLOSED - BAR UPDATES PENDING"),
+            Check(System.IO.File.ReadAllText(pendingFile).Contains("BEGIN RANGE BAR TRADE (RBJ4)") && !RangeBarJournal.Read(pendingFile)[1].FinalBar,
                 "closed trade remains pending until its forming exit bar is finalized");
             var pendingUpdate = pendingExit.Copy(); pendingUpdate.Kind = "bar"; pendingUpdate.Target = pendingExit.EventId;
             pendingUpdate.EventId = Guid.NewGuid().ToString("N"); pendingUpdate.FinalBar = true;
             RangeBarJournal.Append(pendingFile, pendingUpdate);
-            Check(System.IO.File.ReadAllText(pendingFile).Contains("END TRADE \"pending\" | COMPLETE"),
+            Check(System.IO.File.ReadAllText(pendingFile).Contains("BEGIN RANGE BAR TRADE (RBJ4)") && RangeBarJournal.Read(pendingFile)[1].FinalBar,
                 "last bar update completes the trade group without adding another execution");
             using (var heldReader = new System.IO.FileStream(pendingFile, System.IO.FileMode.Open, System.IO.FileAccess.Read,
                 System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete)) {

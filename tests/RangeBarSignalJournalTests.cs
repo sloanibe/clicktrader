@@ -28,6 +28,7 @@ class RangeBarSignalJournalTests {
     readonly List<RangeBarJournalRecord> m_HistoryBars = new List<RangeBarJournalRecord>();
     RangeBarJournalWriter m_HistoryWriter = new RangeBarJournalWriter();
     DateTime m_HistoryErrorTime;
+    bool m_HistoryCleanupScheduled;
     // PRODUCTION_JOURNAL_METHODS
     static int checks;
     static void Check(bool ok, string message) { checks++; if (!ok) throw new Exception(message); }
@@ -76,7 +77,7 @@ class RangeBarSignalJournalTests {
             Check(records.Count == 2 && records[0].Side == -1 && records[1].Kind == "exit" && records[0].TradeId == records[1].TradeId,
                 "back-to-back short callbacks are processed in order without waiting");
             var orphan = new RangeBarSignalJournalTests {TradeHistoryDirectory = folder, TradeHistoryStream = "empty"};
-            orphan.OnBrokerStategyOrderFilled(false, 1, 101); orphan.Idle(); orphan.MaintainTradeHistory();
+            orphan.OnBrokerStategyOrderFilled(false, 1, 101); orphan.Idle(); orphan.MaintainTradeHistory(); orphan.Idle();
             string orphanPath = RangeBarJournal.FileName(folder, "Paper|A|MESZ26|empty|ask|4");
             var orphanFills = RangeBarJournal.Fills(RangeBarJournal.Read(orphanPath));
             Check(orphan.Output.Errors.Count == 0 && orphanFills.Count == 1 && orphanFills[0].Kind == "exit" && orphanFills[0].Setup == "unknown",
@@ -90,13 +91,33 @@ class RangeBarSignalJournalTests {
             pure.RangeSizeTicks = 8; pure.CaptureTradeHistoryIntent(1);
             Check(pure.m_HistoryIntent.RangeTicks == 8, "history reads configured range override");
 
+            // A quiet chart cleans up an unfinished legacy entry without another fill callback.
+            var quiet = new RangeBarSignalJournalTests {TradeHistoryDirectory = folder, TradeHistoryStream = "quiet cleanup"};
+            string quietPath = RangeBarJournal.FileName(folder, "Paper|A|MESZ26|quiet%20cleanup|ask|4");
+            var quietEntry = RangeBarJournalTests.Record("quiet", "entry", 1, 100, new DateTime(2026, 10, 14, 9, 0, 0));
+            quietEntry.Stream = "quiet cleanup";
+            var quietBar = quietEntry.Copy(); quietBar.Kind = "bar"; quietBar.Target = quietEntry.EventId;
+            quietBar.EventId = Guid.NewGuid().ToString("N"); quietBar.FinalBar = true;
+            quietBar.BarTime = quietEntry.BarTime.AddSeconds(1); quietBar.High = 102;
+            System.IO.File.WriteAllText(quietPath, RangeBarJournal.Encode(quietEntry) + "\n" + RangeBarJournal.Encode(quietBar) + "\n");
+            quiet.MaintainTradeHistory(); quiet.Idle();
+            string cleaned = System.IO.File.ReadAllText(quietPath);
+            Check(cleaned.Contains("BEGIN RANGE BAR TRADE (RBJ3)") && cleaned.Contains("Status: OPEN") &&
+                !cleaned.Contains("BEGIN RANGE BAR EVENT") && RangeBarJournal.Read(quietPath).Count == 1,
+                "first chart calculation consolidates legacy entry updates without needing a new exit or fill");
+            Check(quiet.m_HistoryIntent == null && quiet.m_StopPrice == 101.25 && quiet.m_ActiveEntrySetup == EEntrySetup.PinBar,
+                "startup consolidation neither stages an entry nor changes signal trade state");
+            quiet.MaintainTradeHistory();
+            Check(quiet.m_HistoryCleanupScheduled && quiet.m_HistoryWriter.PendingCount == 0,
+                "quiet chart schedules cleanup once instead of performing file I/O every tick");
+
             // File deletion during an open trade recovers its recorded context on the worker.
             var deleted = new RangeBarSignalJournalTests {TradeHistoryDirectory = folder, TradeHistoryStream = "delete"};
             string deletedPath = RangeBarJournal.FileName(folder, "Paper|A|MESZ26|delete|ask|4");
             deleted.CaptureTradeHistoryIntent(1); deleted.OnBrokerStategyOrderFilled(true, 1, 101.25); deleted.Idle();
             var beforeDeletion = RangeBarJournal.Fills(RangeBarJournal.Read(deletedPath));
             System.IO.File.Delete(deletedPath);
-            deleted.OnBrokerStategyOrderFilled(false, 1, 102); deleted.Idle(); deleted.MaintainTradeHistory();
+            deleted.OnBrokerStategyOrderFilled(false, 1, 102); deleted.Idle(); deleted.MaintainTradeHistory(); deleted.Idle();
             var afterDeletion = RangeBarJournal.Fills(RangeBarJournal.Read(deletedPath));
             Check(afterDeletion.Count == 2 && afterDeletion[0].TradeId == beforeDeletion[0].TradeId &&
                 afterDeletion[1].TradeId == afterDeletion[0].TradeId && deleted.Output.Errors.Count == 0,

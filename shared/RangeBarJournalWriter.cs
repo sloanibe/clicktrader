@@ -78,6 +78,7 @@
                 Uri.EscapeDataString(r.Symbol) + "|" + Uri.EscapeDataString(r.Stream) + "|" + r.Role + "|" +
                 r.RangeTicks.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
             string path = RangeBarJournal.FileName(work.Directory, scope);
+            if (r.Kind == "consolidate") { RangeBarJournal.Consolidate(path); return; }
             StreamState state;
             if (!streams.TryGetValue(path, out state)) {
                 var events = RangeBarJournal.Read(path);
