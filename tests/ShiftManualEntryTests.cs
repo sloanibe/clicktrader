@@ -15,7 +15,7 @@ class ShiftManualEntryTests {
     void ClearPinBarProjectionLines() { }
     void ClearEmaBounceProjectionLines() { }
     void UpdateProjectedEntryLine() { }
-    enum EEntrySetup { None, ShiftProjection }
+    enum EEntrySetup { None, PinBar, ShiftProjection }
     class BarData {
         public int CurrentBar = 10;
         public bool LastBarOnChart = true;
@@ -35,6 +35,7 @@ class ShiftManualEntryTests {
     double m_StopPrice, m_LastSentPrice, rangeTicks = 4, drawnEntry;
     bool IsAskChart = true;
     Order m_BuyStop = new Order(), m_SellStop = new Order();
+    Order m_PinEntryStop = new Order(), m_ManualEntryStop = new Order();
     bool IsEntryDirectionAllowed(int direction) { return direction == (IsAskChart ? 1 : -1); }
     double GetActiveRangeTicks(double tickSize) { return rangeTicks; }
     double RoundToTick(double price, double tickSize) { return Math.Round(price / tickSize) * tickSize; }
@@ -71,7 +72,7 @@ class ShiftManualEntryTests {
                     Check(entry.m_StopPrice == expected && entry.drawnEntry == expected,
                           "order and projection match for range " + range);
                     entry.SubmitShiftProjectionEntryNow();
-                    Order order = side > 0 ? entry.m_BuyStop : entry.m_SellStop;
+                    Order order = entry.m_ManualEntryStop;
                     Check(order.Sends == 1 && order.Price == expected && entry.m_LastSentPrice == expected,
                           "correct native stop submitted");
                     if (side > 0) entry.Bars.Low[0] -= .25;
@@ -90,7 +91,7 @@ class ShiftManualEntryTests {
             blocked.m_FastEMA[0] = ask ? 98 : 100;
             blocked.StartShiftProjectionEntry(.25);
             Check(!blocked.m_ShiftProjectionActive && !blocked.m_AutoEntryArmed &&
-                  blocked.m_BuyStop.Sends == 0 && blocked.m_SellStop.Sends == 0 &&
+                  blocked.m_ManualEntryStop.Sends == 0 &&
                   blocked.feedback.Contains(ask ? "ASK REQUIRES" : "BID REQUIRES"),
                   "opposite EMA direction explains rejection without sending");
             blocked.m_FastEMA[0] = 99;
@@ -109,7 +110,7 @@ class ShiftManualEntryTests {
             accepted.m_FastEMA[0] = ask ? 100 : 98;
             accepted.StartShiftProjectionEntry(.25);
             Check(accepted.feedback == null && !accepted.m_AutoEntryArmed &&
-                  (ask ? accepted.m_BuyStop.Sends : accepted.m_SellStop.Sends) == 1,
+                  accepted.m_ManualEntryStop.Sends == 1,
                   "permitted click submits on both chart sides");
         }
         foreach (bool ask in new[] {true, false}) {
@@ -127,7 +128,7 @@ class ShiftManualEntryTests {
                           !transition.m_AutoEntryArmed && !transition.m_FourTickPinBarMode &&
                           transition.m_ArmedDirection == 0,
                           "manual start clears previous automation");
-                    int sends = transition.m_BuyStop.Sends + transition.m_SellStop.Sends;
+                    int sends = transition.m_ManualEntryStop.Sends;
                     transition.ClearShiftProjectionEntry();
                     Check(!transition.m_ShiftProjectionActive &&
                           !transition.m_AutoEntryArmed && !transition.m_FourTickPinBarMode &&
@@ -138,7 +139,7 @@ class ShiftManualEntryTests {
                           "manual cancel cancels order and stays unarmed");
                     transition.UpdateShiftProjectionEntry(.25, 0);
                     transition.SubmitShiftProjectionEntryNow();
-                    Check(transition.m_BuyStop.Sends + transition.m_SellStop.Sends == sends,
+                    Check(transition.m_ManualEntryStop.Sends == sends,
                           "cancelled manual entry cannot resubmit");
                     transition.StartShiftProjectionEntry(.25);
                     transition.Bars.CurrentBar++;

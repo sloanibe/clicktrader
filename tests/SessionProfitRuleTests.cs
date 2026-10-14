@@ -15,22 +15,34 @@ class SessionProfitRuleTests {
         public int CurrentBar = 11;
         public bool LastBarOnChart = true;
         public EBarState Status = EBarState.Open;
-        public double[] Open = {100}, Close = {99.75};
+        public double[] Open = {100}, Close = {99.75}, High = {101}, Low = {99};
     }
     class StrategyData { public double OpenEquity, AvgEntryPrice = 100; }
     class CloseOrder { public int Sends; public void Send() { Sends++; } }
+    class Order {
+        public int Sends;
+        public double Price;
+        public void Send(double price) { Sends++; Price = price; }
+    }
     BarData Bars = new BarData();
     StrategyData StrategyInfo = new StrategyData();
     CloseOrder m_CloseLongNextBar = new CloseOrder(), m_CloseShortNextBar = new CloseOrder();
     bool m_SessionProfitRuleActive = true, m_RecoveryModeActive = true;
-    bool UseOppositeColorExitForProfits, m_ColorCloseExitRequested;
+    bool UseOppositeColorExitForProfits, m_ColorCloseExitRequested, m_OppositeColorProfitArmed;
     int m_ProfitRuleEntryBar = 10;
-    double m_OppositeColorStopPrice = 100;
+    double m_OppositeColorStopPrice, m_ProtectiveStopPrice, m_ProfitTargetPrice;
+    Order m_BuyExitStop = new Order(), m_SellExitStop = new Order();
+    Order m_BuyExitLimit = new Order(), m_SellExitLimit = new Order();
+    Order m_ColorTrailLongStop = new Order(), m_ColorTrailShortStop = new Order();
     ITrendLineObject m_PinBarStopLine, m_PinBarTargetLine;
     ITrendLineObject m_PinBarTailLine, m_PinBarCompletionLine, m_PinBarLabel;
     double UpdateAndGetGlobalPnL(double value) { return value; }
     int GetProtectiveStopLossTicks(double tickSize) { return 9; }
-    void ClearRecoveryColorStopProjection() { }
+    double? recoveryProjection;
+    double rangeTicks = 4;
+    double GetActiveRangeTicks(double tickSize) { return rangeTicks; }
+    void ClearRecoveryColorStopProjection() { recoveryProjection = null; }
+    void UpdateRecoveryColorStopProjection(double price, int position) { recoveryProjection = price; }
     double RoundToTick(double price, double tickSize) { return Math.Round(price / tickSize) * tickSize; }
     void UpdateShiftProjectionLine(ref ITrendLineObject line, double price,
                                   Color color, ETLStyle style, int size) {
@@ -81,16 +93,50 @@ class SessionProfitRuleTests {
             recovery.Bars.Close[0] = 100 + side * .25;
             recovery.UpdateSessionProfitExit(side, .25);
             Check(!recovery.m_ColorCloseExitRequested, "forming profitable opposite bar cannot exit");
+            Check(recovery.recoveryProjection == 100,
+                  "recovery shows exact reversal completion without extra tick");
+            recovery.SubmitActiveExitOrders(side);
+            Check(!recovery.m_OppositeColorProfitArmed &&
+                  recovery.m_ColorTrailLongStop.Sends + recovery.m_ColorTrailShortStop.Sends == 0,
+                  "break-even projection does not arm native profit stop");
+            recovery.Bars.High[0] += .5;
+            recovery.Bars.Low[0] -= .5;
+            recovery.UpdateSessionProfitExit(side, .25);
+            Check(recovery.recoveryProjection == (side > 0 ? 100.5 : 99.5),
+                  "recovery projection follows favorable extreme on both sides");
+            recovery.SubmitActiveExitOrders(side);
+            var trail = side > 0 ? recovery.m_ColorTrailLongStop : recovery.m_ColorTrailShortStop;
+            Check(recovery.m_OppositeColorProfitArmed && trail.Sends == 1 &&
+                  trail.Price == 100 + side * .5, "correct native recovery stop submitted");
+            recovery.Bars.High[0] -= .25;
+            recovery.Bars.Low[0] += .25;
+            recovery.UpdateSessionProfitExit(side, .25);
+            Check(recovery.m_OppositeColorStopPrice == 100 + side * .5 &&
+                  recovery.recoveryProjection == recovery.m_OppositeColorStopPrice,
+                  "stop and its guide never loosen when bar extremes retreat");
+            recovery.Bars.High[0] += 1;
+            recovery.Bars.Low[0] -= 1;
+            recovery.UpdateSessionProfitExit(side, .25);
+            recovery.SubmitActiveExitOrders(side);
+            Check(trail.Price == 100 + side * 1.25,
+                  "native stop tightens as price continues in trade direction");
+            recovery.rangeTicks = 0;
+            recovery.UpdateSessionProfitExit(side, .25);
+            Check(recovery.recoveryProjection == null, "unknown range clears recovery projection");
+            recovery.rangeTicks = 4;
             recovery.Bars.Status = EBarState.Close;
             foreach (int resultTicks in new[] {-17, -9, -8, -1, 0}) {
                 recovery.Bars.Close[0] = 100 + side * resultTicks * .25;
                 recovery.UpdateSessionProfitExit(side, .25);
                 Check(!recovery.m_ColorCloseExitRequested,
                       "losing or break-even opposite close leaves loss exit to protective stop");
+                Check(recovery.recoveryProjection.HasValue,
+                      "projection remains visible before trade becomes profitable");
                 Check(recovery.m_CloseLongNextBar.Sends + recovery.m_CloseShortNextBar.Sends == 0,
                       "no recovery market order at a loss or break-even");
             }
-            Check(recovery.m_OppositeColorStopPrice == 0, "no legacy reversal stop");
+            Check(recovery.m_OppositeColorStopPrice == 100 + side * 1.25,
+                  "armed profitable stop remains through retracement");
             recovery.Bars.Close[0] = recovery.Bars.Open[0];
             recovery.UpdateSessionProfitExit(side, .25);
             Check(!recovery.m_ColorCloseExitRequested, "profitable doji cannot exit");
@@ -118,6 +164,9 @@ class SessionProfitRuleTests {
             Check((side > 0 ? recovery.m_CloseLongNextBar.Sends : recovery.m_CloseShortNextBar.Sends) == 2,
                   "pending exit resends while still profitable");
             recovery.UpdateSessionProfitExit(0, .25);
+            Check(recovery.recoveryProjection == null, "flat clears recovery projection");
+            Check(!recovery.m_OppositeColorProfitArmed && recovery.m_OppositeColorStopPrice == 0,
+                  "flat clears native trail state");
             Check(recovery.m_CloseLongNextBar.Sends + recovery.m_CloseShortNextBar.Sends == 2,
                   "flat position sends no close");
             var profitable = new SessionProfitRuleTests();
@@ -126,6 +175,7 @@ class SessionProfitRuleTests {
             profitable.Bars.Close[0] = 100 - side * .25;
             profitable.UpdateSessionProfitExit(side, .25);
             Check(!profitable.m_ColorCloseExitRequested, "fixed-target trade ignores opposite close");
+            Check(profitable.recoveryProjection == null, "fixed-target trade has no recovery projection");
         }
         var guides = new SessionProfitRuleTests();
         var stopGuide = guides.m_PinBarStopLine = new ITrendLineObject();

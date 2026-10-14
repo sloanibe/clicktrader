@@ -41,6 +41,16 @@ expire when their bar changes. A confirmed entry fill consumes the armed
 state. Entries use the signal's existing native stop-order submission and
 protective-stop settings. A moving dashed stop preview uses that same distance before entry.
 
+General pin-bar entries also recheck live shape, EMA, trend, and continuation
+conditions on every update after qualification. If those conditions fail, the
+working entry stop is cancelled before its local state and guides are cleared.
+The armed direction persists so a later valid setup can stage automatically.
+
+Pin-bar entry stop orders are recorded under the name `pin bar`. Manual Shift
+entries are recorded as `manual`. The history indicator uses those entry names
+for matching `P`/`M` labels; the entry cancellation and emergency paths recognize
+both names as strategy orders.
+
 Pin and Shift entries share a session-P&L profit rule: zero or positive P&L at fill gets a fixed 4-tick target from the actual average fill; negative P&L gets no fixed target and takes profit on a later confirmed opposing-color bar close only while the individual trade is profitable from its actual average fill. Losing and break-even closes do not request a color exit; loss exits are handled by the protective stop at two ranges plus one tick or farther. Pending profit market exits are resubmitted only while the trade remains profitable. The category is latched from the pre-fill shared session snapshot and does not change while that trade is open. The fixed-target preview follows the entry only while session P&L is nonnegative; otherwise it is removed. All pending pin guides are removed on invalidation or fill. The protective stop stays active in both profit categories.
 
 All RangeBarTrading automatic loss exits allow at least nine ticks from the
