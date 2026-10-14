@@ -53,6 +53,18 @@ namespace PowerLanguage.Strategy
         // for larger ranges as well.
         [Input] public bool ShiftProjectionRequireOneTickConfirmation { get; set; }
 
+        // BEGIN HISTORY OBSERVER STATE
+        // History is an observer. Keep the committed Input list and order-management state intact.
+        private static readonly bool WriteTradeHistory = true;
+        private const string TradeHistoryDirectory = @"C:\rangebar_entries";
+        private const string TradeHistoryStream = "default";
+        private readonly RangeBarJournalWriter m_HistoryWriter = new RangeBarJournalWriter();
+        private RangeBarJournalRecord m_HistoryIntent;
+        private readonly List<RangeBarJournalRecord> m_HistoryBars = new List<RangeBarJournalRecord>();
+        private DateTime m_HistoryErrorTime;
+
+        // END HISTORY OBSERVER STATE
+
         // Fixed internal behavior; these are intentionally not exposed in the
         // Strategy Properties dialog.
         private const int OrderQuantity = 1;
@@ -124,8 +136,8 @@ namespace PowerLanguage.Strategy
 
         private IOrderPriced m_BuyStop;
         private IOrderPriced m_SellStop;
-        private IOrderPriced m_PinEntryStop;
-        private IOrderPriced m_ManualEntryStop;
+        private IOrderPriced m_PinBuyStop, m_PinSellStop;
+        private IOrderPriced m_ManualBuyStop, m_ManualSellStop;
         private IOrderPriced m_BuyExitStop;
         private IOrderPriced m_SellExitStop;
         private IOrderPriced m_ColorTrailLongStop;
@@ -284,11 +296,7 @@ namespace PowerLanguage.Strategy
             m_ProfileEMA = new XAverage(this); m_MasterEMA = new XAverage(this);
             m_BuyStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "RangeBuy", EOrderAction.Buy));
             m_SellStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "RangeSell", EOrderAction.SellShort));
-            // Each chart trades one direction. Create one object per named
-            // entry type so its recorded name is unambiguous and unique.
-            EOrderAction chartEntryAction = IsAskChart ? EOrderAction.Buy : EOrderAction.SellShort;
-            m_PinEntryStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "pin bar", chartEntryAction));
-            m_ManualEntryStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "manual", chartEntryAction));
+            CreateNamedEntryOrders();
             // Match the proven RenkoTailTrading exit-order construction. These
             // actions are only emitted while the matching position is active.
             m_BuyExitStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "ProtectLong", EOrderAction.Sell));
@@ -479,6 +487,7 @@ namespace PowerLanguage.Strategy
                 }
 
                 m_LastMarketPosition = currentPosition;
+                MaintainTradeHistory();
                 if (ShowHUD && m_HudDisplayEnabled) UpdateHUD();
                 return;
             }
@@ -606,6 +615,7 @@ namespace PowerLanguage.Strategy
             }
             m_LastMarketPosition = currentPosition;
             if (ShowHUD && m_HudDisplayEnabled) UpdateHUD();
+            MaintainTradeHistory();
         }
 
         private void CheckForHiddenPierceSignals(double tickSize) {
@@ -1186,7 +1196,9 @@ namespace PowerLanguage.Strategy
 
         private static bool IsEntryOrderName(string orderName) {
             return orderName == "RangeBuy" || orderName == "RangeSell" ||
-                   orderName == "pin bar" || orderName == "manual";
+                   orderName == "pin bar" || orderName == "manual" ||
+                   orderName == "pin bar buy" || orderName == "pin bar sell" ||
+                   orderName == "manual buy" || orderName == "manual sell";
         }
 
         private bool IsWorkingOrder(int state) {
@@ -2769,12 +2781,117 @@ namespace PowerLanguage.Strategy
             }
         }
 
+        // BEGIN ENTRY DIRECTION FIX
+        private void CreateNamedEntryOrders() {
+            // Create is called only once. Input changes must never leave a bid chart
+            // holding a Buy order created from the constructor's ask-chart default.
+            m_PinBuyStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "pin bar buy", EOrderAction.Buy));
+            m_PinSellStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "pin bar sell", EOrderAction.SellShort));
+            m_ManualBuyStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "manual buy", EOrderAction.Buy));
+            m_ManualSellStop = OrderCreator.Stop(new SOrderParameters(Contracts.Default, "manual sell", EOrderAction.SellShort));
+        }
+        // END ENTRY DIRECTION FIX
+
+        // BEGIN HISTORY OBSERVER METHODS
+        // These methods only read chart state, capture snapshots and enqueue copies.
+        // No file access, broker queries, order sends, or trading-state assignments occur here.
+        private void CaptureTradeHistoryIntent(int direction) {
+            if (!WriteTradeHistory || !Environment.IsRealTimeCalc) return;
+            try {
+                var intent = NewTradeHistoryRecord();
+                intent.Side = direction; intent.Quantity = OrderQuantity; intent.Price = m_StopPrice;
+                intent.SubmittedPrice = m_StopPrice;
+                intent.Setup = m_ActiveEntrySetup == EEntrySetup.PinBar ? "pin bar" :
+                    m_ActiveEntrySetup == EEntrySetup.ShiftProjection ? "manual" : m_ActiveEntrySetup.ToString();
+                m_HistoryIntent = intent;
+            } catch (Exception ex) { ReportHistoryError(ex.Message); }
+        }
+
+        private RangeBarJournalRecord NewTradeHistoryRecord() {
+            double tick = (double)Bars.Info.MinMove / Bars.Info.PriceScale;
+            if (tick <= 0) tick = 0.25;
+            // Do not call GetActiveRangeTicks: its fallback mutates m_AutoRangeTicks.
+            double range = RangeSizeTicks > 0 ? RangeSizeTicks : m_AutoRangeTicks;
+            if (range <= 0 && Bars.CurrentBar > 1)
+                range = Math.Round(Math.Abs(Bars.High[1] - Bars.Low[1]) / tick);
+            var record = new RangeBarJournalRecord {
+                TradeId = Guid.NewGuid().ToString("N"), Profile = Profile ?? "", Account = Account ?? "",
+                Symbol = Bars.Info.Name, Stream = TradeHistoryStream, Role = IsAskChart ? "ask" : "bid",
+                TickSize = tick, RangeTicks = range, BarNumber = Bars.CurrentBar
+            };
+            SnapshotHistoryBar(record, 0);
+            return record;
+        }
+
+        private void SnapshotHistoryBar(RangeBarJournalRecord record, int barsBack) {
+            record.BarTime = Bars.Time[barsBack];
+            record.Open = Bars.Open[barsBack]; record.High = Bars.High[barsBack];
+            record.Low = Bars.Low[barsBack]; record.Close = Bars.Close[barsBack];
+            record.TickId = barsBack == 0 ? Bars.TickIDValue & 0x7fffffff : 0;
+            record.FinalBar = barsBack > 0 || Bars.Status == EBarState.Close;
+            if (barsBack < Bars.CurrentBar) {
+                record.PreviousBarTime = Bars.Time[barsBack + 1];
+                record.PreviousOpen = Bars.Open[barsBack + 1]; record.PreviousHigh = Bars.High[barsBack + 1];
+                record.PreviousLow = Bars.Low[barsBack + 1]; record.PreviousClose = Bars.Close[barsBack + 1];
+            }
+        }
+
+        protected override void OnBrokerStategyOrderFilled(bool is_buy, int quantity, double avg_fill_price) {
+            base.OnBrokerStategyOrderFilled(is_buy, quantity, avg_fill_price);
+            if (!WriteTradeHistory || quantity <= 0) return;
+            try {
+                if (double.IsNaN(avg_fill_price) || double.IsInfinity(avg_fill_price))
+                    throw new InvalidOperationException("Invalid broker fill price");
+                int side = is_buy ? 1 : -1;
+                bool entry = side == (IsAskChart ? 1 : -1);
+                var record = m_HistoryIntent != null ? m_HistoryIntent.Copy() : NewTradeHistoryRecord();
+                record.EventId = Guid.NewGuid().ToString("N"); record.TradeId = Guid.NewGuid().ToString("N");
+                record.Kind = entry ? "entry" : "exit"; record.Observed = DateTime.Now;
+                record.Side = side; record.Quantity = quantity; record.Price = avg_fill_price;
+                record.FillBarTime = Bars.Time[0]; record.FillBarNumber = Bars.CurrentBar;
+                record.FillTickId = Bars.TickIDValue & 0x7fffffff;
+                if (entry && m_HistoryIntent != null) {
+                    int back = Bars.CurrentBar - record.BarNumber;
+                    if (back >= 0 && back <= Bars.CurrentBar) SnapshotHistoryBar(record, back);
+                } else { record.BarNumber = Bars.CurrentBar; SnapshotHistoryBar(record, 0); }
+                m_HistoryWriter.Enqueue(TradeHistoryDirectory, record);
+                if (!record.FinalBar) m_HistoryBars.Add(record.Copy());
+                if (!entry) m_HistoryIntent = null;
+            } catch (Exception ex) { ReportHistoryError(ex.Message); }
+        }
+
+        private void MaintainTradeHistory() {
+            if (!WriteTradeHistory) return;
+            try {
+                for (int i = m_HistoryBars.Count - 1; i >= 0; i--) {
+                    var record = m_HistoryBars[i];
+                    int back = Bars.CurrentBar - record.BarNumber;
+                    if (back < 0 || (back == 0 && Bars.Status != EBarState.Close)) continue;
+                    SnapshotHistoryBar(record, back);
+                    record.Target = record.EventId; record.EventId = Guid.NewGuid().ToString("N"); record.Kind = "bar";
+                    m_HistoryWriter.Enqueue(TradeHistoryDirectory, record); m_HistoryBars.RemoveAt(i);
+                }
+                string error = m_HistoryWriter.TakeError();
+                if (error != null) ReportHistoryError(error);
+            } catch (Exception ex) { ReportHistoryError(ex.Message); }
+        }
+
+        private void ReportHistoryError(string message) {
+            if (DateTime.UtcNow >= m_HistoryErrorTime) {
+                Output.WriteLine("RangeBar trade history: " + message);
+                m_HistoryErrorTime = DateTime.UtcNow.AddSeconds(30);
+            }
+        }
+
+        // END HISTORY OBSERVER METHODS
+
         private void SendEntryStop(int direction) {
             if (!IsEntryDirectionAllowed(direction)) return;
+            CaptureTradeHistoryIntent(direction);
             if (m_ActiveEntrySetup == EEntrySetup.PinBar)
-                m_PinEntryStop.Send(m_StopPrice, OrderQuantity);
+                (direction > 0 ? m_PinBuyStop : m_PinSellStop).Send(m_StopPrice, OrderQuantity);
             else if (m_ActiveEntrySetup == EEntrySetup.ShiftProjection)
-                m_ManualEntryStop.Send(m_StopPrice, OrderQuantity);
+                (direction > 0 ? m_ManualBuyStop : m_ManualSellStop).Send(m_StopPrice, OrderQuantity);
             else if (direction > 0)
                 m_BuyStop.Send(m_StopPrice, OrderQuantity);
             else
@@ -3898,4 +4015,424 @@ namespace PowerLanguage.Strategy
             }
         }
     }
+    // BEGIN RANGE BAR JOURNAL -- generated into each standalone study by tools/sync_range_bar_journal.py.
+    // Version 2: labeled text blocks; version 1 TSV remains readable. Confirmed fills and bar updates, grouped by durable trade ID.
+    internal sealed class RangeBarJournalRecord {
+        public string EventId = Guid.NewGuid().ToString("N"), TradeId = "", Kind = "", Target = "";
+        public string Setup = "unknown", Profile = "", Account = "", Symbol = "", Stream = "default", Role = "";
+        public DateTime Observed, BarTime, FillBarTime, PreviousBarTime;
+        public int Side, Quantity, BarNumber, FillBarNumber;
+        public double Price, Open, High, Low, Close, RangeTicks, TickSize;
+        public uint TickId, FillTickId;
+        public double SubmittedPrice, PreviousOpen, PreviousHigh, PreviousLow, PreviousClose;
+        public bool FinalBar;
+        public RangeBarJournalRecord Copy() { return (RangeBarJournalRecord)MemberwiseClone(); }
+    }
+    internal static class RangeBarJournal {
+        private static readonly System.Globalization.CultureInfo CI = System.Globalization.CultureInfo.InvariantCulture;
+        private static string S(string value) { return Uri.EscapeDataString(value ?? ""); }
+        private static string D(double value) { return value.ToString("R", CI); }
+        private static string EncodeLegacy(RangeBarJournalRecord r) {
+            return string.Join("\t", new[] {"RBJ1", S(r.EventId), S(r.TradeId), S(r.Kind), S(r.Target), S(r.Setup),
+                S(r.Profile), S(r.Account), S(r.Symbol), S(r.Stream), S(r.Role),
+                r.Observed.ToString("o", CI), r.BarTime.ToString("o", CI), r.Side.ToString(CI), r.Quantity.ToString(CI),
+                D(r.Price), r.BarNumber.ToString(CI), r.TickId.ToString(CI), D(r.Open), D(r.High), D(r.Low), D(r.Close),
+                D(r.RangeTicks), D(r.TickSize), r.FinalBar ? "1" : "0", r.FillBarTime.ToString("o", CI), r.FillBarNumber.ToString(CI),
+                r.FillTickId.ToString(CI), D(r.SubmittedPrice), r.PreviousBarTime.ToString("o", CI), D(r.PreviousOpen),
+                D(r.PreviousHigh), D(r.PreviousLow), D(r.PreviousClose)});
+        }
+        private static RangeBarJournalRecord DecodeLegacy(string line) {
+            string[] p = line.Split('\t');
+            if (p.Length != 34 || p[0] != "RBJ1") throw new FormatException("Unsupported journal row");
+            var r = new RangeBarJournalRecord {
+                EventId = Uri.UnescapeDataString(p[1]), TradeId = Uri.UnescapeDataString(p[2]), Kind = Uri.UnescapeDataString(p[3]),
+                Target = Uri.UnescapeDataString(p[4]), Setup = Uri.UnescapeDataString(p[5]), Profile = Uri.UnescapeDataString(p[6]),
+                Account = Uri.UnescapeDataString(p[7]), Symbol = Uri.UnescapeDataString(p[8]), Stream = Uri.UnescapeDataString(p[9]), Role = Uri.UnescapeDataString(p[10]),
+                Observed = DateTime.Parse(p[11], CI, System.Globalization.DateTimeStyles.RoundtripKind),
+                BarTime = DateTime.Parse(p[12], CI, System.Globalization.DateTimeStyles.RoundtripKind),
+                Side = int.Parse(p[13], CI), Quantity = int.Parse(p[14], CI), Price = double.Parse(p[15], CI),
+                BarNumber = int.Parse(p[16], CI), TickId = uint.Parse(p[17], CI), Open = double.Parse(p[18], CI),
+                High = double.Parse(p[19], CI), Low = double.Parse(p[20], CI), Close = double.Parse(p[21], CI),
+                RangeTicks = double.Parse(p[22], CI), TickSize = double.Parse(p[23], CI), FinalBar = p[24] == "1", FillBarTime = DateTime.Parse(p[25], CI, System.Globalization.DateTimeStyles.RoundtripKind),
+                FillBarNumber = int.Parse(p[26], CI), FillTickId = uint.Parse(p[27], CI), SubmittedPrice = double.Parse(p[28], CI), PreviousBarTime = DateTime.Parse(p[29], CI, System.Globalization.DateTimeStyles.RoundtripKind),
+                PreviousOpen = double.Parse(p[30], CI), PreviousHigh = double.Parse(p[31], CI),
+                PreviousLow = double.Parse(p[32], CI), PreviousClose = double.Parse(p[33], CI)
+            };
+            if (string.IsNullOrEmpty(r.EventId) || string.IsNullOrEmpty(r.TradeId) ||
+                (r.Kind != "entry" && r.Kind != "exit" && r.Kind != "bar") ||
+                (r.Side != 1 && r.Side != -1) || r.Quantity <= 0 || double.IsNaN(r.Price) || double.IsInfinity(r.Price))
+                throw new FormatException("Invalid journal values");
+            return r;
+        }
+        private const string Begin = "BEGIN RANGE BAR EVENT (RBJ2)";
+        private const string End = "END RANGE BAR EVENT";
+        private static readonly string[] Fields = {
+            "Event ID", "Trade ID", "Event", "Annotation target ID", "Trade type", "Broker profile", "Account", "Instrument",
+            "Stream", "Chart", "Confirmation received", "Annotation bar time", "Action", "Quantity", "Confirmed price",
+            "Annotation bar number", "Annotation tick ID", "Bar open", "Bar high", "Bar low", "Bar close", "Range ticks",
+            "Tick size", "Bar finalized", "Fill observation bar time", "Fill observation bar number", "Fill observation tick ID",
+            "Submitted entry stop price", "Previous bar time", "Previous bar open", "Previous bar high", "Previous bar low", "Previous bar close"
+        };
+        private static string Quote(string value) {
+            return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r")
+                .Replace("\n", "\\n").Replace("\t", "\\t") + "\"";
+        }
+        private static string Unquote(string value) {
+            if (value.Length < 2 || value[0] != '"' || value[value.Length - 1] != '"')
+                throw new FormatException("Expected quoted journal text");
+            var result = new System.Text.StringBuilder();
+            for (int i = 1; i < value.Length - 1; i++) {
+                char c = value[i];
+                if (c == '\\') {
+                    if (++i >= value.Length - 1) throw new FormatException("Incomplete text escape");
+                    c = value[i];
+                    if (c == 'n') c = '\n'; else if (c == 'r') c = '\r'; else if (c == 't') c = '\t';
+                    else if (c != '\\' && c != '"') throw new FormatException("Unknown text escape");
+                } else if (c == '"') throw new FormatException("Unescaped quotation mark");
+                result.Append(c);
+            }
+            return result.ToString();
+        }
+        public static string Encode(RangeBarJournalRecord record) {
+            string[] values = EncodeLegacy(record).Split('\t');
+            var text = new System.Text.StringBuilder(Begin + "\r\n");
+            for (int i = 1; i < values.Length; i++) {
+                string value = values[i];
+                if (i <= 10) value = Quote(Uri.UnescapeDataString(value));
+                if (i == 3) value = record.Kind == "bar" ? "BAR UPDATE" : record.Kind.ToUpperInvariant();
+                if (i == 13) value = record.Side > 0 ? "BUY" : "SELL";
+                if (i == 24) value = record.FinalBar ? "yes" : "no";
+                text.Append("  ").Append(Fields[i - 1]).Append(": ").Append(value).Append("\r\n");
+            }
+            return text.Append(End).ToString();
+        }
+        public static RangeBarJournalRecord Decode(string text) {
+            if (text.StartsWith("RBJ1\t", StringComparison.Ordinal)) return DecodeLegacy(text);
+            string[] lines = text.Replace("\r\n", "\n").Split('\n');
+            if (lines.Length < 2 || lines[0] != Begin || lines[lines.Length - 1] != End)
+                throw new FormatException("Incomplete journal event");
+            var values = new Dictionary<string, string>(StringComparer.Ordinal);
+            for (int i = 1; i < lines.Length - 1; i++) {
+                string line = lines[i].Trim();
+                int colon = line.IndexOf(':');
+                if (colon <= 0) throw new FormatException("Invalid journal field");
+                string key = line.Substring(0, colon);
+                if (values.ContainsKey(key)) throw new FormatException("Duplicate journal field");
+                values[key] = line.Substring(colon + 1).Trim();
+            }
+            if (values.Count != Fields.Length) throw new FormatException("Incomplete journal fields");
+            var parts = new string[Fields.Length + 1]; parts[0] = "RBJ1";
+            for (int i = 1; i < parts.Length; i++) {
+                string value;
+                if (!values.TryGetValue(Fields[i - 1], out value)) throw new FormatException("Missing journal field");
+                if (i == 3) {
+                    if (value == "ENTRY") value = "entry"; else if (value == "EXIT") value = "exit";
+                    else if (value == "BAR UPDATE") value = "bar"; else throw new FormatException("Invalid event kind");
+                    value = S(value);
+                } else if (i <= 10) value = S(Unquote(value));
+                if (i == 13) {
+                    if (value == "BUY") value = "1"; else if (value == "SELL") value = "-1";
+                    else throw new FormatException("Invalid action");
+                }
+                if (i == 24) {
+                    if (value == "yes") value = "1"; else if (value == "no") value = "0";
+                    else throw new FormatException("Invalid finalization flag");
+                }
+                parts[i] = value;
+            }
+            return DecodeLegacy(string.Join("\t", parts));
+        }
+        public static string Hash(string value) {
+            using (var hash = System.Security.Cryptography.SHA256.Create())
+                return BitConverter.ToString(hash.ComputeHash(System.Text.Encoding.UTF8.GetBytes(value))).Replace("-", "");
+        }
+        public static string FileName(string directory, string scope) {
+            return System.IO.Path.Combine(directory, "rangebar-" + Hash(scope).Substring(0, 24) + ".txt");
+        }
+        public static string[] HistoryFiles(string directory) {
+            var files = new List<string>();
+            if (!System.IO.Directory.Exists(directory)) return files.ToArray();
+            foreach (string path in System.IO.Directory.GetFiles(directory, "rangebar-*")) {
+                string extension = System.IO.Path.GetExtension(path);
+                if (string.Equals(extension, ".txt", StringComparison.OrdinalIgnoreCase)) files.Add(path);
+                else if (string.Equals(extension, ".rbj", StringComparison.OrdinalIgnoreCase) &&
+                    !System.IO.File.Exists(System.IO.Path.ChangeExtension(path, ".txt"))) files.Add(path);
+            }
+            files.Sort(StringComparer.OrdinalIgnoreCase);
+            return files.ToArray();
+        }
+        public static List<RangeBarJournalRecord> Read(string path) {
+            var result = new List<RangeBarJournalRecord>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            // New .txt streams retain their old .rbj history without rewriting an active file.
+            if (string.Equals(System.IO.Path.GetExtension(path), ".txt", StringComparison.OrdinalIgnoreCase))
+                ReadFile(System.IO.Path.ChangeExtension(path, ".rbj"), result, seen);
+            ReadFile(path, result, seen);
+            return result;
+        }
+        private static void ReadFile(string path, List<RangeBarJournalRecord> result, HashSet<string> seen) {
+            if (!System.IO.File.Exists(path)) return;
+            string contents;
+            try {
+                using (var file = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+                using (var reader = new System.IO.StreamReader(file, System.Text.Encoding.UTF8)) contents = reader.ReadToEnd();
+            } catch (System.IO.FileNotFoundException) { return; }
+              catch (System.IO.DirectoryNotFoundException) { return; }
+            // Only newline-terminated rows/blocks are committed. A later BEGIN abandons a torn block.
+            int end = contents.LastIndexOf('\n');
+            if (end < 0) return;
+            System.Text.StringBuilder block = null;
+            foreach (string row in contents.Substring(0, end).Split('\n')) {
+                string line = row.TrimEnd('\r');
+                if (line == Begin) { block = new System.Text.StringBuilder(line); continue; }
+                if (line == End && block != null) {
+                    block.Append('\n').Append(line);
+                    AddDecoded(block.ToString(), result, seen); block = null;
+                } else if (line.StartsWith("RBJ1\t", StringComparison.Ordinal)) {
+                    block = null; AddDecoded(line, result, seen);
+                } else if (block != null) block.Append('\n').Append(line);
+            }
+        }
+        private static void AddDecoded(string text, List<RangeBarJournalRecord> result, HashSet<string> seen) {
+            try { var r = Decode(text); if (seen.Add(r.EventId)) result.Add(r); }
+            catch (FormatException) { }
+            catch (OverflowException) { }
+        }
+        public static List<RangeBarJournalRecord> Fills(List<RangeBarJournalRecord> events) {
+            var fills = new List<RangeBarJournalRecord>();
+            var byId = new Dictionary<string, RangeBarJournalRecord>();
+            foreach (var r in events) {
+                if (r.Kind == "bar") {
+                    RangeBarJournalRecord target;
+                    if (byId.TryGetValue(r.Target, out target) && target.TradeId == r.TradeId) {
+                        target.BarTime = r.BarTime; target.TickId = r.TickId; target.Open = r.Open; target.High = r.High;
+                        target.Low = r.Low; target.Close = r.Close; target.FinalBar = r.FinalBar;
+                    }
+                } else { var copy = r.Copy(); fills.Add(copy); byId[r.EventId] = copy; }
+            }
+            return fills;
+        }
+        public static RangeBarJournalRecord OpenTrade(List<RangeBarJournalRecord> events, out int remaining) {
+            var entries = new Dictionary<string, RangeBarJournalRecord>();
+            var quantities = new Dictionary<string, int>();
+            foreach (var r in Fills(events)) {
+                int quantity; quantities.TryGetValue(r.TradeId, out quantity);
+                if (r.Kind == "entry") { entries[r.TradeId] = r; quantity += r.Quantity; }
+                else quantity -= r.Quantity;
+                quantities[r.TradeId] = quantity;
+            }
+            RangeBarJournalRecord open = null; remaining = 0;
+            foreach (var pair in quantities) if (pair.Value > 0 && entries.ContainsKey(pair.Key)) {
+                if (open != null) throw new InvalidOperationException("Multiple open journal trades: use a unique TradeHistoryStream per signal instance.");
+                open = entries[pair.Key]; remaining = pair.Value;
+            }
+            return open;
+        }
+        private static string GroupedText(List<RangeBarJournalRecord> history) {
+            const string rule = "================================================================================";
+            var order = new List<string>();
+            var groups = new Dictionary<string, List<RangeBarJournalRecord>>(StringComparer.Ordinal);
+            foreach (var r in history) {
+                List<RangeBarJournalRecord> group;
+                if (!groups.TryGetValue(r.TradeId, out group)) {
+                    group = new List<RangeBarJournalRecord>(); groups[r.TradeId] = group; order.Add(r.TradeId);
+                }
+                group.Add(r);
+            }
+            var text = new System.Text.StringBuilder("RangeBar trade history\r\n" +
+                "Confirmed strategy fills and bar updates. Times marked Confirmation received are receipt times.\r\n\r\n");
+            foreach (string id in order) {
+                var group = groups[id];
+                var fills = Fills(group);
+                RangeBarJournalRecord entry = null;
+                int remaining = 0;
+                bool finalized = true;
+                foreach (var fill in fills) {
+                    if (fill.Kind == "entry") { if (entry == null) entry = fill; remaining += fill.Quantity; }
+                    else remaining -= fill.Quantity;
+                    finalized &= fill.FinalBar;
+                }
+                string status = entry == null ? "ENTRY UNKNOWN" : remaining > 0 ? "OPEN" :
+                    finalized ? "COMPLETE" : "CLOSED - BAR UPDATES PENDING";
+                string setup = entry != null ? entry.Setup : group[0].Setup;
+                string direction = entry == null ? "UNKNOWN ENTRY" : entry.Side > 0 ? "LONG" : "SHORT";
+                text.Append(rule).Append("\r\nTRADE ").Append(Quote(id)).Append(" | ")
+                    .Append(Quote(setup)).Append(" | ").Append(direction).Append("\r\n").Append(rule).Append("\r\n\r\n");
+                foreach (var r in group) text.Append(Encode(r)).Append("\r\n\r\n");
+                text.Append(rule).Append("\r\nEND TRADE ").Append(Quote(id)).Append(" | ")
+                    .Append(status).Append("\r\n").Append(rule).Append("\r\n\r\n");
+            }
+            return text.ToString();
+        }
+        private static void SaveGrouped(string path, List<RangeBarJournalRecord> history) {
+            string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try {
+                byte[] bytes = System.Text.Encoding.UTF8.GetBytes(GroupedText(history));
+                using (var file = new System.IO.FileStream(temporary, System.IO.FileMode.CreateNew,
+                    System.IO.FileAccess.Write, System.IO.FileShare.None)) {
+                    file.Write(bytes, 0, bytes.Length); file.Flush(true);
+                }
+                if (System.IO.File.Exists(path)) {
+                    try { System.IO.File.Replace(temporary, path, null); }
+                    catch (System.IO.FileNotFoundException) { System.IO.File.Move(temporary, path); }
+                } else System.IO.File.Move(temporary, path);
+            } finally {
+                try { if (System.IO.File.Exists(temporary)) System.IO.File.Delete(temporary); }
+                catch (System.IO.IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+        public static void Append(string path, RangeBarJournalRecord record) {
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path));
+            using (var mutex = new System.Threading.Mutex(false, "Local\\RangeBarJournal-" + Hash(System.IO.Path.GetFullPath(path).ToUpperInvariant()))) {
+                bool locked = false;
+                try {
+                    try { locked = mutex.WaitOne(1000); } catch (System.Threading.AbandonedMutexException) { locked = true; }
+                    if (!locked) throw new System.IO.IOException("Journal writer busy");
+                    bool exists = System.IO.File.Exists(path);
+                    var history = new List<RangeBarJournalRecord>();
+                    if (exists) ReadFile(path, history, new HashSet<string>(StringComparer.Ordinal));
+                    else history = Read(path);
+                    bool duplicate = false;
+                    foreach (var prior in history) if (prior.EventId == record.EventId) { duplicate = true; break; }
+                    if (duplicate && exists) return;
+                    if (!duplicate) history.Add(record.Copy());
+                    // Preserve all events while moving late updates into their own trade group.
+                    // The flushed temporary file atomically replaces the prior readable journal.
+                    SaveGrouped(path, history);
+                } finally { if (locked) mutex.ReleaseMutex(); }
+            }
+        }
+    }
+    // END RANGE BAR JOURNAL
+    // BEGIN RANGE BAR JOURNAL WRITER -- generated into the signal; never accesses MultiCharts study objects.
+    internal sealed class RangeBarJournalWriter {
+        private sealed class Work {
+            public string Directory;
+            public RangeBarJournalRecord Record;
+        }
+        private sealed class StreamState {
+            public RangeBarJournalRecord Open;
+            public int Remaining;
+            public readonly List<RangeBarJournalRecord> Active = new List<RangeBarJournalRecord>();
+            public readonly Dictionary<string, RangeBarJournalRecord> Fills = new Dictionary<string, RangeBarJournalRecord>();
+        }
+        private readonly object gate = new object();
+        private readonly Queue<Work> queue = new Queue<Work>();
+        private readonly Queue<string> errors = new Queue<string>();
+        private readonly Dictionary<string, StreamState> streams = new Dictionary<string, StreamState>(StringComparer.OrdinalIgnoreCase);
+        private bool running;
+        private System.Threading.Timer retry;
+        // The injectable sink makes a blocked/failed disk write testable without touching a broker.
+        private readonly Action<string, RangeBarJournalRecord> append;
+        public RangeBarJournalWriter() : this(RangeBarJournal.Append) { }
+        internal RangeBarJournalWriter(Action<string, RangeBarJournalRecord> sink) { append = sink; }
+        public void Enqueue(string directory, RangeBarJournalRecord record) {
+            var item = new Work { Directory = directory, Record = record.Copy() };
+            lock (gate) {
+                queue.Enqueue(item);
+                if (!running) { running = true; System.Threading.ThreadPool.QueueUserWorkItem(Drain); }
+            }
+        }
+        public string TakeError() { lock (gate) return errors.Count > 0 ? errors.Dequeue() : null; }
+        internal int PendingCount { get { lock (gate) return queue.Count; } }
+        internal bool WaitForIdle(int milliseconds) {
+            lock (gate) {
+                var deadline = DateTime.UtcNow.AddMilliseconds(milliseconds);
+                while (running || queue.Count > 0) {
+                    int remaining = (int)(deadline - DateTime.UtcNow).TotalMilliseconds;
+                    if (remaining <= 0 || !System.Threading.Monitor.Wait(gate, remaining)) return false;
+                }
+                return true;
+            }
+        }
+        private void Error(string message) {
+            lock (gate) {
+                if (errors.Count < 8) errors.Enqueue(message);
+            }
+        }
+        private void Drain(object ignored) {
+            for (;;) {
+                Work item;
+                lock (gate) {
+                    if (queue.Count == 0) { running = false; System.Threading.Monitor.PulseAll(gate); return; }
+                    item = queue.Peek();
+                }
+                try { Write(item); }
+                catch (System.IO.IOException ex) { Retry(ex.Message); return; }
+                catch (UnauthorizedAccessException ex) { Retry(ex.Message); return; }
+                catch (Exception ex) {
+                    // Unknown association/configuration is reported; it never touches trading state.
+                    Error(ex.Message);
+                }
+                lock (gate) { queue.Dequeue(); }
+            }
+        }
+        private void Retry(string message) {
+            Error(message);
+            lock (gate) {
+                retry = new System.Threading.Timer(delegate(object ignored) {
+                    lock (gate) { retry.Dispose(); retry = null; }
+                    Drain(null);
+                }, null, 1000, System.Threading.Timeout.Infinite);
+            }
+        }
+        private void Write(Work work) {
+            var r = work.Record.Copy();
+            if (string.IsNullOrWhiteSpace(r.Profile) || string.IsNullOrWhiteSpace(r.Account))
+                throw new InvalidOperationException("Trade history requires a trading profile and account.");
+            string scope = Uri.EscapeDataString(r.Profile) + "|" + Uri.EscapeDataString(r.Account) + "|" +
+                Uri.EscapeDataString(r.Symbol) + "|" + Uri.EscapeDataString(r.Stream) + "|" + r.Role + "|" +
+                r.RangeTicks.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+            string path = RangeBarJournal.FileName(work.Directory, scope);
+            StreamState state;
+            if (!streams.TryGetValue(path, out state)) {
+                var events = RangeBarJournal.Read(path);
+                state = new StreamState();
+                state.Open = RangeBarJournal.OpenTrade(events, out state.Remaining);
+                foreach (var fill in RangeBarJournal.Fills(events)) {
+                    state.Fills[fill.EventId] = fill;
+                    if (state.Open != null && fill.TradeId == state.Open.TradeId) state.Active.Add(fill.Copy());
+                }
+                streams[path] = state;
+            }
+            // Recreate a deleted file on the worker. Keep only the still-open trade's
+            // confirmed entries and partial exits so its eventual exit remains paired.
+            bool missing = !System.IO.File.Exists(path);
+            if (missing) foreach (var active in state.Active) append(path, active);
+            if (r.Kind == "bar") {
+                RangeBarJournalRecord original;
+                if (!state.Fills.TryGetValue(r.Target, out original))
+                    throw new InvalidOperationException("Bar annotation has no confirmed journal execution.");
+                r.TradeId = original.TradeId; r.Setup = original.Setup; r.Side = original.Side; r.Quantity = original.Quantity;
+                append(path, r);
+                foreach (var active in state.Active) if (active.EventId == r.Target) {
+                    active.BarTime = r.BarTime; active.TickId = r.TickId; active.Open = r.Open; active.High = r.High;
+                    active.Low = r.Low; active.Close = r.Close; active.FinalBar = r.FinalBar;
+                }
+                return;
+            }
+            if (r.Kind == "entry") {
+                if (state.Open != null && state.Open.Side != r.Side)
+                    throw new InvalidOperationException("Entry conflicts with recorded open trade; no association was guessed.");
+                if (state.Open != null) { r.TradeId = state.Open.TradeId; r.Setup = state.Open.Setup; }
+                append(path, r); // State advances only after success, including idempotent retry after an interrupted flush.
+                state.Open = r.Copy(); state.Remaining += r.Quantity; state.Fills[r.EventId] = r; state.Active.Add(r.Copy());
+            } else if (r.Kind == "exit") {
+                if (state.Open == null && missing) {
+                    // After deletion plus restart there is no recoverable entry. Preserve
+                    // the real exit as unknown, with no fabricated entry or connection.
+                    r.Setup = "unknown"; append(path, r); state.Fills[r.EventId] = r;
+                    return;
+                }
+                if (state.Open == null || state.Open.Side == r.Side || r.Quantity > state.Remaining)
+                    throw new InvalidOperationException("Exit has no matching recorded open quantity; no association was guessed.");
+                r.TradeId = state.Open.TradeId; r.Setup = state.Open.Setup;
+                append(path, r);
+                state.Remaining -= r.Quantity; state.Fills[r.EventId] = r; state.Active.Add(r.Copy());
+                if (state.Remaining == 0) { state.Open = null; state.Active.Clear(); }
+            } else throw new InvalidOperationException("Unsupported history event.");
+        }
+    }
+    // END RANGE BAR JOURNAL WRITER
 }

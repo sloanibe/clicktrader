@@ -137,6 +137,37 @@ class RangeBarTradeHistoryDrawingTests {
             if (bitmap.GetPixel(500, 160).ToArgb() != Color.White.ToArgb() ||
                 bitmap.GetPixel(500, 240).ToArgb() != Color.White.ToArgb())
                 throw new Exception("exit-only order must not get an entry-bar extreme arrow");
+            // Explicit setup-bar identity must override both callback timing and fill-price containment.
+            Bar[] savedJournalBars = environment.Data.Data;
+            environment.Data.Data = new[] {
+                new Bar {Time = day, Open = 99, High = 100, Low = 99, Close = 100, State = EBarState.Close},
+                new Bar {Time = day.AddSeconds(10), Open = 100, High = 101, Low = 100, Close = 101, State = EBarState.Close},
+                new Bar {Time = day.AddSeconds(20), Open = 101, High = 102, Low = 101, Close = 102, State = EBarState.Close}
+            };
+            var journalEntry = new RangeBarJournalRecord {TradeId = "explicit", Kind = "entry", Side = 1, Quantity = 1,
+                Setup = "pin bar", Observed = day.AddSeconds(15), BarTime = day.AddSeconds(10), FinalBar = true,
+                Open = 100, High = 101, Low = 100, Close = 101, Price = 101.25};
+            frame.View = HistoryMatching.BuildJournal(new List<RangeBarJournalRecord> {journalEntry}, day.Date);
+            graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            if (bitmap.GetPixel(638, 195).ToArgb() != Color.Black.ToArgb() ||
+                bitmap.GetPixel(650, 220).ToArgb() != Color.Black.ToArgb() ||
+                bitmap.GetPixel(800, 200).ToArgb() != Color.White.ToArgb())
+                throw new Exception("journal arrows must mark intended bar even when fill price is inside the next bar");
+            if (HistoryDrawer.LocateJournalBar(environment.Data.Data, journalEntry) != 1)
+                throw new Exception("explicit journal bar must survive native index lookup without price heuristic");
+            journalEntry.FinalBar = false; journalEntry.BarTime = day.AddSeconds(5);
+            journalEntry.PreviousBarTime = day; journalEntry.PreviousOpen = 99; journalEntry.PreviousHigh = 100;
+            journalEntry.PreviousLow = 99; journalEntry.PreviousClose = 100;
+            if (HistoryDrawer.LocateJournalBar(environment.Data.Data, journalEntry) != 1)
+                throw new Exception("reloaded unfinalized journal identifies intended bar from its preceding completed bar");
+            journalEntry.FinalBar = true; journalEntry.BarTime = day.AddSeconds(10);
+            var duplicateBars = new[] {environment.Data.Data[1], environment.Data.Data[1]};
+            if (HistoryDrawer.LocateJournalBar(duplicateBars, journalEntry) != -1)
+                throw new Exception("identical explicit bar identities must be hidden instead of guessed");
+            journalEntry.TickId = 7; duplicateBars[1].TickID = 0x80000007;
+            if (HistoryDrawer.LocateJournalBar(duplicateBars, journalEntry) != 1)
+                throw new Exception("normalized native tick IDs distinguish otherwise identical range bars");
+            environment.Data.Data = savedJournalBars;
             // Regression: a PB1 has one body tick and a three-tick lower tail.
             // A fill between the previous close and this close must mark this
             // pin bar, not the previous bar selected by opening-time mode.
@@ -196,9 +227,16 @@ class RangeBarTradeHistoryDrawingTests {
             if (bitmap.GetPixel(650, 235).ToArgb() != Color.Black.ToArgb() ||
                 bitmap.GetPixel(500, 245).ToArgb() != Color.White.ToArgb())
                 throw new Exception("vertical marker must use unique neighbor containing the executed price");
-            if (bitmap.GetPixel(488, 215).ToArgb() != Color.Black.ToArgb())
-                throw new Exception("vertical correction must preserve horizontal marker position");
-            var resolve = typeof(HistoryDrawer).GetMethod("ResolveVerticalEntryBar",
+            if (bitmap.GetPixel(638, 215).ToArgb() != Color.Black.ToArgb() ||
+                bitmap.GetPixel(488, 215).ToArgb() != Color.White.ToArgb())
+                throw new Exception("horizontal entry head must touch the same corrected candle as vertical arrow");
+            // A corrected entry must also work with vertical markers hidden.
+            frame.ShowEntryBarArrows = false;
+            graphics.Clear(Color.White); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
+            if (bitmap.GetPixel(638, 215).ToArgb() != Color.Black.ToArgb())
+                throw new Exception("horizontal entry correction must not depend on vertical-arrow visibility");
+            frame.ShowEntryBarArrows = true;
+            var resolve = typeof(HistoryDrawer).GetMethod("ResolveEntryBar",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
             var ambiguousBars = new[] {
                 new Bar {Low = 100, High = 101}, new Bar {Low = 98, High = 99}, new Bar {Low = 100, High = 101}

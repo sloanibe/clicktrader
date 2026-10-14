@@ -31,7 +31,7 @@ def main():
         "PinBarArmingTests": ("ArmAutomatedEntryMode", "ToggleFourTickPinBarWatch",
                               "IsEntryDirectionAllowed", "IsFourTickPinBarEmaOrderValid"),
         "ShiftManualEntryTests": ("StartShiftProjectionEntry", "UpdateShiftProjectionEntry", "SubmitShiftProjectionEntryNow", "ClearShiftProjectionEntry", "SendEntryStop"),
-        "NamedEntryOrderTests": ("SendEntryStop", "IsEntryOrderName", "IsThisStrategyOrder", "IsWorkingOrder", "CancelWorkingEntryOrders"),
+        "NamedEntryOrderTests": ("CreateNamedEntryOrders", "IsEntryDirectionAllowed", "SendEntryStop", "IsEntryOrderName", "IsThisStrategyOrder", "IsWorkingOrder", "CancelWorkingEntryOrders"),
         "FourTickPinBarTests": ("UpdateFourTickPinBarProjection", "TryGetFourTickPinBarProjection",
                                 "IsFourTickPinBarContextValid", "IsFourTickPinBarEmaOrderValid"),
         "PinBarInvalidationTests": ("UpdatePinBarProjection", "ClearPinBarEntryIfActive"),

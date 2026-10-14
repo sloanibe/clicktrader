@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from check_four_tick_pinbar import method
 
 ROOT = Path(__file__).resolve().parents[1]
 CSC = Path("/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe")
@@ -17,11 +18,31 @@ def win(path):
 
 def main():
     source = (ROOT / "RangeBarTradeHistory.cs").read_text()
+    shared = (ROOT / "shared/RangeBarJournal.cs").read_text().rstrip()
+    for study in (source, (ROOT / "RangeBarTrading.cs").read_text()):
+        start = study.index("    // BEGIN RANGE BAR JOURNAL")
+        end = study.index("    // END RANGE BAR JOURNAL", start) + len("    // END RANGE BAR JOURNAL")
+        assert study[start:end] == shared, "Run tools/sync_range_bar_journal.py to update embedded journal copies"
+    writer_source = (ROOT / "shared/RangeBarJournalWriter.cs").read_text().rstrip()
+    strategy = (ROOT / "RangeBarTrading.cs").read_text()
+    writer_start = strategy.index("    // BEGIN RANGE BAR JOURNAL WRITER")
+    writer_end = strategy.index("    // END RANGE BAR JOURNAL WRITER", writer_start) + len("    // END RANGE BAR JOURNAL WRITER")
+    assert strategy[writer_start:writer_end] == writer_source, "Sync the signal's background writer"
     model = source[source.index("    internal sealed class HistoryExecution"):
                    source.index("    // END HISTORY MODEL")]
+    strategy_source = (ROOT / "RangeBarTrading.cs").read_text().replace(
+        "protected override void OnBrokerStategyOrderFilled", "private void OnBrokerStategyOrderFilled").replace(
+        "            base.OnBrokerStategyOrderFilled(is_buy, quantity, avg_fill_price);", "")
+    journal_methods = "\n".join(method(strategy_source, name) for name in (
+        "CaptureTradeHistoryIntent", "NewTradeHistoryRecord", "SnapshotHistoryBar", "OnBrokerStategyOrderFilled",
+        "MaintainTradeHistory", "ReportHistoryError"))
+    signal_harness = (ROOT / "tests/RangeBarSignalJournalTests.cs").read_text()
+    signal_harness = signal_harness[signal_harness.index("// Runs the signal"):].replace("    // PRODUCTION_JOURNAL_METHODS", journal_methods)
     harness = "\n".join(["using System; using System.Collections.Generic; using System.Globalization;",
-                         "namespace PowerLanguage.Indicator {", model, "}",
-                         (ROOT / "tests/RangeBarTradeHistoryTests.cs").read_text()])
+                         "namespace PowerLanguage.Indicator {", model, (ROOT / "shared/RangeBarJournal.cs").read_text(),
+                         (ROOT / "shared/RangeBarJournalWriter.cs").read_text(), "}",
+                         (ROOT / "tests/RangeBarTradeHistoryTests.cs").read_text(),
+                         (ROOT / "tests/RangeBarJournalTests.cs").read_text(), signal_harness])
     # C# using directives must precede namespaces; retain test directives up front.
     harness = harness.replace("}\nusing System;\nusing System.Collections.Generic;\nusing PowerLanguage.Indicator;",
                               "}")

@@ -23,6 +23,8 @@ class RangeBarTradeHistoryTests {
         return HistoryMatching.Build(new List<HistoryExecution>(fills), Day, new Dictionary<string, int>());
     }
     static void Main() {
+        RangeBarJournalTests.Run();
+        RangeBarSignalJournalTests.Run();
         foreach (int side in new[] {1, -1}) {
             var entry = Fill(1, side, 1, 100, 1);
             var exit = Fill(2, -side, 1, 100 + side, 2);
@@ -66,6 +68,16 @@ class RangeBarTradeHistoryTests {
         var isolated = Build(Fill(1, 1, 1, 100, 1, "A"), Fill(2, -1, 1, 101, 2, "B"),
                              Fill(3, -1, 1, 101, 3, "A", "Other"));
         Check(isolated.Pairs.Count == 0, "accounts and broker profiles never cross-pair");
+        foreach (string name in new[] {"pin bar buy", "pin bar sell", "manual buy", "manual sell"}) {
+            int side = name.EndsWith("sell") ? -1 : 1;
+            var directedEntry = Fill(1, side, 1, 100, 1); directedEntry.Name = name;
+            var directedExit = Fill(2, -side, 1, 100 + side, 2);
+            var directedView = Build(directedEntry, directedExit);
+            string prefix = name.StartsWith("pin bar") ? "P1" : "M1";
+            Check(directedView.Markers[0].Label.StartsWith(prefix + " in ") &&
+                directedView.Markers[1].Label.StartsWith(prefix + " out "),
+                "directional order names retain pin/manual prefixes on both markers");
+        }
         var pin = Fill(1, 1, 1, 100, 1); pin.Name = "pin bar";
         var pinExit = Fill(2, -1, 1, 101, 2); pinExit.Name = "ProfitLong";
         var manual = Fill(3, -1, 1, 102, 3); manual.Name = "manual";
