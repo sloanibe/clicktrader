@@ -26,6 +26,8 @@ class RangeBarTradeHistoryTests {
         RangeBarJournalTests.Run();
         RangeBarTradeConsolidationTests.Run();
         RangeBarSignalJournalTests.Run();
+        RangeBarDailyJournalTests.Run();
+        RangeBarDailyPnlTests.Run();
         foreach (int side in new[] {1, -1}) {
             var entry = Fill(1, side, 1, 100, 1);
             var exit = Fill(2, -side, 1, 100 + side, 2);

@@ -2,7 +2,7 @@
 
 The signal writes one persistent, readable record per trade in
 `C:\rangebar_entries` (`/mnt/c/rangebar_entries` from this WSL workspace).
-The indicator reads that same file and plots the entry, correlated exits, and
+The indicator reads those daily files and plots the entry, correlated exits, and
 intended entry bar. File operations run on a background worker.
 `RangeBarTrading` no longer draws its older filled-trade arrows or trade-type
 labels; execution annotations come from this indicator. Setup previews,
@@ -27,7 +27,7 @@ stop/target control lines, and the signal HUD remain available.
    `pin bar buy`, `pin bar sell`, `manual buy`, and `manual sell`.
 
 On its first real-time calculation, the updated signal queues cleanup of its
-existing history stream. Cleanup runs on the worker even if no new fill occurs.
+existing history stream into daily files. Cleanup runs on the worker even if no new fill occurs.
 It reads earlier `RBJ1` TSV, `RBJ2` events, and `RBJ3` trade records, folds bar updates,
 and saves each known trade once. A history with an entry and several updates but
 no exit stays **OPEN**. No closing price, exit time, or execution is inferred.
@@ -40,8 +40,10 @@ python3 tools/make_range_bar_history_readable.py /mnt/c/rangebar_entries
 ```
 
 The tool uses the production parser and writer to consolidate existing `.txt`
-files and convert legacy `.rbj` histories. Original legacy files remain available
-for compatibility. New code writes only the consolidated `.txt` file; there is
+files, convert legacy `.rbj` histories, and split undated streams into daily
+files. The old stream files are removed only after all dated files have been
+durably saved. An incomplete or unreadable source stays intact for recovery.
+New code writes only readable daily `.txt` files; there is
 no separate persistent machine-format journal. Actual earlier tracker trades
 that were never recorded by the signal cannot be backfilled or classified from
 candle shapes.
@@ -146,7 +148,7 @@ orders, or modifies trading state. The existing signal inputs and trade-manageme
 code remain as committed, apart from the explicit named-entry direction repair.
 Snapshot capture does not call the strategy's mutating range fallback.
 
-Each save retains all valid trade data across days, writes and flushes a temporary
+Each save retains all valid trade data for that daily file, writes and flushes a temporary
 file in the same folder, then atomically replaces the readable journal. Readers
 can retain a complete old snapshot while the new one is published. Temporary
 files are removed after the save. No persistent second version is maintained.
@@ -166,7 +168,33 @@ thread. The signal reports errors through MultiCharts output on a later chart
 calculation. Removing the signal does not wait for disk access; queued work can
 finish while MultiCharts remains running. Closing the application before a save
 finishes can lose unsaved work. Successfully saved records survive reloads and
-application restarts. Files are never automatically deleted or rotated.
+application restarts. Daily files are retained without automatic expiry.
+
+## Daily history files
+
+All accounts, instruments, chart sides, range settings, and streams share one
+file per local calendar day, from midnight to midnight. Names follow
+`RangeBar--history-yyyy-MM-dd.txt`, for example `RangeBar--history-2026-10-14.txt`.
+The original scope information remains inside each trade record. Writers recover
+only their own scope; the indicator applies its account/instrument/stream filters
+as before. Shared-file writes are serialized and saved atomically. No empty file
+is created on idle days.
+A trade belongs to its entry confirmation's date. Cross-midnight exits, partial
+fills, and late bar updates stay in that same file, keeping one complete trade
+record together. The next new trade after midnight starts the next dated file.
+Restart recovery searches the daily files for its own scope's open trade. The
+indicator scans all dated files, so it still finds an exit recorded after midnight
+inside a previous-day entry file. With HistoryDate blank, it includes all recorded
+days and draws the executions whose saved bars match the loaded chart. Scrolling
+to another loaded day reveals that day’s annotations without changing settings.
+An explicit HistoryDate still filters by execution confirmation date, retaining
+correlated prior-day entries for exits on that selected date.
+
+Reload the updated signal to merge its old undated or hashed daily files into
+the friendly daily files on the background worker. The conversion tool can
+migrate all older streams in the folder. Do not run the migration tool while older signal code is still writing.
+Migration writes daily snapshots atomically and is safe to retry after a partial
+failure. Live files are not changed by repository edits or verification tests.
 
 ## Chart annotations and inputs
 
@@ -202,7 +230,7 @@ placement. Vertical setup arrows and exit markers do not use this fallback.
 | `TradeHistoryStream` | `default` | Stable signal stream to display. |
 | `BrokerProfile`, `AccountFilter` | blank | Optional exact scope filters. |
 | `InstrumentOverride` | blank | Defaults to the chart's instrument. |
-| `HistoryDate` | blank | Today by confirmation receipt time; or `yyyy-MM-dd`. |
+| `HistoryDate` | blank | Signal history: all loaded chart days. Set `yyyy-MM-dd` to select one day by confirmation time. Tracker fallback: blank still means today. |
 | `HistoryLookbackDays` | 7 | Legacy tracker lookback only. Journal links retain prior entries. |
 | `TrackerToChartOffsetMinutes` | 0 | Legacy tracker timestamp offset only. |
 | `BarTimestampIsClose` | true | Legacy tracker completion-time interpretation only. |
@@ -248,3 +276,17 @@ repair, history hooks, and removal of legacy execution annotations. Live verific
 
 Reference: [MultiCharts .NET Programming Guide, broker fill events](https://download.multicharts.com/downloads/MultiCharts.NET-ProgrammingGuide-v1.1.pdf)
 and installed `PLTypes.xml` / `PLStudiesProxy.xml` API documentation.
+
+## Signal HUD day P&L
+
+The signal now restores today's realized P&L from these same history files and
+adds live `CurrentPosition.OpenProfit` for the working trade. It shows realized,
+open, and combined currency amounts for the same profile/account/instrument/stream,
+combining ask/bid without double-counting. Realizations use each exit's local date,
+including partial closes and overnight trades. History totals are before fees;
+point-to-currency conversion uses the chart instrument's `BigPointValue`.
+Disk reads and calculation run on the background writer; study callbacks only
+request/read the cached snapshot and update the live-position contribution.
+Signal reloads do not reset saved P&L. Initial/post-fill loading is shown explicitly
+and new entries wait until the snapshot is current. See
+[the signal notes](range_bar_trading_shift_projection.md#persisted-day-pl-and-the-live-position).

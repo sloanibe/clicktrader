@@ -38,12 +38,16 @@ def main():
         "MaintainTradeHistory", "ReportHistoryError"))
     signal_harness = (ROOT / "tests/RangeBarSignalJournalTests.cs").read_text()
     signal_harness = signal_harness[signal_harness.index("// Runs the signal"):].replace("    // PRODUCTION_JOURNAL_METHODS", journal_methods)
+    pnl_harness = (ROOT / "tests/RangeBarDailyPnlTests.cs").read_text().replace(
+        "    // PRODUCTION_PNL_METHODS", "\n".join(method(strategy_source, name) for name in (
+            "UpdateAndGetGlobalPnL", "IsDailyPnlEntryReady", "RemoveGlobalPnLContributor")))
     harness = "\n".join(["using System; using System.Collections.Generic; using System.Globalization;",
                          "namespace PowerLanguage.Indicator {", model, (ROOT / "shared/RangeBarJournal.cs").read_text(),
                          (ROOT / "shared/RangeBarJournalWriter.cs").read_text(), "}",
                          (ROOT / "tests/RangeBarTradeHistoryTests.cs").read_text(),
                          (ROOT / "tests/RangeBarJournalTests.cs").read_text(),
-                         (ROOT / "tests/RangeBarTradeConsolidationTests.cs").read_text(), signal_harness])
+                         (ROOT / "tests/RangeBarTradeConsolidationTests.cs").read_text(),
+                         (ROOT / "tests/RangeBarDailyJournalTests.cs").read_text(), pnl_harness, signal_harness])
     # C# using directives must precede namespaces; retain test directives up front.
     harness = harness.replace("}\nusing System;\nusing System.Collections.Generic;\nusing PowerLanguage.Indicator;",
                               "}")

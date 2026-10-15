@@ -35,8 +35,8 @@ class Program {
         }
         foreach (string file in RangeBarJournal.HistoryFiles(args[0])) {
             if (!file.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)) continue;
-            RangeBarJournal.Consolidate(file);
-            Console.WriteLine("Consolidated trade history: " + file);
+            RangeBarJournal.SplitDaily(file);
+            Console.WriteLine("Split/consolidated daily trade history: " + file);
         }
     }
 }

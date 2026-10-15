@@ -36,7 +36,7 @@ class SessionProfitRuleTests {
     Order m_ColorTrailLongStop = new Order(), m_ColorTrailShortStop = new Order();
     ITrendLineObject m_PinBarStopLine, m_PinBarTargetLine;
     ITrendLineObject m_PinBarTailLine, m_PinBarCompletionLine, m_PinBarLabel;
-    double UpdateAndGetGlobalPnL(double value) { return value; }
+    double UpdateAndGetGlobalPnL() { return StrategyInfo.OpenEquity; }
     int GetProtectiveStopLossTicks(double tickSize) { return 9; }
     double? recoveryProjection;
     double rangeTicks = 4;

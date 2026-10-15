@@ -46,6 +46,8 @@ def main():
     original = subprocess.check_output(['git', 'show', 'f470557:RangeBarTrading.cs'], cwd=ROOT, text=True)
     current = (ROOT / 'RangeBarTrading.cs').read_text()
     for start, end in (
+        ('        // BEGIN HISTORY PNL STATE', '        // END HISTORY PNL STATE'),
+        ('        // BEGIN HISTORY PNL METHODS', '        // END HISTORY PNL METHODS'),
         ('        // BEGIN HISTORY OBSERVER STATE', '        // END HISTORY OBSERVER STATE'),
         ('        // BEGIN HISTORY OBSERVER METHODS', '        // END HISTORY OBSERVER METHODS'),
         ('        // BEGIN ENTRY DIRECTION FIX', '        // END ENTRY DIRECTION FIX'),
@@ -172,14 +174,38 @@ def main():
     assert 'AutoProtectiveStopOn1BarProfit = true;' in current
     assert 'DrwArrow.Create' not in current
     assert 'DrawFilledEntryMarkers' not in current
+    # Daily history replaces platform equity as the P&L base. Live open profit
+    # is read only on the study thread; the writer handles cached disk reads.
+    left = original.index('        // Every live instance of this same signal class shares this registry.')
+    right = original.index('        private static RangeBarTradingV3 s_LastActiveChart;', left)
+    original = original[:left] + original[right:]
+    for name in ('UpdateAndGetGlobalPnL', 'RemoveGlobalPnLContributor'):
+        original = original.replace(method(original, name), '')
+    original = original.replace('UpdateAndGetGlobalPnL(StrategyInfo.OpenEquity)', 'UpdateAndGetGlobalPnL()')
+    old_hud = '            string strategyText = string.Format("{0} | {1} | {2} | Session PnL: {3:C2}",\n' + \
+              '                                                status, chartRole, profitMode, pnl);'
+    new_hud = """            string dayPnlText = m_DayPnlReady
+                ? string.Format("Day PnL: {0:C2} | Realized: {1:C2} | Open: {2:C2}", pnl, m_DayRealizedPnl, m_DayOpenPnl)
+                : string.Format("Day PnL: LOADING HISTORY | Open: {0:C2}", m_DayOpenPnl);
+            string strategyText = string.Format("{0} | {1} | {2} | {3}", status, chartRole, profitMode, dayPnlText);"""
+    assert old_hud in original
+    original = original.replace(old_hud, new_hud)
+    full = (ROOT / 'RangeBarTrading.cs').read_text()
+    sender = method(full, 'SendEntryStop')
+    assert sender.index('if (!IsDailyPnlEntryReady()) return;') < sender.index('CaptureTradeHistoryIntent(direction);')
+    pnl_methods = full.split('// BEGIN HISTORY PNL METHODS')[1].split('// END HISTORY PNL METHODS')[0]
+    assert 'CurrentPosition.OpenProfit' in pnl_methods and 'RequestDayPnl(' in pnl_methods
+    assert not re.search(r'RangeBarJournal\.(?:Read|Append)|Thread.Sleep|WaitForIdle', pnl_methods)
+    for before, after in [('                // Preserve the shared cumulative result before an entry fills.\n                // Reading OpenEquity after the fill can include the spread and\n                // incorrectly classify a flat/positive session as recovery.', '                // Preserve the history-based day total before this entry adds\n                // its own open P&L, including any immediate spread loss.'), ('            // Keep the established per-signal/session calculation intact, but\n            // publish it so the bid and ask chart instances display one total.', '            // Saved realized P&L plus live open P&L, shared across bid/ask\n            // charts for this account, instrument, and history stream.')]:
+        original = original.replace(before, after)
     # Ignore blank lines introduced by the bounded observer sections; preserve every other line.
     lines = lambda text: [line for line in text.splitlines() if line.strip()]
-    assert lines(current) == lines(original), 'Signal changed outside history, direction repair, legacy annotation removal, and shared confirmation pricing, pin validity guards, and range-boundary break-even.'
+    assert lines(current) == lines(original), 'Signal changed outside history, direction repair, legacy annotation removal, and shared confirmation pricing, pin validity guards, and range-boundary break-even plus history-based day P&L.'
     observer = (ROOT / 'RangeBarTrading.cs').read_text().split('// BEGIN HISTORY OBSERVER METHODS')[1].split('// END HISTORY OBSERVER METHODS')[0]
     assert not re.search(r'\b(?:GetActiveRangeTicks|SendEntryStop|CancelWorkingEntryOrders|SubmitActiveExitOrders)\s*\(', observer)
     assert 'RangeBarJournal.Append(' not in observer and 'RangeBarJournal.Read(' not in observer
     assert 'WaitForIdle(' not in observer and 'Thread.Sleep(' not in observer
-    print('PASS: only approved trading changes including shared confirmation pricing, pin validity guards, and range-boundary break-even; history observer does no file I/O or waiting')
+    print('PASS: only approved trading changes including shared confirmation pricing, pin validity guards, and range-boundary break-even plus history-based day P&L; history observer does no file I/O or waiting')
 
 
 if __name__ == '__main__':

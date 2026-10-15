@@ -147,10 +147,96 @@
         public static string FileName(string directory, string scope) {
             return System.IO.Path.Combine(directory, "rangebar-" + Hash(scope).Substring(0, 24) + ".txt");
         }
+        public static string ScopeKey(RangeBarJournalRecord r) {
+            return Uri.EscapeDataString(r.Profile) + "|" + Uri.EscapeDataString(r.Account) + "|" +
+                Uri.EscapeDataString(r.Symbol) + "|" + Uri.EscapeDataString(r.Stream) + "|" + r.Role + "|" + r.RangeTicks.ToString("R", CI);
+        }
+        public static bool IsDailyFile(string path) {
+            string name = System.IO.Path.GetFileNameWithoutExtension(path);
+            DateTime day;
+            return name.Length > 11 && name[name.Length - 11] == '-' && DateTime.TryParseExact(
+                name.Substring(name.Length - 10), "yyyy-MM-dd", CI, System.Globalization.DateTimeStyles.None, out day);
+        }
+        public static string DailyFileName(string streamPath, DateTime entryTime) {
+            if (entryTime == DateTime.MinValue) throw new InvalidOperationException("History entry has no date.");
+            if (entryTime.Kind == DateTimeKind.Utc) entryTime = entryTime.ToLocalTime();
+            return System.IO.Path.Combine(System.IO.Path.GetDirectoryName(streamPath),
+                "RangeBar--history-" + entryTime.ToString("yyyy-MM-dd", CI) + ".txt");
+        }
+        public static string[] StreamFiles(string streamPath) {
+            var files = new List<string>();
+            string directory = System.IO.Path.GetDirectoryName(streamPath);
+            if (!System.IO.Directory.Exists(directory)) return files.ToArray();
+            string prefix = System.IO.Path.GetFileNameWithoutExtension(streamPath) + "-";
+            foreach (string path in HistoryFiles(directory))
+                if (IsDailyFile(path) && (System.IO.Path.GetFileName(path).StartsWith("RangeBar--history-", StringComparison.OrdinalIgnoreCase) ||
+                    System.IO.Path.GetFileName(path).StartsWith(prefix, StringComparison.OrdinalIgnoreCase))) files.Add(path);
+            files.Sort(StringComparer.OrdinalIgnoreCase);
+            if (System.IO.File.Exists(streamPath) || System.IO.File.Exists(System.IO.Path.ChangeExtension(streamPath, ".rbj")))
+                files.Add(streamPath);
+            return files.ToArray();
+        }
+        public static void SplitDaily(string streamPath) {
+            if (IsDailyFile(streamPath) && System.IO.Path.GetFileName(streamPath).StartsWith("RangeBar--history-", StringComparison.OrdinalIgnoreCase)) {
+                Consolidate(streamPath); return;
+            }
+            if (!IsDailyFile(streamPath)) {
+                string directory = System.IO.Path.GetDirectoryName(streamPath);
+                if (System.IO.Directory.Exists(directory)) foreach (string file in System.IO.Directory.GetFiles(directory,
+                    System.IO.Path.GetFileNameWithoutExtension(streamPath) + "-*.txt"))
+                    if (IsDailyFile(file)) SplitDaily(file);
+            }
+            string legacy = System.IO.Path.ChangeExtension(streamPath, ".rbj");
+            if (!System.IO.File.Exists(streamPath) && !System.IO.File.Exists(legacy)) return;
+            using (var mutex = new System.Threading.Mutex(false, "Local\\RangeBarJournal-" + Hash(System.IO.Path.GetFullPath(streamPath).ToUpperInvariant()))) {
+                bool locked = false;
+                try {
+                    try { locked = mutex.WaitOne(1000); } catch (System.Threading.AbandonedMutexException) { locked = true; }
+                    if (!locked) throw new System.IO.IOException("Journal writer busy");
+                    var history = new List<RangeBarJournalRecord>(); var seen = new HashSet<string>(StringComparer.Ordinal);
+                    ReadFile(streamPath, history, seen, true); ReadFile(legacy, history, seen, true);
+                    var fills = Fills(history);
+                    if (fills.Count == 0) return;
+                    var dates = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+                    foreach (var fill in fills) if (fill.Kind == "entry") {
+                        DateTime date;
+                        if (!dates.TryGetValue(fill.TradeId, out date) || fill.Observed < date) dates[fill.TradeId] = fill.Observed;
+                    }
+                    var groups = new Dictionary<string, List<RangeBarJournalRecord>>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var fill in fills) {
+                        DateTime date;
+                        if (!dates.TryGetValue(fill.TradeId, out date)) date = fill.Observed;
+                        string path = DailyFileName(streamPath, date);
+                        List<RangeBarJournalRecord> group;
+                        if (!groups.TryGetValue(path, out group)) { group = new List<RangeBarJournalRecord>(); groups[path] = group; }
+                        group.Add(fill);
+                    }
+                    foreach (var group in groups) MergeDaily(group.Key, group.Value);
+                    // Only remove the legacy files after every dated file was durably saved.
+                    // A partial migration is safe to retry: event IDs deduplicate the copies.
+                    if (System.IO.File.Exists(streamPath)) System.IO.File.Delete(streamPath);
+                    if (System.IO.File.Exists(legacy)) System.IO.File.Delete(legacy);
+                } finally { if (locked) mutex.ReleaseMutex(); }
+            }
+        }
+        private static void MergeDaily(string path, List<RangeBarJournalRecord> records) {
+            using (var mutex = new System.Threading.Mutex(false, "Local\\RangeBarJournal-" + Hash(System.IO.Path.GetFullPath(path).ToUpperInvariant()))) {
+                bool locked = false;
+                try {
+                    try { locked = mutex.WaitOne(1000); } catch (System.Threading.AbandonedMutexException) { locked = true; }
+                    if (!locked) throw new System.IO.IOException("Daily journal writer busy");
+                    var history = new List<RangeBarJournalRecord>(); var seen = new HashSet<string>(StringComparer.Ordinal);
+                    ReadFile(path, history, seen, true);
+                    foreach (var r in records) if (seen.Add(r.EventId)) history.Add(r.Copy());
+                    SaveGrouped(path, history);
+                } finally { if (locked) mutex.ReleaseMutex(); }
+            }
+        }
         public static string[] HistoryFiles(string directory) {
             var files = new List<string>();
             if (!System.IO.Directory.Exists(directory)) return files.ToArray();
-            foreach (string path in System.IO.Directory.GetFiles(directory, "rangebar-*")) {
+            foreach (string path in System.IO.Directory.GetFiles(directory)) {
+                if (!System.IO.Path.GetFileName(path).StartsWith("rangebar-", StringComparison.OrdinalIgnoreCase)) continue;
                 string extension = System.IO.Path.GetExtension(path);
                 if (string.Equals(extension, ".txt", StringComparison.OrdinalIgnoreCase)) files.Add(path);
                 else if (string.Equals(extension, ".rbj", StringComparison.OrdinalIgnoreCase) &&
@@ -168,7 +254,7 @@
                 ReadFile(System.IO.Path.ChangeExtension(path, ".rbj"), result, seen);
             return result;
         }
-        private static void ReadFile(string path, List<RangeBarJournalRecord> result, HashSet<string> seen) {
+        private static void ReadFile(string path, List<RangeBarJournalRecord> result, HashSet<string> seen, bool strict = false) {
             if (!System.IO.File.Exists(path)) return;
             string contents;
             try {
@@ -178,20 +264,27 @@
               catch (System.IO.DirectoryNotFoundException) { return; }
             // Only newline-terminated rows/blocks are committed. A later BEGIN abandons a torn block.
             int end = contents.LastIndexOf('\n');
+            if (strict && (end < 0 || contents.Substring(end + 1).Trim().Length > 0))
+                throw new System.IO.IOException("History has an incomplete final line; original preserved.");
             if (end < 0) return;
             System.Text.StringBuilder block = null;
             foreach (string row in contents.Substring(0, end).Split('\n')) {
                 string line = row.TrimEnd('\r');
-                if (line == Begin || line == TradeBegin || line == CompactBegin) { block = new System.Text.StringBuilder(line); continue; }
+                if (line == Begin || line == TradeBegin || line == CompactBegin) {
+                    if (strict && block != null) throw new System.IO.IOException("History has an incomplete block; original preserved.");
+                    block = new System.Text.StringBuilder(line); continue; }
                 if ((line == End || line == TradeEnd) && block != null) {
                     block.Append('\n').Append(line);
-                    AddDecoded(block.ToString(), result, seen); block = null;
+                    AddDecoded(block.ToString(), result, seen, strict); block = null;
                 } else if (line.StartsWith("RBJ1\t", StringComparison.Ordinal)) {
-                    block = null; AddDecoded(line, result, seen);
+                    block = null; AddDecoded(line, result, seen, strict);
                 } else if (block != null) block.Append('\n').Append(line);
+                else if (strict && (line.StartsWith("BEGIN RANGE BAR", StringComparison.Ordinal) || line.StartsWith("RBJ", StringComparison.Ordinal)))
+                    throw new System.IO.IOException("Unrecognized history version; original preserved.");
             }
+            if (strict && block != null) throw new System.IO.IOException("History has an incomplete block; original preserved.");
         }
-        private static void AddDecoded(string text, List<RangeBarJournalRecord> result, HashSet<string> seen) {
+        private static void AddDecoded(string text, List<RangeBarJournalRecord> result, HashSet<string> seen, bool strict = false) {
             try {
                 if (text.StartsWith(CompactBegin, StringComparison.Ordinal)) {
                     foreach (var r in DecodeCompact(text)) if (seen.Add(r.EventId)) result.Add(r);
@@ -199,8 +292,8 @@
                     foreach (var r in DecodeTrade(text)) if (seen.Add(r.EventId)) result.Add(r);
                 } else { var r = Decode(text); if (seen.Add(r.EventId)) result.Add(r); }
             }
-            catch (FormatException) { }
-            catch (OverflowException) { }
+            catch (FormatException ex) { if (strict) throw new System.IO.IOException("Invalid history record; original preserved.", ex); }
+            catch (OverflowException ex) { if (strict) throw new System.IO.IOException("Invalid history values; original preserved.", ex); }
         }
         private static bool HasUpdate(RangeBarJournalRecord record, string id) {
             foreach (string saved in (record.AppliedUpdates ?? "").Split(',')) if (saved == id) return true;

@@ -21,12 +21,11 @@ namespace PowerLanguage.Strategy
         [DllImport("user32.dll")]
         private static extern short GetAsyncKeyState(int virtualKey);
 
-        // Every live instance of this same signal class shares this registry.
-        // Each chart contributes its existing session P&L calculation, and the
-        // HUD on every chart shows the combined value.
-        private static readonly object s_GlobalPnLLock = new object();
-        private static readonly Dictionary<RangeBarTradingV3, double> s_GlobalPnLContributors =
-            new Dictionary<RangeBarTradingV3, double>();
+        // BEGIN HISTORY PNL STATE
+        private static readonly RangeBarPnlBook s_DayPnl = new RangeBarPnlBook();
+        private bool m_DayPnlReady;
+        private double m_DayRealizedPnl, m_DayOpenPnl;
+        // END HISTORY PNL STATE
         private static RangeBarTradingV3 s_LastActiveChart;
 
         // The only user-facing strategy settings.
@@ -354,11 +353,10 @@ namespace PowerLanguage.Strategy
 
             int currentPosition = StrategyInfo.MarketPosition;
             if (currentPosition == 0) {
-                // Preserve the shared cumulative result before an entry fills.
-                // Reading OpenEquity after the fill can include the spread and
-                // incorrectly classify a flat/positive session as recovery.
+                // Preserve the history-based day total before this entry adds
+                // its own open P&L, including any immediate spread loss.
                 m_FlatSessionPnlSnapshot =
-                    UpdateAndGetGlobalPnL(StrategyInfo.OpenEquity);
+                    UpdateAndGetGlobalPnL();
                 m_HasFlatSessionPnlSnapshot = true;
             }
 
@@ -488,7 +486,7 @@ namespace PowerLanguage.Strategy
                 double stopDist = protectiveStopTicks * tickSize;
                 double sessionPnlAtEntry = m_HasFlatSessionPnlSnapshot
                     ? m_FlatSessionPnlSnapshot
-                    : UpdateAndGetGlobalPnL(StrategyInfo.OpenEquity);
+                    : UpdateAndGetGlobalPnL();
                 EEntrySetup filledEntrySetup = m_ActiveEntrySetup;
                 m_SessionProfitRuleActive =
                     filledEntrySetup == EEntrySetup.ShiftProjection ||
@@ -2823,6 +2821,7 @@ namespace PowerLanguage.Strategy
 
         private void SendEntryStop(int direction) {
             if (!IsEntryDirectionAllowed(direction)) return;
+            if (!IsDailyPnlEntryReady()) return;
             CaptureTradeHistoryIntent(direction);
             if (m_ActiveEntrySetup == EEntrySetup.PinBar)
                 (direction > 0 ? m_PinBuyStop : m_PinSellStop).Send(m_StopPrice, OrderQuantity);
@@ -3493,7 +3492,7 @@ namespace PowerLanguage.Strategy
             UpdateShiftProjectionLine(ref stopLine, stopPrice,
                                       Color.Gray, ETLStyle.ToolDashed, 1);
             int targetTicks = GetSessionProfitTargetTicks(
-                UpdateAndGetGlobalPnL(StrategyInfo.OpenEquity));
+                UpdateAndGetGlobalPnL());
             if (targetTicks == 0) {
                 if (targetLine != null) { targetLine.Delete(); targetLine = null; }
                 return;
@@ -3585,9 +3584,9 @@ namespace PowerLanguage.Strategy
                 return;
             m_LastHudRefreshAt = now;
 
-            // Keep the established per-signal/session calculation intact, but
-            // publish it so the bid and ask chart instances display one total.
-            double pnl = UpdateAndGetGlobalPnL(StrategyInfo.OpenEquity);
+            // Saved realized P&L plus live open P&L, shared across bid/ask
+            // charts for this account, instrument, and history stream.
+            double pnl = UpdateAndGetGlobalPnL();
             double tickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale; if (tickSize <= 0) tickSize = 0.25;
             string setupScope = GetEnabledSetupScope();
             // Always state the automation state explicitly.  The prior
@@ -3646,8 +3645,10 @@ namespace PowerLanguage.Strategy
                 : UseOppositeColorExitForProfits
                     ? "LET RUN"
                     : "5T PROFIT";
-            string strategyText = string.Format("{0} | {1} | {2} | Session PnL: {3:C2}",
-                                                status, chartRole, profitMode, pnl);
+            string dayPnlText = m_DayPnlReady
+                ? string.Format("Day PnL: {0:C2} | Realized: {1:C2} | Open: {2:C2}", pnl, m_DayRealizedPnl, m_DayOpenPnl)
+                : string.Format("Day PnL: LOADING HISTORY | Open: {0:C2}", m_DayOpenPnl);
+            string strategyText = string.Format("{0} | {1} | {2} | {3}", status, chartRole, profitMode, dayPnlText);
             // MultiCharts lays out separate text objects according to the
             // chart's price scale. Keep the broker and strategy lines in one
             // object so their line spacing is identical on every chart.
@@ -3879,22 +3880,37 @@ namespace PowerLanguage.Strategy
             ClearTradingDrawings();
         }
 
-        private double UpdateAndGetGlobalPnL(double localPnL) {
-            lock (s_GlobalPnLLock) {
-                s_GlobalPnLContributors[this] = localPnL;
-
-                double totalPnL = 0;
-                foreach (double contributorPnL in s_GlobalPnLContributors.Values)
-                    totalPnL += contributorPnL;
-                return totalPnL;
-            }
+        // BEGIN HISTORY PNL METHODS
+        private double UpdateAndGetGlobalPnL() {
+            DateTime day = DateTime.Now.Date;
+            var snapshot = m_HistoryWriter.RequestDayPnl(TradeHistoryDirectory, Profile ?? "", Account ?? "",
+                Bars.Info.Name, TradeHistoryStream, day);
+            double pointValue = Bars.Info.BigPointValue;
+            string group = TradeHistoryDirectory + "|" + Uri.EscapeDataString(Profile ?? "") + "|" +
+                Uri.EscapeDataString(Account ?? "") + "|" + Uri.EscapeDataString(Bars.Info.Name) + "|" + TradeHistoryStream;
+            double range = RangeSizeTicks > 0 ? RangeSizeTicks : m_AutoRangeTicks;
+            string position = (IsAskChart ? "ask" : "bid") + "|" + range.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+            bool isOpen = StrategyInfo.MarketPosition != 0;
+            double open = isOpen ? CurrentPosition.OpenProfit : 0;
+            var total = s_DayPnl.Update(this, group, position, day, isOpen, open, pointValue, snapshot);
+            m_DayPnlReady = snapshot != null && total.Ready && pointValue > 0;
+            m_DayRealizedPnl = total.Realized; m_DayOpenPnl = total.Open;
+            return total.Total;
         }
 
-        private void RemoveGlobalPnLContributor() {
-            lock (s_GlobalPnLLock) {
-                s_GlobalPnLContributors.Remove(this);
+        private bool IsDailyPnlEntryReady() {
+            double total = UpdateAndGetGlobalPnL();
+            if (m_DayPnlReady && StrategyInfo.MarketPosition == 0) {
+                m_FlatSessionPnlSnapshot = total;
+                m_HasFlatSessionPnlSnapshot = true;
             }
+            if (!m_DayPnlReady) SetClickFeedback("ENTRY WAITING | LOADING DAY PNL");
+            return m_DayPnlReady;
         }
+
+        private void RemoveGlobalPnLContributor() { s_DayPnl.Remove(this); }
+        // END HISTORY PNL METHODS
+
     }
     // BEGIN RANGE BAR JOURNAL -- generated into each standalone study by tools/sync_range_bar_journal.py.
     // Closed trades use compact version 4; unfinished version 3 and legacy versions 1/2 remain readable.
@@ -4045,10 +4061,96 @@ namespace PowerLanguage.Strategy
         public static string FileName(string directory, string scope) {
             return System.IO.Path.Combine(directory, "rangebar-" + Hash(scope).Substring(0, 24) + ".txt");
         }
+        public static string ScopeKey(RangeBarJournalRecord r) {
+            return Uri.EscapeDataString(r.Profile) + "|" + Uri.EscapeDataString(r.Account) + "|" +
+                Uri.EscapeDataString(r.Symbol) + "|" + Uri.EscapeDataString(r.Stream) + "|" + r.Role + "|" + r.RangeTicks.ToString("R", CI);
+        }
+        public static bool IsDailyFile(string path) {
+            string name = System.IO.Path.GetFileNameWithoutExtension(path);
+            DateTime day;
+            return name.Length > 11 && name[name.Length - 11] == '-' && DateTime.TryParseExact(
+                name.Substring(name.Length - 10), "yyyy-MM-dd", CI, System.Globalization.DateTimeStyles.None, out day);
+        }
+        public static string DailyFileName(string streamPath, DateTime entryTime) {
+            if (entryTime == DateTime.MinValue) throw new InvalidOperationException("History entry has no date.");
+            if (entryTime.Kind == DateTimeKind.Utc) entryTime = entryTime.ToLocalTime();
+            return System.IO.Path.Combine(System.IO.Path.GetDirectoryName(streamPath),
+                "RangeBar--history-" + entryTime.ToString("yyyy-MM-dd", CI) + ".txt");
+        }
+        public static string[] StreamFiles(string streamPath) {
+            var files = new List<string>();
+            string directory = System.IO.Path.GetDirectoryName(streamPath);
+            if (!System.IO.Directory.Exists(directory)) return files.ToArray();
+            string prefix = System.IO.Path.GetFileNameWithoutExtension(streamPath) + "-";
+            foreach (string path in HistoryFiles(directory))
+                if (IsDailyFile(path) && (System.IO.Path.GetFileName(path).StartsWith("RangeBar--history-", StringComparison.OrdinalIgnoreCase) ||
+                    System.IO.Path.GetFileName(path).StartsWith(prefix, StringComparison.OrdinalIgnoreCase))) files.Add(path);
+            files.Sort(StringComparer.OrdinalIgnoreCase);
+            if (System.IO.File.Exists(streamPath) || System.IO.File.Exists(System.IO.Path.ChangeExtension(streamPath, ".rbj")))
+                files.Add(streamPath);
+            return files.ToArray();
+        }
+        public static void SplitDaily(string streamPath) {
+            if (IsDailyFile(streamPath) && System.IO.Path.GetFileName(streamPath).StartsWith("RangeBar--history-", StringComparison.OrdinalIgnoreCase)) {
+                Consolidate(streamPath); return;
+            }
+            if (!IsDailyFile(streamPath)) {
+                string directory = System.IO.Path.GetDirectoryName(streamPath);
+                if (System.IO.Directory.Exists(directory)) foreach (string file in System.IO.Directory.GetFiles(directory,
+                    System.IO.Path.GetFileNameWithoutExtension(streamPath) + "-*.txt"))
+                    if (IsDailyFile(file)) SplitDaily(file);
+            }
+            string legacy = System.IO.Path.ChangeExtension(streamPath, ".rbj");
+            if (!System.IO.File.Exists(streamPath) && !System.IO.File.Exists(legacy)) return;
+            using (var mutex = new System.Threading.Mutex(false, "Local\\RangeBarJournal-" + Hash(System.IO.Path.GetFullPath(streamPath).ToUpperInvariant()))) {
+                bool locked = false;
+                try {
+                    try { locked = mutex.WaitOne(1000); } catch (System.Threading.AbandonedMutexException) { locked = true; }
+                    if (!locked) throw new System.IO.IOException("Journal writer busy");
+                    var history = new List<RangeBarJournalRecord>(); var seen = new HashSet<string>(StringComparer.Ordinal);
+                    ReadFile(streamPath, history, seen, true); ReadFile(legacy, history, seen, true);
+                    var fills = Fills(history);
+                    if (fills.Count == 0) return;
+                    var dates = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+                    foreach (var fill in fills) if (fill.Kind == "entry") {
+                        DateTime date;
+                        if (!dates.TryGetValue(fill.TradeId, out date) || fill.Observed < date) dates[fill.TradeId] = fill.Observed;
+                    }
+                    var groups = new Dictionary<string, List<RangeBarJournalRecord>>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var fill in fills) {
+                        DateTime date;
+                        if (!dates.TryGetValue(fill.TradeId, out date)) date = fill.Observed;
+                        string path = DailyFileName(streamPath, date);
+                        List<RangeBarJournalRecord> group;
+                        if (!groups.TryGetValue(path, out group)) { group = new List<RangeBarJournalRecord>(); groups[path] = group; }
+                        group.Add(fill);
+                    }
+                    foreach (var group in groups) MergeDaily(group.Key, group.Value);
+                    // Only remove the legacy files after every dated file was durably saved.
+                    // A partial migration is safe to retry: event IDs deduplicate the copies.
+                    if (System.IO.File.Exists(streamPath)) System.IO.File.Delete(streamPath);
+                    if (System.IO.File.Exists(legacy)) System.IO.File.Delete(legacy);
+                } finally { if (locked) mutex.ReleaseMutex(); }
+            }
+        }
+        private static void MergeDaily(string path, List<RangeBarJournalRecord> records) {
+            using (var mutex = new System.Threading.Mutex(false, "Local\\RangeBarJournal-" + Hash(System.IO.Path.GetFullPath(path).ToUpperInvariant()))) {
+                bool locked = false;
+                try {
+                    try { locked = mutex.WaitOne(1000); } catch (System.Threading.AbandonedMutexException) { locked = true; }
+                    if (!locked) throw new System.IO.IOException("Daily journal writer busy");
+                    var history = new List<RangeBarJournalRecord>(); var seen = new HashSet<string>(StringComparer.Ordinal);
+                    ReadFile(path, history, seen, true);
+                    foreach (var r in records) if (seen.Add(r.EventId)) history.Add(r.Copy());
+                    SaveGrouped(path, history);
+                } finally { if (locked) mutex.ReleaseMutex(); }
+            }
+        }
         public static string[] HistoryFiles(string directory) {
             var files = new List<string>();
             if (!System.IO.Directory.Exists(directory)) return files.ToArray();
-            foreach (string path in System.IO.Directory.GetFiles(directory, "rangebar-*")) {
+            foreach (string path in System.IO.Directory.GetFiles(directory)) {
+                if (!System.IO.Path.GetFileName(path).StartsWith("rangebar-", StringComparison.OrdinalIgnoreCase)) continue;
                 string extension = System.IO.Path.GetExtension(path);
                 if (string.Equals(extension, ".txt", StringComparison.OrdinalIgnoreCase)) files.Add(path);
                 else if (string.Equals(extension, ".rbj", StringComparison.OrdinalIgnoreCase) &&
@@ -4066,7 +4168,7 @@ namespace PowerLanguage.Strategy
                 ReadFile(System.IO.Path.ChangeExtension(path, ".rbj"), result, seen);
             return result;
         }
-        private static void ReadFile(string path, List<RangeBarJournalRecord> result, HashSet<string> seen) {
+        private static void ReadFile(string path, List<RangeBarJournalRecord> result, HashSet<string> seen, bool strict = false) {
             if (!System.IO.File.Exists(path)) return;
             string contents;
             try {
@@ -4076,20 +4178,27 @@ namespace PowerLanguage.Strategy
               catch (System.IO.DirectoryNotFoundException) { return; }
             // Only newline-terminated rows/blocks are committed. A later BEGIN abandons a torn block.
             int end = contents.LastIndexOf('\n');
+            if (strict && (end < 0 || contents.Substring(end + 1).Trim().Length > 0))
+                throw new System.IO.IOException("History has an incomplete final line; original preserved.");
             if (end < 0) return;
             System.Text.StringBuilder block = null;
             foreach (string row in contents.Substring(0, end).Split('\n')) {
                 string line = row.TrimEnd('\r');
-                if (line == Begin || line == TradeBegin || line == CompactBegin) { block = new System.Text.StringBuilder(line); continue; }
+                if (line == Begin || line == TradeBegin || line == CompactBegin) {
+                    if (strict && block != null) throw new System.IO.IOException("History has an incomplete block; original preserved.");
+                    block = new System.Text.StringBuilder(line); continue; }
                 if ((line == End || line == TradeEnd) && block != null) {
                     block.Append('\n').Append(line);
-                    AddDecoded(block.ToString(), result, seen); block = null;
+                    AddDecoded(block.ToString(), result, seen, strict); block = null;
                 } else if (line.StartsWith("RBJ1\t", StringComparison.Ordinal)) {
-                    block = null; AddDecoded(line, result, seen);
+                    block = null; AddDecoded(line, result, seen, strict);
                 } else if (block != null) block.Append('\n').Append(line);
+                else if (strict && (line.StartsWith("BEGIN RANGE BAR", StringComparison.Ordinal) || line.StartsWith("RBJ", StringComparison.Ordinal)))
+                    throw new System.IO.IOException("Unrecognized history version; original preserved.");
             }
+            if (strict && block != null) throw new System.IO.IOException("History has an incomplete block; original preserved.");
         }
-        private static void AddDecoded(string text, List<RangeBarJournalRecord> result, HashSet<string> seen) {
+        private static void AddDecoded(string text, List<RangeBarJournalRecord> result, HashSet<string> seen, bool strict = false) {
             try {
                 if (text.StartsWith(CompactBegin, StringComparison.Ordinal)) {
                     foreach (var r in DecodeCompact(text)) if (seen.Add(r.EventId)) result.Add(r);
@@ -4097,8 +4206,8 @@ namespace PowerLanguage.Strategy
                     foreach (var r in DecodeTrade(text)) if (seen.Add(r.EventId)) result.Add(r);
                 } else { var r = Decode(text); if (seen.Add(r.EventId)) result.Add(r); }
             }
-            catch (FormatException) { }
-            catch (OverflowException) { }
+            catch (FormatException ex) { if (strict) throw new System.IO.IOException("Invalid history record; original preserved.", ex); }
+            catch (OverflowException ex) { if (strict) throw new System.IO.IOException("Invalid history values; original preserved.", ex); }
         }
         private static bool HasUpdate(RangeBarJournalRecord record, string id) {
             foreach (string saved in (record.AppliedUpdates ?? "").Split(',')) if (saved == id) return true;
@@ -4447,14 +4556,65 @@ namespace PowerLanguage.Strategy
     }
     // END RANGE BAR JOURNAL
     // BEGIN RANGE BAR JOURNAL WRITER -- generated into the signal; never accesses MultiCharts study objects.
+    internal sealed class RangeBarDayPnl {
+        public DateTime Day, Updated;
+        public double RealizedPoints;
+        public long Revision, Version;
+    }
+    internal sealed class RangeBarPnlTotal {
+        public bool Ready;
+        public double Realized, Open;
+        public double Total { get { return Realized + Open; } }
+    }
+    internal sealed class RangeBarPnlBook {
+        private sealed class Contribution {
+            public string Group, Position;
+            public DateTime Day;
+            public long Order;
+            public bool IsOpen;
+            public double Open;
+        }
+        private readonly object gate = new object();
+        private readonly Dictionary<object, Contribution> live = new Dictionary<object, Contribution>();
+        private readonly Dictionary<string, RangeBarDayPnl> realized = new Dictionary<string, RangeBarDayPnl>();
+        private long sequence;
+        public RangeBarPnlTotal Update(object owner, string group, string position, DateTime day,
+            bool isOpen, double open, double pointValue, RangeBarDayPnl snapshot) {
+            lock (gate) {
+                live[owner] = new Contribution { Group = group, Position = position, Day = day,
+                    Order = ++sequence, IsOpen = isOpen, Open = open };
+                RangeBarDayPnl saved;
+                realized.TryGetValue(group, out saved);
+                if (snapshot != null && snapshot.Day == day && (saved == null || saved.Day != day || snapshot.Version >= saved.Version))
+                    realized[group] = saved = snapshot;
+                var result = new RangeBarPnlTotal { Ready = saved != null && saved.Day == day };
+                if (result.Ready) result.Realized = saved.RealizedPoints * pointValue;
+                var positions = new Dictionary<string, Contribution>(StringComparer.Ordinal);
+                foreach (var item in live.Values) if (item.Group == group && item.Day == day && item.IsOpen) {
+                    Contribution prior;
+                    if (!positions.TryGetValue(item.Position, out prior) || item.Order >= prior.Order) positions[item.Position] = item;
+                }
+                foreach (var item in positions.Values) result.Open += item.Open;
+                return result;
+            }
+        }
+        public void Remove(object owner) { lock (gate) live.Remove(owner); }
+    }
     internal sealed class RangeBarJournalWriter {
+        private sealed class PnlQuery {
+            public bool Pending;
+            public DateTime Next;
+            public RangeBarDayPnl Result;
+        }
         private sealed class Work {
             public string Directory;
             public RangeBarJournalRecord Record;
+            public long Revision;
         }
         private sealed class StreamState {
             public RangeBarJournalRecord Open;
             public int Remaining;
+            public readonly Dictionary<string, string> Paths = new Dictionary<string, string>(StringComparer.Ordinal);
             public readonly List<RangeBarJournalRecord> Active = new List<RangeBarJournalRecord>();
             public readonly Dictionary<string, RangeBarJournalRecord> Fills = new Dictionary<string, RangeBarJournalRecord>();
         }
@@ -4462,15 +4622,71 @@ namespace PowerLanguage.Strategy
         private readonly Queue<Work> queue = new Queue<Work>();
         private readonly Queue<string> errors = new Queue<string>();
         private readonly Dictionary<string, StreamState> streams = new Dictionary<string, StreamState>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, PnlQuery> pnl = new Dictionary<string, PnlQuery>(StringComparer.Ordinal);
         private bool running;
+        private long pnlRevision;
+        private static long pnlVersion;
         private System.Threading.Timer retry;
         // The injectable sink makes a blocked/failed disk write testable without touching a broker.
         private readonly Action<string, RangeBarJournalRecord> append;
         public RangeBarJournalWriter() : this(RangeBarJournal.Append) { }
         internal RangeBarJournalWriter(Action<string, RangeBarJournalRecord> sink) { append = sink; }
+        internal static string PnlKey(string directory, RangeBarJournalRecord r) {
+            return directory + "|" + Uri.EscapeDataString(r.Profile) + "|" + Uri.EscapeDataString(r.Account) + "|" +
+                Uri.EscapeDataString(r.Symbol) + "|" + Uri.EscapeDataString(r.Stream) + "|" + r.Observed.Date.ToString("yyyy-MM-dd");
+        }
+        public RangeBarDayPnl RequestDayPnl(string directory, string profile, string account, string symbol, string stream, DateTime day) {
+            if (string.IsNullOrWhiteSpace(profile) || string.IsNullOrWhiteSpace(account)) return null;
+            var request = new RangeBarJournalRecord {Kind = "pnl", Profile = profile, Account = account,
+                Symbol = symbol, Stream = stream, Observed = day.Date};
+            string key = PnlKey(directory, request);
+            lock (gate) {
+                PnlQuery query;
+                if (!pnl.TryGetValue(key, out query)) { query = new PnlQuery(); pnl[key] = query; }
+                if (!query.Pending && DateTime.UtcNow >= query.Next) {
+                    query.Pending = true; query.Next = DateTime.UtcNow.AddMilliseconds(500);
+                    Enqueue(directory, request);
+                }
+                return query.Result != null && query.Result.Revision == pnlRevision ? query.Result : null;
+            }
+        }
+        internal static double RealizedPoints(List<RangeBarJournalRecord> history, RangeBarJournalRecord filter) {
+            var fills = RangeBarJournal.Fills(history);
+            fills.Sort(delegate(RangeBarJournalRecord a, RangeBarJournalRecord b) {
+                int byTime = a.Observed.CompareTo(b.Observed);
+                if (byTime != 0) return byTime;
+                if (a.TradeId == b.TradeId && a.Kind != b.Kind) return a.Kind == "entry" ? -1 : 1;
+                return string.CompareOrdinal(a.EventId, b.EventId);
+            });
+            var lots = new Dictionary<string, Queue<RangeBarJournalRecord>>(StringComparer.Ordinal);
+            double result = 0;
+            foreach (var fill in fills) {
+                if (fill.Profile != filter.Profile || fill.Account != filter.Account || fill.Symbol != filter.Symbol || fill.Stream != filter.Stream) continue;
+                Queue<RangeBarJournalRecord> queue;
+                if (!lots.TryGetValue(fill.TradeId, out queue)) { queue = new Queue<RangeBarJournalRecord>(); lots[fill.TradeId] = queue; }
+                if (fill.Kind == "entry") queue.Enqueue(fill.Copy());
+                else if (fill.Kind == "exit") {
+                    int remaining = fill.Quantity;
+                    while (remaining > 0 && queue.Count > 0) {
+                        var entry = queue.Peek(); if (entry.Side == fill.Side) break;
+                        int closed = Math.Min(remaining, entry.Quantity);
+                        DateTime time = fill.Observed.Kind == DateTimeKind.Utc ? fill.Observed.ToLocalTime() : fill.Observed;
+                        if (time.Date == filter.Observed.Date) result += entry.Side * (fill.Price - entry.Price) * closed;
+                        remaining -= closed; entry.Quantity -= closed;
+                        if (entry.Quantity == 0) queue.Dequeue();
+                    }
+                }
+            }
+            return result;
+        }
         public void Enqueue(string directory, RangeBarJournalRecord record) {
             var item = new Work { Directory = directory, Record = record.Copy() };
             lock (gate) {
+                if (record.Kind == "entry" || record.Kind == "exit") {
+                    pnlRevision++;
+                    foreach (var query in pnl.Values) query.Next = DateTime.MinValue;
+                }
+                item.Revision = pnlRevision;
                 queue.Enqueue(item);
                 if (!running) { running = true; System.Threading.ThreadPool.QueueUserWorkItem(Drain); }
             }
@@ -4522,26 +4738,55 @@ namespace PowerLanguage.Strategy
             var r = work.Record.Copy();
             if (string.IsNullOrWhiteSpace(r.Profile) || string.IsNullOrWhiteSpace(r.Account))
                 throw new InvalidOperationException("Trade history requires a trading profile and account.");
-            string scope = Uri.EscapeDataString(r.Profile) + "|" + Uri.EscapeDataString(r.Account) + "|" +
-                Uri.EscapeDataString(r.Symbol) + "|" + Uri.EscapeDataString(r.Stream) + "|" + r.Role + "|" +
-                r.RangeTicks.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
-            string path = RangeBarJournal.FileName(work.Directory, scope);
-            if (r.Kind == "consolidate") { RangeBarJournal.Consolidate(path); return; }
+            if (r.Kind == "pnl") {
+                var history = new List<RangeBarJournalRecord>();
+                foreach (string file in RangeBarJournal.HistoryFiles(work.Directory)) history.AddRange(RangeBarJournal.Read(file));
+                var result = new RangeBarDayPnl {Day = r.Observed.Date, Updated = DateTime.UtcNow,
+                    Revision = work.Revision, RealizedPoints = RealizedPoints(history, r),
+                    Version = System.Threading.Interlocked.Increment(ref pnlVersion)};
+                lock (gate) { var query = pnl[PnlKey(work.Directory, r)]; query.Result = result; query.Pending = false; }
+                return;
+            }
+            // A fill or migration invalidates cached totals. A later chart call
+            // schedules the refresh; no study thread ever reads the files.
+            lock (gate) foreach (var query in pnl.Values) query.Next = DateTime.MinValue;
+            string scope = RangeBarJournal.ScopeKey(r);
+            string streamPath = RangeBarJournal.FileName(work.Directory, scope);
+            if (r.Kind == "consolidate") { RangeBarJournal.SplitDaily(streamPath); return; }
             StreamState state;
-            if (!streams.TryGetValue(path, out state)) {
-                var events = RangeBarJournal.Read(path);
+            if (!streams.TryGetValue(streamPath, out state)) {
+                RangeBarJournal.SplitDaily(streamPath);
+                var events = new List<RangeBarJournalRecord>();
                 state = new StreamState();
+                foreach (string file in RangeBarJournal.StreamFiles(streamPath))
+                    foreach (var fill in RangeBarJournal.Fills(RangeBarJournal.Read(file))) {
+                        if (RangeBarJournal.ScopeKey(fill) != scope || state.Paths.ContainsKey(fill.EventId)) continue;
+                        state.Paths[fill.EventId] = file; events.Add(fill);
+                    }
                 state.Open = RangeBarJournal.OpenTrade(events, out state.Remaining);
                 foreach (var fill in RangeBarJournal.Fills(events)) {
                     state.Fills[fill.EventId] = fill;
                     if (state.Open != null && fill.TradeId == state.Open.TradeId) state.Active.Add(fill.Copy());
                 }
-                streams[path] = state;
+                streams[streamPath] = state;
             }
-            // Recreate a deleted file on the worker. Keep only the still-open trade's
-            // confirmed entries and partial exits so its eventual exit remains paired.
+            string path;
+            if (r.Kind == "bar") {
+                if (!state.Paths.TryGetValue(r.Target, out path))
+                    throw new InvalidOperationException("Bar annotation has no confirmed journal execution.");
+            } else if (state.Open != null) path = state.Paths[state.Open.EventId];
+            else path = RangeBarJournal.DailyFileName(streamPath, r.Observed);
+            // A cross-midnight trade and all its updates stay on its entry day.
+            // Recreate a deleted daily file from only the still-open trade.
             bool missing = !System.IO.File.Exists(path);
-            if (missing) foreach (var active in state.Active) append(path, active);
+            // Another chart may already have recreated the shared daily file.
+            // Restore missing own-trade entries even when that file exists again.
+            if (state.Active.Count > 0) {
+                var present = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var saved in RangeBarJournal.Read(path)) present.Add(saved.EventId);
+                foreach (var active in state.Active)
+                    if (state.Paths[active.EventId] == path && !present.Contains(active.EventId)) append(path, active);
+            }
             if (r.Kind == "bar") {
                 RangeBarJournalRecord original;
                 if (!state.Fills.TryGetValue(r.Target, out original))
@@ -4560,19 +4805,19 @@ namespace PowerLanguage.Strategy
                     throw new InvalidOperationException("Entry conflicts with recorded open trade; no association was guessed.");
                 if (state.Open != null) { r.TradeId = state.Open.TradeId; r.Setup = state.Open.Setup; }
                 append(path, r); // State advances only after success, including idempotent retry after an interrupted flush.
-                state.Open = r.Copy(); state.Remaining += r.Quantity; state.Fills[r.EventId] = r; state.Active.Add(r.Copy());
+                state.Open = r.Copy(); state.Remaining += r.Quantity; state.Fills[r.EventId] = r; state.Paths[r.EventId] = path; state.Active.Add(r.Copy());
             } else if (r.Kind == "exit") {
-                if (state.Open == null && missing) {
+                if (state.Open == null && (missing || state.Fills.Count == 0)) {
                     // After deletion plus restart there is no recoverable entry. Preserve
                     // the real exit as unknown, with no fabricated entry or connection.
-                    r.Setup = "unknown"; append(path, r); state.Fills[r.EventId] = r;
+                    r.Setup = "unknown"; append(path, r); state.Fills[r.EventId] = r; state.Paths[r.EventId] = path;
                     return;
                 }
                 if (state.Open == null || state.Open.Side == r.Side || r.Quantity > state.Remaining)
                     throw new InvalidOperationException("Exit has no matching recorded open quantity; no association was guessed.");
                 r.TradeId = state.Open.TradeId; r.Setup = state.Open.Setup;
                 append(path, r);
-                state.Remaining -= r.Quantity; state.Fills[r.EventId] = r; state.Active.Add(r.Copy());
+                state.Remaining -= r.Quantity; state.Fills[r.EventId] = r; state.Paths[r.EventId] = path; state.Active.Add(r.Copy());
                 if (state.Remaining == 0) { state.Open = null; state.Active.Clear(); }
             } else throw new InvalidOperationException("Unsupported history event.");
         }

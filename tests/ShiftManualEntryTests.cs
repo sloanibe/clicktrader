@@ -53,6 +53,7 @@ class ShiftManualEntryTests {
 
     void CaptureTradeHistoryIntent(int direction) { }
 
+    bool IsDailyPnlEntryReady() { return true; }
     // PRODUCTION_METHODS
 
     static int checks;

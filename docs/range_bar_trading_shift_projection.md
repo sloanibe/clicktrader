@@ -58,3 +58,31 @@ targets and color-change management remain active. Turning the setting off
 disables automatic promotion; clicking the stop retains its separate manual
 behavior of entry with one tick of permitted loss. Existing charts retain saved
 input values, so check this setting after reloading the signal.
+
+## Persisted day P&L and the live position
+
+The HUD's `Day PnL` is today's history-based realized profit plus live open
+profit. Realized P&L is matched from confirmed entry/exit fills by durable trade
+ID, including quantity-weighted partial exits, and assigned to each exit's local
+calendar date. Earlier daily files are included to find overnight entries.
+Unmatched exits do not invent profits. The calculation deduplicates fills and
+combines ask/bid and range scopes for the same broker profile, account, instrument,
+and history stream. Different accounts or instruments remain separate.
+Price-point results are converted to currency using the chart instrument's
+`BigPointValue`; history-based realized totals are before fees. The `Open` amount
+comes from MultiCharts' current position `OpenProfit`, refreshed on live chart
+calculations. The same realized base is counted once across chart instances;
+duplicate instances of one quote-side/range scope do not double-count open P&L.
+The HUD shows `Day PnL`, `Realized`, and `Open` separately.
+
+Signal reloads restore the saved realized total. The background worker loads
+and refreshes the history snapshot (normally every 500 ms, also invalidated by
+fills); chart/order threads perform no file I/O or waits. Until the initial or
+post-fill snapshot is current, the HUD shows `LOADING HISTORY` alongside the
+live open amount, and a new entry waits rather than assuming zero day P&L.
+The freshly loaded total is latched before entry submission so existing positive
+versus negative day-P&L trade-management rules use the persisted base. An active
+trade keeps its entry-time category as before. At midnight a new local-calendar
+day starts; overnight exits are credited when realized, and live open profit
+continues to update. Deleting history removes the realized baseline it contained;
+only recorded fills can restore that baseline.
