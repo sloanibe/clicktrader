@@ -86,3 +86,15 @@ trade keeps its entry-time category as before. At midnight a new local-calendar
 day starts; overnight exits are credited when realized, and live open profit
 continues to update. Deleting history removes the realized baseline it contained;
 only recorded fills can restore that baseline.
+
+## Deliberate stop/target clicks
+
+Plain left-click activates the protective-stop or profit-target control only
+within one quarter of a tick of the visible line's price and inside its actual
+short horizontal segment. Time and absolute bar bounds both apply, including
+when multiple range bars share a timestamp. Clicks elsewhere at the same price,
+on another data stream, or on an absent/stale control do nothing. Clicking the
+stop still moves it toward entry with one tick of permitted loss; target
+selection still uses a second click to choose its new price. Ordinary panning
+outside the short controls no longer activates them through the former five-tick
+price band. Automatic break-even logic is independent of chart clicks.

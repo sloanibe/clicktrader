@@ -28,6 +28,7 @@ def main():
     source = (ROOT / "RangeBarTrading.cs").read_text()
     suites = {
         "ClickModifierTests": ("HasModifier",),
+        "TradeControlClickTests": ("IsTradeControlLineHit", "IsTradeControlHit"),
         "PinBarArmingTests": ("ArmAutomatedEntryMode", "ToggleFourTickPinBarWatch",
                               "IsEntryDirectionAllowed", "IsFourTickPinBarEmaOrderValid"),
         "ShiftManualEntryTests": ("GetConfirmedEntryPrice", "StartShiftProjectionEntry", "UpdateShiftProjectionEntry", "SubmitShiftProjectionEntryNow", "ClearShiftProjectionEntry", "SendEntryStop"),

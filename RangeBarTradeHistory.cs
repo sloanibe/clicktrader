@@ -288,11 +288,10 @@ namespace PowerLanguage.Indicator {
         public static double PriceResult(HistoryPair pair) {
             return pair.Entry.Side * (pair.Exit.Price - pair.Entry.Price) * pair.Quantity;
         }
-        private static string ShortLabel(int id, bool entry, double price, string entryName) {
+        private static string ShortLabel(int id, bool entry, string entryName) {
             string prefix = Equal(entryName, "pin bar") || Equal(entryName, "pin bar buy") || Equal(entryName, "pin bar sell") ? "P" :
                 Equal(entryName, "manual") || Equal(entryName, "manual buy") || Equal(entryName, "manual sell") ? "M" : "T";
-            return (id > 0 ? prefix + id : "T?") + (entry ? " in " : " out ") +
-                price.ToString("0.########", CultureInfo.InvariantCulture);
+            return (id > 0 ? prefix + id : "T?") + (entry ? " in" : " out");
         }
         public static HistoryView Build(List<HistoryExecution> input, DateTime day,
                                         Dictionary<string, int> openingPositions) {
@@ -334,9 +333,9 @@ namespace PowerLanguage.Indicator {
                     Lot lot = queue.Peek();
                     int closed = Math.Min(remaining, lot.Remaining);
                     if (lot.Entry == null) {
-                        exitRoles.Add(ShortLabel(0, false, fill.Price, null));
+                        exitRoles.Add(ShortLabel(0, false, null));
                     } else {
-                        exitRoles.Add(ShortLabel(lot.TradeId, false, fill.Price, lot.Entry.Name));
+                        exitRoles.Add(ShortLabel(lot.TradeId, false, lot.Entry.Name));
                         if (markerId == 0) markerId = lot.TradeId;
                         if (fill.Time >= day && fill.Time < day.AddDays(1))
                             result.Pairs.Add(new HistoryPair {
@@ -359,7 +358,7 @@ namespace PowerLanguage.Indicator {
                     });
                     if (entryId > 0) result.Markers.Add(new HistoryMarker {
                         Execution = fill, TradeId = entryId, IsEntry = true,
-                        Label = ShortLabel(entryId, true, fill.Price, fill.Name)
+                        Label = ShortLabel(entryId, true, fill.Name)
                     });
                 }
             }
@@ -369,7 +368,7 @@ namespace PowerLanguage.Indicator {
             foreach (var pair in result.Pairs) if (shown.Add(pair.Entry.Key))
                 result.Markers.Add(new HistoryMarker {
                     Execution = pair.Entry, TradeId = pair.TradeId, IsEntry = true,
-                    Label = ShortLabel(pair.TradeId, true, pair.Entry.Price, pair.Entry.Name)
+                    Label = ShortLabel(pair.TradeId, true, pair.Entry.Name)
                 });
             return result;
         }
@@ -416,13 +415,13 @@ namespace PowerLanguage.Indicator {
                     }
                 }
                 if (inRange) view.Markers.Add(new HistoryMarker { Execution = fill, TradeId = number,
-                    IsEntry = record.Kind == "entry", Label = ShortLabel(number, record.Kind == "entry", fill.Price, fill.Name) });
+                    IsEntry = record.Kind == "entry", Label = ShortLabel(number, record.Kind == "entry", fill.Name) });
             }
             var shown = new HashSet<string>();
             foreach (var marker in view.Markers) shown.Add(marker.Execution.Key);
             foreach (var pair in view.Pairs) if (shown.Add(pair.Entry.Key)) view.Markers.Add(new HistoryMarker {
                 Execution = pair.Entry, TradeId = pair.TradeId, IsEntry = true,
-                Label = ShortLabel(pair.TradeId, true, pair.Entry.Price, pair.Entry.Name)
+                Label = ShortLabel(pair.TradeId, true, pair.Entry.Name)
             });
             return view;
         }
@@ -571,19 +570,23 @@ namespace PowerLanguage.Indicator {
                             // Entry points right, close points left, for both
                             // longs and shorts. Reversals have both roles.
                             int direction = marker.IsEntry ? 1 : -1;
-                            float headWidth = Math.Max(8, Math.Min(20, frame.ArrowLength * .6f));
-                            float headHeight = Math.Max(8, Math.Min(20, frame.ArrowLength * .65f));
+                            float headWidth = Math.Max(6, Math.Min(15, frame.ArrowLength * .45f));
+                            float headHeight = Math.Max(6, Math.Min(15, frame.ArrowLength * .5f));
                             float baseX = point.X - direction * headWidth;
-                            // Only a solid arrowhead: no shaft or endpoint dot.
+                            // Compact arrowhead and one short solid dash for both roles.
                             using (var brush = new SolidBrush(Color.White))
                                 graphics.FillPolygon(brush, new[] {
                                     point, new PointF(baseX, point.Y - headHeight / 2),
                                     new PointF(baseX, point.Y + headHeight / 2)
                                 });
+                            const float tailLength = 6;
+                            float labelEdge = baseX - direction * tailLength;
+                            using (var brush = new SolidBrush(Color.White))
+                                graphics.FillRectangle(brush, Math.Min(baseX, labelEdge), point.Y - 1, tailLength, 2);
                             if (frame.ShowLabels) {
                                 string label = marker.Label;
                                 SizeF size = graphics.MeasureString(label, font);
-                                float x = marker.IsEntry ? baseX - size.Width - 2 : baseX + 2;
+                                float x = marker.IsEntry ? labelEdge - size.Width - 2 : labelEdge + 2;
                                 // Stay attached to the arrow and vertically
                                 // centered at its price, even in dense regions.
                                 RectangleF bounds = new RectangleF(x, point.Y - size.Height / 2, size.Width, size.Height);
@@ -617,8 +620,6 @@ namespace PowerLanguage.Indicator {
                 pen.CustomEndCap = cap;
                 graphics.DrawLine(pen, tail, tip);
             }
-            using (var brush = new SolidBrush(Color.White))
-                graphics.FillEllipse(brush, tip.X - 2, tip.Y - 2, 4, 4);
         }
 
         private static bool ContainsPrice(Bar bar, double price) {

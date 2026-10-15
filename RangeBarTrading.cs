@@ -68,7 +68,6 @@ namespace PowerLanguage.Strategy
         // Strategy Properties dialog.
         private const int OrderQuantity = 1;
         private const int MinimumAutomaticLossTicks = 9;
-        private const int ProximityTicks = 5;
         private const int RecoverySessionProfitGoalTicks = 5;
         private const int OppositeColorExitMinimumProfitTicks = 5;
         private const int OneBarProfitTargetTicks = 5;
@@ -683,12 +682,13 @@ namespace PowerLanguage.Strategy
                 // MultiCharts' broker-order badge directly.
                 SubmitActiveExitOrders(StrategyInfo.MarketPosition);
             }
-            else if (m_ProfitTargetPrice > 0 && Math.Abs(arg.point.Price - m_ProfitTargetPrice) <= (ProximityTicks * tickSize)) {
+            else if (StrategyInfo.MarketPosition != 0 &&
+                     IsTradeControlLineHit(arg, m_TargetLine, m_ProfitTargetPrice, tickSize)) {
                 m_DraggingTarget = true;
                 SetTargetLineSelected(true);
             }
-            else if (StrategyInfo.MarketPosition != 0 && m_ProtectiveStopPrice > 0 &&
-                     Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (ProximityTicks * tickSize)) {
+            else if (StrategyInfo.MarketPosition != 0 &&
+                     IsTradeControlLineHit(arg, m_StopLine, m_ProtectiveStopPrice, tickSize)) {
                 MoveProtectiveStopToBreakEven(StrategyInfo.MarketPosition, tickSize);
             }
         }
@@ -3408,6 +3408,26 @@ namespace PowerLanguage.Strategy
         private DateTime GetTradeControlStartTime() {
             int barsBack = Math.Min(6, Math.Max(0, Bars.CurrentBar - 1));
             return Bars.Time[barsBack];
+        }
+
+        private bool IsTradeControlLineHit(MouseClickArgs arg, ITrendLineObject line, double price, double tickSize) {
+            if (line == null || arg.data_number != ExecInfo.BaseDataNumber || price <= 0 ||
+                Math.Abs(line.Begin.Price - price) > tickSize * 0.000001) return false;
+            int lastBar = Bars.FullSymbolData.Current - 1;
+            int barsBack = Math.Min(6, Math.Max(0, Bars.CurrentBar - 1));
+            return IsTradeControlHit(arg.point.Price, arg.point.Time, arg.bar_number,
+                price, tickSize, line.Begin.Time, line.End.Time, lastBar - barsBack, lastBar);
+        }
+
+        private static bool IsTradeControlHit(double clickPrice, DateTime clickTime, int clickedBar,
+            double price, double tickSize, DateTime begin, DateTime end, int firstBar, int lastBar) {
+            // Almost on the line: at most a quarter tick from its center and
+            // within its actual horizontal span. Bar bounds disambiguate range
+            // bars sharing a timestamp and reject the empty space to the right.
+            return tickSize > 0 && price > 0 &&
+                clickedBar >= firstBar && clickedBar <= lastBar &&
+                clickTime >= begin && clickTime <= end &&
+                Math.Abs(clickPrice - price) <= tickSize * 0.25 + tickSize * 0.000001;
         }
 
         private void SetTargetLineSelected(bool selected) {

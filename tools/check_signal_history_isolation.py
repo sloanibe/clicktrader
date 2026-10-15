@@ -198,6 +198,19 @@ def main():
     assert not re.search(r'RangeBarJournal\.(?:Read|Append)|Thread.Sleep|WaitForIdle', pnl_methods)
     for before, after in [('                // Preserve the shared cumulative result before an entry fills.\n                // Reading OpenEquity after the fill can include the spread and\n                // incorrectly classify a flat/positive session as recovery.', '                // Preserve the history-based day total before this entry adds\n                // its own open P&L, including any immediate spread loss.'), ('            // Keep the established per-signal/session calculation intact, but\n            // publish it so the bid and ask chart instances display one total.', '            // Saved realized P&L plus live open P&L, shared across bid/ask\n            // charts for this account, instrument, and history stream.')]:
         original = original.replace(before, after)
+    # Plain clicks must be almost on the actual finite stop/target segment.
+    original = original.replace('        private const int ProximityTicks = 5;\n', '')
+    original = original.replace(
+        '            else if (m_ProfitTargetPrice > 0 && Math.Abs(arg.point.Price - m_ProfitTargetPrice) <= (ProximityTicks * tickSize)) {',
+        '            else if (StrategyInfo.MarketPosition != 0 &&\n'
+        '                     IsTradeControlLineHit(arg, m_TargetLine, m_ProfitTargetPrice, tickSize)) {')
+    original = original.replace(
+        '            else if (StrategyInfo.MarketPosition != 0 && m_ProtectiveStopPrice > 0 &&\n'
+        '                     Math.Abs(arg.point.Price - m_ProtectiveStopPrice) <= (ProximityTicks * tickSize)) {',
+        '            else if (StrategyInfo.MarketPosition != 0 &&\n'
+        '                     IsTradeControlLineHit(arg, m_StopLine, m_ProtectiveStopPrice, tickSize)) {')
+    for name in ('IsTradeControlLineHit', 'IsTradeControlHit'):
+        current = current.replace(method(current, name), '')
     # Ignore blank lines introduced by the bounded observer sections; preserve every other line.
     lines = lambda text: [line for line in text.splitlines() if line.strip()]
     assert lines(current) == lines(original), 'Signal changed outside history, direction repair, legacy annotation removal, and shared confirmation pricing, pin validity guards, and range-boundary break-even plus history-based day P&L.'

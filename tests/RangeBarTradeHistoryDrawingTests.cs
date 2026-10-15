@@ -87,13 +87,20 @@ class RangeBarTradeHistoryDrawingTests {
                 throw new Exception("exit arrowhead must touch right candle edge at reported price");
             if (bitmap.GetPixel(500, 180).ToArgb() != Color.Silver.ToArgb())
                 throw new Exception("entry must remain outside candle center");
-            if (bitmap.GetPixel(480, 180).ToArgb() != Color.White.ToArgb() ||
-                bitmap.GetPixel(520, 220).ToArgb() != Color.White.ToArgb())
+            if (bitmap.GetPixel(482, 180).ToArgb() != Color.White.ToArgb() ||
+                bitmap.GetPixel(518, 220).ToArgb() != Color.White.ToArgb())
                 throw new Exception("entry arrow must point right and exit arrow left, including short trades");
-            if (bitmap.GetPixel(467, 180).ToArgb() != Color.Silver.ToArgb() ||
+            if (bitmap.GetPixel(476, 180).ToArgb() != Color.White.ToArgb() ||
+                bitmap.GetPixel(478, 180).ToArgb() != Color.White.ToArgb() ||
+                bitmap.GetPixel(522, 220).ToArgb() != Color.White.ToArgb() ||
+                bitmap.GetPixel(524, 220).ToArgb() != Color.White.ToArgb())
+                throw new Exception("both entry and exit must have one short solid dash attached behind their arrowhead");
+            if (bitmap.GetPixel(469, 180).ToArgb() != Color.Silver.ToArgb() ||
                 bitmap.GetPixel(533, 220).ToArgb() != Color.Silver.ToArgb())
-                throw new Exception("horizontal arrowheads must not have shafts");
-            if (bitmap.GetPixel(462, 180).ToArgb() != Color.Silver.ToArgb() ||
+                throw new Exception("entry and exit tails must remain one short dash long");
+            if (bitmap.GetPixel(479, 185).ToArgb() != Color.Silver.ToArgb())
+                throw new Exception("horizontal arrowhead must be smaller than its former footprint");
+            if (bitmap.GetPixel(457, 180).ToArgb() != Color.Silver.ToArgb() ||
                 bitmap.GetPixel(537, 220).ToArgb() != Color.Silver.ToArgb())
                 throw new Exception("markers must use candle edges instead of intrabar time displacement");
             environment.Spacing = 14; environment.CloseDistance = 100; frame.CandleEdgeOffset = 0;
@@ -128,7 +135,9 @@ class RangeBarTradeHistoryDrawingTests {
                 graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
                 int tipY = (side > 0 ? 240 : 160) + side * (int)(tick * 20);
                 int shaftY = tipY + side * 10;
-                if (bitmap.GetPixel(500, tipY).ToArgb() != Color.White.ToArgb() ||
+                if (bitmap.GetPixel(500, tipY - side * 1).ToArgb() != Color.Silver.ToArgb())
+                    throw new Exception("vertical arrow must not have a circle extending beyond its pointed tip");
+                if (bitmap.GetPixel(500, tipY + side * 5).ToArgb() != Color.White.ToArgb() ||
                     bitmap.GetPixel(500, shaftY).ToArgb() != Color.White.ToArgb())
                     throw new Exception("entry-bar arrow must sit one instrument tick outside buy low or sell high, with or without tail");
             }
@@ -153,7 +162,7 @@ class RangeBarTradeHistoryDrawingTests {
             frame.View = HistoryMatching.BuildJournal(new List<RangeBarJournalRecord> {journalEntry}, day.Date);
             graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
             if (bitmap.GetPixel(788, 195).ToArgb() != Color.White.ToArgb() ||
-                bitmap.GetPixel(650, 225).ToArgb() != Color.White.ToArgb() ||
+                bitmap.GetPixel(650, 230).ToArgb() != Color.White.ToArgb() ||
                 bitmap.GetPixel(638, 195).ToArgb() != Color.Silver.ToArgb())
                 throw new Exception("legacy horizontal entry must follow fill price to next bar while setup arrow stays put");
             journalEntry.Price = 100.75;
@@ -184,7 +193,7 @@ class RangeBarTradeHistoryDrawingTests {
                 frame.View = HistoryMatching.BuildJournal(new List<RangeBarJournalRecord> {journalEntry}, day.Date);
                 graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
                 int setupY = side > 0 ? 225 : 195;
-                if (bitmap.GetPixel(650, setupY).ToArgb() != Color.White.ToArgb() ||
+                if (bitmap.GetPixel(650, setupY + side * 5).ToArgb() != Color.White.ToArgb() ||
                     bitmap.GetPixel(788, 195).ToArgb() != Color.White.ToArgb() ||
                     bitmap.GetPixel(638, 195).ToArgb() != Color.Silver.ToArgb())
                     throw new Exception("white setup arrow must stay on intended bar while white entry head moves to the recorded fill bar");
@@ -237,7 +246,7 @@ class RangeBarTradeHistoryDrawingTests {
             frame.ShowLabels = false;
             frame.View = HistoryMatching.Build(new List<HistoryExecution> {entry, exit}, day.Date, new Dictionary<string, int>());
             graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
-            if (bitmap.GetPixel(650, 245).ToArgb() != Color.White.ToArgb() ||
+            if (bitmap.GetPixel(650, 250).ToArgb() != Color.White.ToArgb() ||
                 bitmap.GetPixel(650, 255).ToArgb() != Color.White.ToArgb())
                 throw new Exception("PB1 upward arrow must be at actual pin bar low");
             if (bitmap.GetPixel(638, 220).ToArgb() != Color.White.ToArgb())
@@ -252,7 +261,7 @@ class RangeBarTradeHistoryDrawingTests {
                 entry.Name = manualEntry ? "manual" : "pin bar";
                 frame.View = HistoryMatching.Build(new List<HistoryExecution> {entry}, day.Date, new Dictionary<string, int>());
                 graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
-                if (bitmap.GetPixel(650, 245).ToArgb() != Color.White.ToArgb() ||
+                if (bitmap.GetPixel(650, 250).ToArgb() != Color.White.ToArgb() ||
                     bitmap.GetPixel(500, 235).ToArgb() != Color.Silver.ToArgb())
                     throw new Exception("entry-bar assignment must apply to every tail and entry type");
             }
@@ -261,7 +270,7 @@ class RangeBarTradeHistoryDrawingTests {
             entry.Time = day.AddSeconds(22); entry.Price = 100.75;
             frame.View = HistoryMatching.Build(new List<HistoryExecution> {entry}, day.Date, new Dictionary<string, int>());
             graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
-            if (bitmap.GetPixel(800, 225).ToArgb() != Color.White.ToArgb())
+            if (bitmap.GetPixel(800, 230).ToArgb() != Color.White.ToArgb())
                 throw new Exception("current forming-bar entry must not disappear while awaiting close time");
             // User's recorded first-trade price/time, paired with SYNTHETIC
             // neighboring bars; actual chart OHLC/times were not supplied.
@@ -277,7 +286,7 @@ class RangeBarTradeHistoryDrawingTests {
             frame.BarTimestampIsClose = false;
             frame.View = HistoryMatching.Build(new List<HistoryExecution> {entry}, day.Date, new Dictionary<string, int>());
             graphics.Clear(Color.Silver); drawer.Publish(frame); drawer.Draw(context, EDrawPhases.Final);
-            if (bitmap.GetPixel(650, 240).ToArgb() != Color.White.ToArgb() ||
+            if (bitmap.GetPixel(650, 245).ToArgb() != Color.White.ToArgb() ||
                 bitmap.GetPixel(500, 245).ToArgb() != Color.Silver.ToArgb())
                 throw new Exception("vertical marker must use unique neighbor containing the executed price");
             if (bitmap.GetPixel(638, 215).ToArgb() != Color.White.ToArgb() ||
@@ -315,8 +324,8 @@ class RangeBarTradeHistoryDrawingTests {
                 if (bitmap.GetPixel(x, y).ToArgb() != Color.Black.ToArgb()) continue;
                 top = Math.Min(top, y); bottom = Math.Max(bottom, y); right = Math.Max(right, x);
             }
-            if (bottom < 0 || Math.Abs((top + bottom) / 2.0 - 180) > 4 || right < 465)
-                throw new Exception("entry label must be vertically centered and immediately left of arrowhead");
+            if (bottom < 0 || Math.Abs((top + bottom) / 2.0 - 180) > 4 || right < 462 || right >= 475)
+                throw new Exception("entry label must be vertically centered and immediately left of the entry tail");
             // Preview includes a synthetic candle so edge contact is visible.
             graphics.Clear(Color.Silver);
             graphics.FillRectangle(Brushes.Gainsboro, 490, 160, 20, 80);

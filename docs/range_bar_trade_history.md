@@ -198,12 +198,13 @@ failure. Live files are not changed by repository edits or verification tests.
 
 ## Chart annotations and inputs
 
-White horizontal arrowheads have no shafts: entries point right at the recorded
-fill candle's left edge, exits point left at the recorded exit candle's right edge,
-at their confirmed prices. White vertical arrows point up with their tips one tick below buy-entry lows,
+White horizontal entry and exit arrows have compact heads and a single short
+solid white dash as their tail (6 pixels). Entries point right with the tip at
+the recorded fill candle's left edge; exits point left with the tip at the exit
+candle's right edge. Both stay at their confirmed prices. White vertical arrows point up with their tips one tick below buy-entry lows,
 or down with their tips one tick above sell-entry highs, regardless of tail
-length. The spacing uses the chart instrument’s tick size. Black labels read `P1 in 100` /
-`P1 out 101` or `M2 in 102` / `M2 out 101`; other types use `T`. Green connectors
+length. The spacing uses the chart instrument’s tick size. Black labels read `P1 in` /
+`P1 out` or `M2 in` / `M2 out`; other types use `T`. Labels omit prices. Green connectors
 mean zero/positive price result; red means loss, before fees. Labels stay attached
 beside their arrows; dense clusters can overlap. Informational boxes stay hidden
 unless enabled.

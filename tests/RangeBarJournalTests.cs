@@ -67,7 +67,7 @@ static class RangeBarJournalTests {
             var view = HistoryMatching.BuildJournal(RangeBarJournal.Fills(events), day);
             Check(view.Pairs.Count == 2 && view.Pairs[0].Entry.Scope == "manual" && view.Pairs[1].Entry.Scope == "pin",
                 "overlapping trades pair by explicit trade IDs instead of FIFO");
-            Check(view.Markers[0].Label == "P1 in 101.25" && view.Markers[1].Label == "M2 in 105", "explicit source selects P/M labels");
+            Check(view.Markers[0].Label == "P1 in" && view.Markers[1].Label == "M2 in", "explicit source selects P/M labels");
             var update = entry.Copy(); update.EventId = Guid.NewGuid().ToString("N"); update.Kind = "bar";
             update.Target = entry.EventId; update.FinalBar = true; update.BarTime = day.AddHours(9).AddSeconds(5); update.High = 102;
             RangeBarJournal.Append(path, update);
