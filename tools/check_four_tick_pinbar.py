@@ -41,6 +41,7 @@ def main():
                                    "UpdateSessionExitProjectionLines", "ClearPinBarProjectionLines"),
         "AutomaticLossExitTests": ("GetProtectiveStopLossTicks", "ClampAutomaticLossExitPrice",
                                    "UpdateOppositeColorExitManagement", "SubmitActiveExitOrders"),
+        "RangeBoundaryBreakEvenTests": ("UpdateRangeBoundaryBreakEven", "SubmitActiveExitOrders"),
     }
     csc = Path("/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe")
     windows = not shutil.which("mcs") and csc.exists()

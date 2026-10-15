@@ -36,8 +36,8 @@ namespace PowerLanguage.Strategy
         // stop, but cannot reduce that distance or the nine-tick minimum.
         [Input] public int ProtectiveStopLossTicks { get; set; }
         [Input] public int ProfitTargetTicks { get; set; }
-        // Retained in its original input slot to preserve saved MultiCharts
-        // settings. Automatic break-even is intentionally no longer used.
+        // Pin/manual trades move the stop to entry when live price touches
+        // a favorable range-bar completion boundary. Enabled by default.
         [Input] public bool AutoProtectiveStopOn1BarProfit { get; set; }
         [Input] public bool EnablePinBarTrading { get; set; }
         [Input] public bool Enable24EMABounceTrading { get; set; }
@@ -530,6 +530,7 @@ namespace PowerLanguage.Strategy
             }
 
             UpdateOppositeColorExitManagement(currentPosition, tickSize);
+            UpdateRangeBoundaryBreakEven(currentPosition, tickSize);
 
             if (currentPosition == 0) {
                 if (m_BuyOrderActive && m_StopPrice > 0 &&
@@ -3094,6 +3095,30 @@ namespace PowerLanguage.Strategy
             } else if (ShowHUD) {
                 UpdateHUD(true);
             }
+        }
+
+        private void UpdateRangeBoundaryBreakEven(int currentPosition, double tickSize) {
+            if (!AutoProtectiveStopOn1BarProfit || !m_SessionProfitRuleActive ||
+                m_KillModeActive || currentPosition == 0 || !Bars.LastBarOnChart || tickSize <= 0) return;
+
+            double rangeTicks = GetActiveRangeTicks(tickSize);
+            double entryPrice = StrategyInfo.AvgEntryPrice;
+            if (rangeTicks <= 0 || entryPrice <= 0) return;
+            int direction = currentPosition > 0 ? 1 : -1;
+            double boundary = direction > 0
+                ? Bars.Low[0] + rangeTicks * tickSize
+                : Bars.High[0] - rangeTicks * tickSize;
+            double epsilon = tickSize * 0.000001;
+            // Use the current chart price, not an earlier high/low that may
+            // predate the fill. No bar-close or extra-tick confirmation needed.
+            if (direction * (Bars.Close[0] - boundary) < -epsilon ||
+                direction * (Bars.Close[0] - entryPrice) <= epsilon) return;
+
+            double breakEvenStop = RoundToTick(entryPrice, tickSize);
+            if (m_ProtectiveStopPrice <= 0 ||
+                direction * (breakEvenStop - m_ProtectiveStopPrice) > epsilon)
+                m_ProtectiveStopPrice = breakEvenStop;
+            // CalcBar updates the guide and submits the native stop this tick.
         }
 
         private void MoveProtectiveStopToBreakEven(int currentPosition, double tickSize) {

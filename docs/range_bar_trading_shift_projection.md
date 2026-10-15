@@ -40,3 +40,21 @@ at the projected reversal boundary. Each evaluation clears the old candidate
 before checking the current setup. Invalidation cancels a pending pin entry and
 clears its preview while preserving the armed direction. The next bar is checked
 against its own immediately preceding bar, including an invalidated pin.
+
+## Automatic break-even at the chart boundary
+
+`AutoProtectiveStopOn1BarProfit` is enabled by default and now applies to both
+manual and pin-bar trades. While the position remains open, the current chart
+price touching the favorable range completion boundary moves the protective stop
+to the actual average entry price. For longs the boundary is the forming bar's
+low plus one chart range; for shorts it is the high minus one chart range. This
+uses the active chart range, not a fixed four-tick gain from the fill. It runs
+intrabar without waiting for another tick beyond the boundary or bar close.
+The boundary touch must be favorable relative to entry, so an entry at the
+boundary itself does not immediately promote its stop. An earlier high/low
+before the fill cannot trigger promotion while live price is below/above the
+boundary. Tighter stops remain tighter, and a retracement cannot undo promotion.
+Existing targets and color-change management remain active. Turning the setting
+off disables automatic promotion; clicking the stop retains its separate manual
+behavior of entry with one tick of permitted loss. Existing charts retain saved
+input values, so check this setting after reloading the signal.

@@ -157,16 +157,29 @@ def main():
     assert 'ShiftProjectionRequireOneTickConfirmation ? direction * tickSize : 0' in helper
     current = current.replace(helper, '')
     assert 'ShiftProjectionRequireOneTickConfirmation = false;' in current
+    # Approved range-boundary break-even for pin/manual positions, using the
+    # existing input slot and default. Preserve all other trading code.
+    original = original.replace(
+        '        // Retained in its original input slot to preserve saved MultiCharts\n'
+        '        // settings. Automatic break-even is intentionally no longer used.',
+        '        // Pin/manual trades move the stop to entry when live price touches\n'
+        '        // a favorable range-bar completion boundary. Enabled by default.')
+    assert current.count('            UpdateRangeBoundaryBreakEven(currentPosition, tickSize);') == 1
+    assert current.index('            UpdateRangeBoundaryBreakEven(currentPosition, tickSize);') < current.index(
+        '                SubmitActiveExitOrders(currentPosition);')
+    current = current.replace('            UpdateRangeBoundaryBreakEven(currentPosition, tickSize);', '')
+    current = current.replace(method(current, 'UpdateRangeBoundaryBreakEven'), '')
+    assert 'AutoProtectiveStopOn1BarProfit = true;' in current
     assert 'DrwArrow.Create' not in current
     assert 'DrawFilledEntryMarkers' not in current
     # Ignore blank lines introduced by the bounded observer sections; preserve every other line.
     lines = lambda text: [line for line in text.splitlines() if line.strip()]
-    assert lines(current) == lines(original), 'Signal changed outside history, direction repair, legacy annotation removal, and shared confirmation pricing and pin validity guards.'
+    assert lines(current) == lines(original), 'Signal changed outside history, direction repair, legacy annotation removal, and shared confirmation pricing, pin validity guards, and range-boundary break-even.'
     observer = (ROOT / 'RangeBarTrading.cs').read_text().split('// BEGIN HISTORY OBSERVER METHODS')[1].split('// END HISTORY OBSERVER METHODS')[0]
     assert not re.search(r'\b(?:GetActiveRangeTicks|SendEntryStop|CancelWorkingEntryOrders|SubmitActiveExitOrders)\s*\(', observer)
     assert 'RangeBarJournal.Append(' not in observer and 'RangeBarJournal.Read(' not in observer
     assert 'WaitForIdle(' not in observer and 'Thread.Sleep(' not in observer
-    print('PASS: only approved trading changes including shared confirmation pricing and pin validity guards; history observer does no file I/O or waiting')
+    print('PASS: only approved trading changes including shared confirmation pricing, pin validity guards, and range-boundary break-even; history observer does no file I/O or waiting')
 
 
 if __name__ == '__main__':
