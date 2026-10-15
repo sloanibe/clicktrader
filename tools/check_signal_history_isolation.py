@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ensure the committed trading signal differs only by the history observer."""
+"""Ensure signal changes stay within explicitly approved trading/history edits."""
 from pathlib import Path
 import re
 import subprocess
@@ -81,16 +81,92 @@ def main():
         current = current.replace(method(current, name), '')
     # Execution annotations now belong exclusively to RangeBarTradeHistory.
     original = remove_annotations(original)
+    # Manual and pin entries now share optional one-tick confirmation.
+    original = original.replace(
+        '        // Manual entries on ranges of four ticks or less always require\n'
+        '        // one tick beyond completion. This enables the same confirmation\n'
+        '        // for larger ranges as well.',
+        '        // Shared by manual and pin-bar entries. False enters at completion;\n'
+        '        // true requires one tick beyond the boundary in the trade direction.')
+    old_manual_price = (
+        '            // Small ranges always confirm one tick beyond completion. The\n'
+        '            // same entry price drives both the drawing and the native order.\n'
+        '            bool requireConfirmation = rangeTicks <= 4 ||\n'
+        '                                       ShiftProjectionRequireOneTickConfirmation;\n'
+        '            double entryPrice = requireConfirmation\n'
+        '                ? RoundToTick(completionPrice + (direction > 0 ? tickSize : -tickSize),\n'
+        '                              tickSize)\n'
+        '                : completionPrice;')
+    assert old_manual_price in original
+    original = original.replace(old_manual_price,
+        '            // Manual and pin entries share the optional confirmation tick.\n'
+        '            double entryPrice = GetConfirmedEntryPrice(completionPrice, direction, tickSize);')
+    for name in ('UpdateFourTickPinBarProjection', 'UpdatePinBarProjection', 'ArmOrUpdateProjectedPinBarEntry'):
+        before = method(original, name)
+        after = before
+        if name == 'UpdateFourTickPinBarProjection':
+            after = after.replace('            m_PinEntryCandidatePrice = completionPrice;',
+                '            double entryPrice = GetConfirmedEntryPrice(completionPrice, direction, tickSize);\n'
+                '            m_PinEntryCandidatePrice = entryPrice;')
+            after = after.replace('completionPrice, true);', 'entryPrice, true);')
+            after = after.replace('UpdatePinBarProjectionLabel(completionPrice,', 'UpdatePinBarProjectionLabel(entryPrice,')
+            after = after.replace('                                             completionPrice, direction, tickSize);',
+                                  '                                             entryPrice, direction, tickSize);')
+        elif name == 'UpdatePinBarProjection':
+            after = after.replace('double entryPrice = RoundToTick(completionPrice, tickSize);',
+                'double entryPrice = GetConfirmedEntryPrice(completionPrice, direction, tickSize);')
+            after = after.replace('completionPrice, false);', 'entryPrice, false);')
+            after = after.replace('UpdatePinBarProjectionLabel(completionPrice,', 'UpdatePinBarProjectionLabel(entryPrice,')
+            after = after.replace('m_PinBarCompletionLine, completionPrice,', 'm_PinBarCompletionLine, entryPrice,')
+        else:
+            after = after.replace('            m_StopPrice = RoundToTick(\n'
+                '                direction > 0 ? projectedHigh : projectedLow, tickSize);',
+                '            m_StopPrice = GetConfirmedEntryPrice(\n'
+                '                direction > 0 ? projectedHigh : projectedLow, direction, tickSize);')
+        if name == 'UpdateFourTickPinBarProjection':
+            after = after.replace('            double tailPrice = 0;',
+                '            m_PinEntryCandidateValid = false;\n'
+                '            m_PinProjectionQualified = false;\n'
+                '            double tailPrice = 0;', 1)
+        elif name == 'UpdatePinBarProjection':
+            after = after.replace('            if (m_FourTickPinBarMode) {',
+                '            m_PinEntryCandidateValid = false;\n'
+                '            m_PinProjectionQualified = false;\n'
+                '            if (m_FourTickPinBarMode) {', 1)
+            after = after.replace('!EnablePinBarTrading || currentPosition != 0 ||',
+                                  '!EnablePinBarTrading || currentPosition != 0 || m_KillModeActive ||')
+            guard = """            // The current bar and its projected tail must both respect the
+            // preceding bar's extreme. A new pin after an invalidated pin is
+            // assessed against that immediately preceding bar, not an old setup.
+            double epsilon = tickSize * 0.000001;
+            bool previousExtremeValid = Bars.CurrentBar > 1 && (direction > 0
+                ? Bars.Low[0] >= Bars.Low[1] - epsilon && projectedLow >= Bars.Low[1] - epsilon
+                : Bars.High[0] <= Bars.High[1] + epsilon && projectedHigh <= Bars.High[1] + epsilon);
+            if (!previousExtremeValid || !IsSupportedPinBarShape(pinBarRangeTicks, bodyTicks) ||
+                (Bars.Status == EBarState.Close && Math.Abs(Bars.Close[0] - completionPrice) > epsilon)) {
+                ClearPinBarProjectionLines();
+                ClearPinBarEntryIfActive();
+                return;
+            }
+"""
+            entry_line = '            double entryPrice = GetConfirmedEntryPrice(completionPrice, direction, tickSize);'
+            after = after.replace(entry_line, guard + entry_line, 1)
+        assert before != after
+        original = original.replace(before, after)
+    helper = method(current, 'GetConfirmedEntryPrice')
+    assert 'ShiftProjectionRequireOneTickConfirmation ? direction * tickSize : 0' in helper
+    current = current.replace(helper, '')
+    assert 'ShiftProjectionRequireOneTickConfirmation = false;' in current
     assert 'DrwArrow.Create' not in current
     assert 'DrawFilledEntryMarkers' not in current
     # Ignore blank lines introduced by the bounded observer sections; preserve every other line.
     lines = lambda text: [line for line in text.splitlines() if line.strip()]
-    assert lines(current) == lines(original), 'The committed signal changed outside history, the directional order repair, and legacy annotation removal.'
+    assert lines(current) == lines(original), 'Signal changed outside history, direction repair, legacy annotation removal, and shared confirmation pricing and pin validity guards.'
     observer = (ROOT / 'RangeBarTrading.cs').read_text().split('// BEGIN HISTORY OBSERVER METHODS')[1].split('// END HISTORY OBSERVER METHODS')[0]
     assert not re.search(r'\b(?:GetActiveRangeTicks|SendEntryStop|CancelWorkingEntryOrders|SubmitActiveExitOrders)\s*\(', observer)
     assert 'RangeBarJournal.Append(' not in observer and 'RangeBarJournal.Read(' not in observer
     assert 'WaitForIdle(' not in observer and 'Thread.Sleep(' not in observer
-    print('PASS: trade execution logic preserved; legacy execution annotations removed; history observer does no file I/O or waiting')
+    print('PASS: only approved trading changes including shared confirmation pricing and pin validity guards; history observer does no file I/O or waiting')
 
 
 if __name__ == '__main__':

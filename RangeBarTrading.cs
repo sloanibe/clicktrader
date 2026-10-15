@@ -48,9 +48,8 @@ namespace PowerLanguage.Strategy
         // Legacy EMA setups use this profit-mode switch. Shift and pin trades
         // instead use the session P&L category latched at their entry fill.
         [Input] public bool UseOppositeColorExitForProfits { get; set; }
-        // Manual entries on ranges of four ticks or less always require
-        // one tick beyond completion. This enables the same confirmation
-        // for larger ranges as well.
+        // Shared by manual and pin-bar entries. False enters at completion;
+        // true requires one tick beyond the boundary in the trade direction.
         [Input] public bool ShiftProjectionRequireOneTickConfirmation { get; set; }
 
         // BEGIN HISTORY OBSERVER STATE
@@ -1175,6 +1174,8 @@ namespace PowerLanguage.Strategy
 
         private void UpdateFourTickPinBarProjection(double tickSize,
                                                     int currentPosition) {
+            m_PinEntryCandidateValid = false;
+            m_PinProjectionQualified = false;
             double tailPrice = 0;
             double completionPrice = 0;
             int bodyTicks = 0;
@@ -1210,15 +1211,16 @@ namespace PowerLanguage.Strategy
             m_PinProjectionTailTicks = 4 - bodyTicks;
             m_PinEntryCandidateValid = true;
             m_PinEntryCandidateDirection = direction;
-            m_PinEntryCandidatePrice = completionPrice;
+            double entryPrice = GetConfirmedEntryPrice(completionPrice, direction, tickSize);
+            m_PinEntryCandidatePrice = entryPrice;
             m_PinEntryCandidateBodyTicks = bodyTicks;
             UpdatePinBarTailProjectionLine(tailPrice);
             UpdatePinBarProjectionLine(ref m_PinBarCompletionLine,
-                                       completionPrice, true);
-            UpdatePinBarProjectionLabel(completionPrice, direction, true, bodyTicks);
+                                       entryPrice, true);
+            UpdatePinBarProjectionLabel(entryPrice, direction, true, bodyTicks);
             UpdateSessionExitProjectionLines(ref m_PinBarStopLine,
                                              ref m_PinBarTargetLine,
-                                             completionPrice, direction, tickSize);
+                                             entryPrice, direction, tickSize);
         }
 
         private static bool IsFourTickPinBarEmaOrderValid(
@@ -1278,11 +1280,13 @@ namespace PowerLanguage.Strategy
         }
 
         private void UpdatePinBarProjection(double tickSize, int currentPosition) {
+            m_PinEntryCandidateValid = false;
+            m_PinProjectionQualified = false;
             if (m_FourTickPinBarMode) {
                 UpdateFourTickPinBarProjection(tickSize, currentPosition);
                 return;
             }
-            if (!EnablePinBarTrading || currentPosition != 0 ||
+            if (!EnablePinBarTrading || currentPosition != 0 || m_KillModeActive ||
                 m_ShiftProjectionActive || GetActiveRangeTicks(tickSize) <= 0) {
                 ClearPinBarProjectionLines();
                 if (currentPosition == 0) ClearPinBarEntryIfActive();
@@ -1374,7 +1378,20 @@ namespace PowerLanguage.Strategy
 
             double tailPrice = direction > 0 ? projectedLow : projectedHigh;
             double completionPrice = direction > 0 ? projectedHigh : projectedLow;
-            double entryPrice = RoundToTick(completionPrice, tickSize);
+            // The current bar and its projected tail must both respect the
+            // preceding bar's extreme. A new pin after an invalidated pin is
+            // assessed against that immediately preceding bar, not an old setup.
+            double epsilon = tickSize * 0.000001;
+            bool previousExtremeValid = Bars.CurrentBar > 1 && (direction > 0
+                ? Bars.Low[0] >= Bars.Low[1] - epsilon && projectedLow >= Bars.Low[1] - epsilon
+                : Bars.High[0] <= Bars.High[1] + epsilon && projectedHigh <= Bars.High[1] + epsilon);
+            if (!previousExtremeValid || !IsSupportedPinBarShape(pinBarRangeTicks, bodyTicks) ||
+                (Bars.Status == EBarState.Close && Math.Abs(Bars.Close[0] - completionPrice) > epsilon)) {
+                ClearPinBarProjectionLines();
+                ClearPinBarEntryIfActive();
+                return;
+            }
+            double entryPrice = GetConfirmedEntryPrice(completionPrice, direction, tickSize);
 
             // The PB drawing is a live projection, not an order-status
             // indicator.  Keep it on every IOG update as long as this range
@@ -1385,8 +1402,8 @@ namespace PowerLanguage.Strategy
             // the final ticks of an otherwise viable bar.
             UpdatePinBarTailProjectionLine(tailPrice);
             UpdatePinBarProjectionLine(ref m_PinBarCompletionLine,
-                                       completionPrice, false);
-            UpdatePinBarProjectionLabel(completionPrice, direction, false,
+                                       entryPrice, false);
+            UpdatePinBarProjectionLabel(entryPrice, direction, false,
                                         bodyTicks);
 
             // Arming persists, but qualification belongs to the live setup.
@@ -1443,9 +1460,9 @@ namespace PowerLanguage.Strategy
                                     pinSetupEligible && rangeClearancePass;
             if (projectionActive)
                 m_PinProjectionQualified = true;
-            UpdatePinBarProjectionLine(ref m_PinBarCompletionLine, completionPrice,
+            UpdatePinBarProjectionLine(ref m_PinBarCompletionLine, entryPrice,
                                        m_PinProjectionQualified);
-            UpdatePinBarProjectionLabel(completionPrice, direction,
+            UpdatePinBarProjectionLabel(entryPrice, direction,
                                         m_PinProjectionQualified, bodyTicks);
 
             // Keep the projected entry price available for setup arbitration
@@ -1746,6 +1763,11 @@ namespace PowerLanguage.Strategy
                    Bars.High[0] <= projectedHigh + tolerance;
         }
 
+        private double GetConfirmedEntryPrice(double completionPrice, int direction, double tickSize) {
+            return RoundToTick(completionPrice +
+                (ShiftProjectionRequireOneTickConfirmation ? direction * tickSize : 0), tickSize);
+        }
+
         private bool IsEntryDirectionAllowed(int direction) {
             return direction > 0 ? IsAskChart : direction < 0 && !IsAskChart;
         }
@@ -1764,8 +1786,8 @@ namespace PowerLanguage.Strategy
             m_PinBarOrderBar = Bars.CurrentBar;
             m_BuyOrderActive = direction > 0;
             m_SellOrderActive = direction < 0;
-            m_StopPrice = RoundToTick(
-                direction > 0 ? projectedHigh : projectedLow, tickSize);
+            m_StopPrice = GetConfirmedEntryPrice(
+                direction > 0 ? projectedHigh : projectedLow, direction, tickSize);
             m_LastSentPrice = 0;
         }
 
@@ -2643,14 +2665,8 @@ namespace PowerLanguage.Strategy
                 projectedLow = RoundToTick(projectedHigh - range, tickSize);
             }
             double completionPrice = direction > 0 ? projectedHigh : projectedLow;
-            // Small ranges always confirm one tick beyond completion. The
-            // same entry price drives both the drawing and the native order.
-            bool requireConfirmation = rangeTicks <= 4 ||
-                                       ShiftProjectionRequireOneTickConfirmation;
-            double entryPrice = requireConfirmation
-                ? RoundToTick(completionPrice + (direction > 0 ? tickSize : -tickSize),
-                              tickSize)
-                : completionPrice;
+            // Manual and pin entries share the optional confirmation tick.
+            double entryPrice = GetConfirmedEntryPrice(completionPrice, direction, tickSize);
 
             bool buyDirection = direction > 0;
             if (m_ActiveEntrySetup == EEntrySetup.ShiftProjection &&

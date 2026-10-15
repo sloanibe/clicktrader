@@ -17,7 +17,7 @@ class FourTickPinBarTests {
     bool m_ShiftProjectionActive = false, m_KillModeActive = false;
     int m_ArmedDirection = 1, m_PinProjectionBar, m_PinProjectionDirection;
     int m_PinProjectionTailTicks, m_PinEntryCandidateDirection, m_PinEntryCandidateBodyTicks;
-    bool m_PinEntryCandidateValid;
+    bool m_PinEntryCandidateValid, m_PinProjectionQualified;
     double m_PinEntryCandidatePrice;
     EEntrySetup m_ActiveEntrySetup;
     double rangeTicks = 4, drawnEntry;
@@ -38,6 +38,8 @@ class FourTickPinBarTests {
     void UpdateSessionExitProjectionLines(ref object stopLine, ref object targetLine,
         double entryPrice, int direction, double tickSize) { }
 
+    bool ShiftProjectionRequireOneTickConfirmation = false;
+    double RoundToTick(double price, double tick) { return Math.Round(price / tick) * tick; }
     // PRODUCTION_METHODS
 
     static int checks;
@@ -69,6 +71,42 @@ class FourTickPinBarTests {
         }
     }
     static void Main() {
+        // A valid pin is invalidated, then the next bar forms a PB1 beyond
+        // that invalidated bar's extreme. Arming survives both rejections.
+        foreach (int side in new[] {1, -1}) foreach (bool confirm in new[] {false, true}) {
+            var watch = new FourTickPinBarTests();
+            watch.askChart = side > 0; watch.m_ArmedDirection = side;
+            watch.ShiftProjectionRequireOneTickConfirmation = confirm;
+            watch.m_FastEMA[0] = side > 0 ? 98.5 : 101.5;
+            watch.m_SlowEMA[0] = watch.m_FastEMA[0] - side * .25;
+            watch.Bars.Open[1] = watch.Bars.Close[1] = 100;
+            watch.Bars.Low[1] = side > 0 ? 99.25 : 100;
+            watch.Bars.High[1] = side > 0 ? 100 : 100.75;
+            watch.Bars.Low[0] = side > 0 ? 99.25 : 100;
+            watch.Bars.High[0] = side > 0 ? 100 : 100.75;
+            watch.UpdateFourTickPinBarProjection(.25, 0);
+            Check(watch.m_PinEntryCandidateValid, "initial pin qualifies at previous extreme");
+            watch.m_ActiveEntrySetup = EEntrySetup.PinBar;
+            watch.m_PinEntryCandidateValid = false; // CalcBar resets before evaluation.
+            if (side > 0) watch.Bars.Low[0] = 99;
+            else watch.Bars.High[0] = 101;
+            watch.UpdateFourTickPinBarProjection(.25, 0);
+            Check(!watch.m_PinEntryCandidateValid && watch.cancellations == 1 &&
+                  watch.m_ActiveEntrySetup == EEntrySetup.None && watch.m_AutoEntryArmed,
+                  "breaking previous extreme cancels staged pin and preserves arming");
+            watch.Bars.CurrentBar++;
+            watch.Bars.Open[1] = watch.Bars.Close[1] = 100;
+            watch.Bars.Low[1] = side > 0 ? 99 : 100;
+            watch.Bars.High[1] = side > 0 ? 100 : 101;
+            watch.Bars.Open[0] = side > 0 ? 99.5 : 100.5;
+            watch.Bars.Low[0] = side > 0 ? 98.75 : 100.5;
+            watch.Bars.High[0] = side > 0 ? 99.5 : 101.25;
+            watch.Bars.Close[0] = watch.Bars.Open[0];
+            watch.UpdateFourTickPinBarProjection(.25, 0);
+            Check(!watch.m_PinEntryCandidateValid && !watch.drawingVisible && watch.m_AutoEntryArmed &&
+                  watch.m_ActiveEntrySetup == EEntrySetup.None && watch.cancellations == 1,
+                  "next three-tail one-body pin beyond preceding extreme cannot stage while armed");
+        }
         foreach (int direction in new[] {1, -1}) {
             string side = direction > 0 ? "buy " : "sell ";
             Shape(direction, 2, 0, 4, 4, false, -2, false, 0, side + "tail too short");
@@ -101,6 +139,23 @@ class FourTickPinBarTests {
         }
         Check(!IsFourTickPinBarContextValid(0, 100, 99, 100, 100), "no direction rejected");
 
+        foreach (int side in new[] {1, -1}) {
+            foreach (bool confirm in new[] {false, true}) {
+                var entry = new FourTickPinBarTests();
+                entry.m_ArmedDirection = side; entry.askChart = side > 0;
+                entry.ShiftProjectionRequireOneTickConfirmation = confirm;
+                if (side < 0) {
+                    entry.Bars.High[0] = entry.Bars.Close[0] = 100.75;
+                    entry.Bars.Low[0] = 100;
+                    entry.Bars.High[1] = 101; entry.Bars.Close[1] = 99.75;
+                    entry.m_FastEMA[0] = 101; entry.m_SlowEMA[0] = 101.25;
+                }
+                entry.UpdateFourTickPinBarProjection(.25, 0);
+                double expected = (side > 0 ? 100.25 : 99.75) + (confirm ? side * .25 : 0);
+                Check(entry.m_PinEntryCandidateValid && entry.m_PinEntryCandidatePrice == expected &&
+                      entry.drawnEntry == expected, "four-tick pin candidate and guide honor shared confirmation");
+            }
+        }
         var signal = new FourTickPinBarTests();
         signal.UpdateFourTickPinBarProjection(.25, 0);
         Check(signal.drawingVisible && signal.drawnEntry == 100.25 &&

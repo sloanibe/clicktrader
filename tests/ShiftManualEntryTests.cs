@@ -70,11 +70,11 @@ class ShiftManualEntryTests {
                     entry.rangeTicks = range;
                     entry.ShiftProjectionRequireOneTickConfirmation = option;
                     double extreme = side > 0 ? entry.Bars.Low[0] : entry.Bars.High[0];
-                    int distance = range + ((range <= 4 || option) ? 1 : 0);
+                    int distance = range + (option ? 1 : 0);
                     double expected = extreme + side * distance * .25;
                     entry.UpdateShiftProjectionEntry(.25, 0);
                     Check(entry.m_StopPrice == expected && entry.drawnEntry == expected,
-                          "order and projection match for range " + range);
+                          "order and projection honor shared confirmation option for range " + range);
                     entry.SubmitShiftProjectionEntryNow();
                     Order order = entry.ManualOrder;
                     Check(order.Sends == 1 && order.Price == expected && entry.m_LastSentPrice == expected,

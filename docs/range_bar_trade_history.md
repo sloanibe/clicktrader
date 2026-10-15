@@ -172,8 +172,9 @@ application restarts. Files are never automatically deleted or rotated.
 
 White horizontal arrowheads have no shafts: entries point right at the recorded
 fill candle's left edge, exits point left at the recorded exit candle's right edge,
-at their confirmed prices. Black vertical arrows point up at buy-entry lows or down at
-sell-entry highs, regardless of tail length. Black labels read `P1 in 100` /
+at their confirmed prices. Black vertical arrows point up with their tips one tick below buy-entry lows,
+or down with their tips one tick above sell-entry highs, regardless of tail
+length. The spacing uses the chart instrument’s tick size. Black labels read `P1 in 100` /
 `P1 out 101` or `M2 in 102` / `M2 out 101`; other types use `T`. Green connectors
 mean zero/positive price result; red means loss, before fees. Labels stay attached
 beside their arrows; dense clusters can overlap. Informational boxes stay hidden

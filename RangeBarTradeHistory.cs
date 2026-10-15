@@ -214,6 +214,7 @@ namespace PowerLanguage.Indicator {
                 ShowLabels = ShowLabels, BarTimestampIsClose = BarTimestampIsClose,
                 ShowEntryBarArrows = ShowEntryBarArrows,
                 ShowInfoOverlay = ShowInfoOverlay,
+                TickSize = (double)Bars.Info.MinMove / Bars.Info.PriceScale,
                 ArrowLength = Math.Max(8, Math.Min(80, ArrowLengthPixels)),
                 CandleEdgeOffset = Math.Max(0, CandleEdgeOffsetPixels),
                 CandleBodyWidthPercent = Math.Max(1, Math.Min(100, CandleBodyWidthPercent)),
@@ -454,6 +455,7 @@ namespace PowerLanguage.Indicator {
         public string Status;
         public bool ShowConnections, ShowLabels, ShowEntryBarArrows, ShowInfoOverlay, BarTimestampIsClose;
         public int ArrowLength, FontSize, CandleEdgeOffset, CandleBodyWidthPercent;
+        public double TickSize;
         public DateTime ChartNow;
     }
 
@@ -531,7 +533,8 @@ namespace PowerLanguage.Indicator {
                                 if (setupIndex < 0) continue;
                                 Bar bar = all[setupIndex]; uint chartIndex = firstChartIndex + (uint)setupIndex;
                                 int side = marker.Execution.Side;
-                                double extreme = side > 0 ? bar.Low : bar.High;
+                                double tickSize = frame.TickSize;
+                                double extreme = (side > 0 ? bar.Low : bar.High) - side * tickSize;
                                 PointF native = context.Environment.ChartPoint2Point(new ChartPoint(bar.Time, extreme));
                                 string key = chartIndex.ToString(CultureInfo.InvariantCulture) + ":" + side;
                                 entryBarArrows[key] = new EntryBarArrow {
@@ -548,8 +551,8 @@ namespace PowerLanguage.Indicator {
                             }
                         }
                         foreach (var arrow in entryBarArrows.Values) {
-                            // Screen Y grows downward: buys start below the low
-                            // and point up; sells start above the high and point down.
+                            // Tips sit one price tick outside the bar. Screen Y
+                            // grows downward: buys point up and sells point down.
                             PointF tail = new PointF(arrow.Tip.X, arrow.Tip.Y + arrow.Side * frame.ArrowLength);
                             DrawBlackArrow(graphics, tail, arrow.Tip);
                         }

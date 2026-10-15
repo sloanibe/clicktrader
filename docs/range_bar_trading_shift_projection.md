@@ -1,6 +1,6 @@
 # Shift-click trade projection
 
-In `RangeBarTrading.cs`, Shift+Left Click stages a manual entry one tick beyond the projected range-bar completion price on charts with a range of 4 ticks or less. A 4-tick buy entry is the live low plus 5 ticks; a sell entry is the live high minus 5 ticks. Smaller ranges use their own range size plus one tick. Larger ranges enter at completion unless `ShiftProjectionRequireOneTickConfirmation` is enabled. The entry line stays green; a gray dashed guide shows the protective stop two ranges plus one tick against the entry. When shared session P&L is zero or positive, another gray dashed guide shows a fixed 4-tick profit target in the trade direction. When session P&L is negative, the fixed target guide is removed. Both guides follow the projected entry.
+In `RangeBarTrading.cs`, Shift+Left Click stages a manual entry at the projected range-bar completion price, matching pin-bar entries. A 4-tick buy entry is the live low plus 4 ticks; a sell entry is the live high minus 4 ticks. `ShiftProjectionRequireOneTickConfirmation` defaults to `false` and applies to both manual and pin-bar entries on all range sizes. When `true`, buy entries add one tick above the boundary and sell entries subtract one tick below it. Entry guides and projected stop/target guides use the resulting entry price. The entry line stays green; a gray dashed guide shows the protective stop two ranges plus one tick against the entry. When shared session P&L is zero or positive, another gray dashed guide shows a fixed 4-tick profit target in the trade direction. When session P&L is negative, the fixed target guide is removed. Both guides follow the projected entry.
 
 Starting a valid Shift entry explicitly disarms automatic pin-bar and EMA entries, including the four-tick pin-bar watch. The HUD shows `MANUAL | SHIFT ENTRY BUY/SELL`. A second Shift-click cancels the manual order and leaves the chart `UNARMED`; expiration or invalidation also leaves automation unarmed. Control-click is required to arm the four-tick watch again.
 
@@ -22,10 +22,21 @@ Verify both long and short entries in MultiCharts with session P&L below, at, an
 
 The automatic protective stop is placed `(2 × range ticks) + 1` ticks from the actual average fill price, below a long and above a short. Range sizes of 5, 6, and 8 ticks therefore produce stops of 11, 13, and 17 ticks. The projected stop guide uses the same distance from the projected entry.
 
-Entry remains price-triggered. With the default `ShiftProjectionRequireOneTickConfirmation = false`, a long Shift entry on a 6-tick ask chart is a buy stop six ticks above the forming bar's low. It does not wait for the bar's displayed color to change. Shorts mirror this six ticks below the forming high. Verify these levels, the actual fill-based stop, startup without a completed bar, and explicit overrides in MultiCharts.
+Entry remains price-triggered. A long Shift entry on a 6-tick ask chart is a buy stop six ticks above the forming bar's low. It does not wait for the bar's displayed color to change. Shorts mirror this six ticks below the forming high. Verify these levels, the actual fill-based stop, startup without a completed bar, and explicit overrides in MultiCharts.
 
 ## Click feedback on bid and ask charts
 
 Control-click and Shift-click check the event modifier, the live Windows modifier, and the physical key state. Both restore the HUD if it was hidden. Control-click arms four-tick pin-bar watching for the chart's configured side even before a qualifying setup appears; entry lines appear only when a setup qualifies. Shift-click keeps the existing EMA gate: ask buys require EMA8 above EMA24, and bid sells require EMA8 below EMA24. A rejected Shift-click now displays the reason in the HUD for five seconds (EMA gate, unknown range, or an already open position). Control-click with an open position also explains why it was ignored.
 
 For chart verification, confirm that `RangeBarTradingV3` is applied and enabled on each chart, with `IsAskChart = true` for ask and `false` for bid. Confirm the HUD's chart role, Control-click's armed status before qualification, and Shift-click's projection or blocked reason on each side. These checks require MultiCharts; the local harness verifies modifier decoding and accepted/rejected entry paths with broker calls recorded rather than transmitted.
+
+## Pin-bar invalidation
+
+Both pin-bar modes reject a buy pin whose live or projected low falls below the
+immediately preceding bar's low, and reject a sell pin whose live or projected
+high exceeds the preceding bar's high. Equal extremes are allowed. The legacy
+mode also rejects unsupported pin shapes and completed bars that did not close
+at the projected reversal boundary. Each evaluation clears the old candidate
+before checking the current setup. Invalidation cancels a pending pin entry and
+clears its preview while preserving the armed direction. The next bar is checked
+against its own immediately preceding bar, including an invalidated pin.
