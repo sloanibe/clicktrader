@@ -554,7 +554,7 @@ namespace PowerLanguage.Indicator {
                             // Tips sit one price tick outside the bar. Screen Y
                             // grows downward: buys point up and sells point down.
                             PointF tail = new PointF(arrow.Tip.X, arrow.Tip.Y + arrow.Side * frame.ArrowLength);
-                            DrawBlackArrow(graphics, tail, arrow.Tip);
+                            DrawWhiteArrow(graphics, tail, arrow.Tip);
                         }
                         foreach (var marker in frame.View.Markers) {
                             PointF point;
@@ -602,13 +602,13 @@ namespace PowerLanguage.Indicator {
             } finally { graphics.Restore(saved); }
         }
 
-        private static void DrawBlackArrow(Graphics graphics, PointF tail, PointF tip) {
-            using (var pen = new Pen(Color.Black, 2))
+        private static void DrawWhiteArrow(Graphics graphics, PointF tail, PointF tip) {
+            using (var pen = new Pen(Color.White, 3))
             using (var cap = new AdjustableArrowCap(4, 5, true)) {
                 pen.CustomEndCap = cap;
                 graphics.DrawLine(pen, tail, tip);
             }
-            using (var brush = new SolidBrush(Color.Black))
+            using (var brush = new SolidBrush(Color.White))
                 graphics.FillEllipse(brush, tip.X - 2, tip.Y - 2, 4, 4);
         }
 

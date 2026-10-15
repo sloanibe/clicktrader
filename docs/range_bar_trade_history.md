@@ -172,7 +172,7 @@ application restarts. Files are never automatically deleted or rotated.
 
 White horizontal arrowheads have no shafts: entries point right at the recorded
 fill candle's left edge, exits point left at the recorded exit candle's right edge,
-at their confirmed prices. Black vertical arrows point up with their tips one tick below buy-entry lows,
+at their confirmed prices. White vertical arrows point up with their tips one tick below buy-entry lows,
 or down with their tips one tick above sell-entry highs, regardless of tail
 length. The spacing uses the chart instrument’s tick size. Black labels read `P1 in 100` /
 `P1 out 101` or `M2 in 102` / `M2 out 101`; other types use `T`. Green connectors
@@ -236,7 +236,7 @@ python3 tools/check_four_tick_pinbar.py
 
 Tests cover compact closed summaries with signed long/short tick results,
 indicator decoding, separate setup/fill anchors and their finalization,
-white horizontal heads with black vertical arrows/labels, partial-exit anchors, unfinished-trade preservation,
+white horizontal heads and vertical arrows with black labels, partial-exit anchors, unfinished-trade preservation,
 single-record consolidation with a missing exit, multiple/stale bar updates, legacy compatibility, partial quantities and weighted results, restart
 recovery, duplicate retries, file deletion, concurrent/blocked writes, atomic
 replacement, chart drawing, and bid-entry routing when the false input arrives

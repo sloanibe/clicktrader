@@ -36,13 +36,27 @@ class RangeBoundaryBreakEvenTests {
             double boundary = 100 + side * range * tick;
             trade.Bars.Low[0] = side > 0 ? 100 : boundary;
             trade.Bars.High[0] = side > 0 ? boundary : 100;
-            // Only one tick of trade profit at the boundary: trigger is bar-relative.
-            double entry = boundary - side * tick;
+            // Trigger is one full chart range from the actual fill.
+            double entry = 100;
             trade.StrategyInfo.AvgEntryPrice = entry;
             double originalStop = entry - side * 10 * tick;
             trade.m_ProtectiveStopPrice = originalStop;
             trade.m_ProfitTargetPrice = entry + side * 4 * tick;
             double target = trade.m_ProfitTargetPrice;
+            // Regression: adverse excursion, full-range recovery to entry,
+            // then a chart boundary reached with only one tick of actual profit.
+            trade.Bars.Close[0] = entry - side * range * tick;
+            trade.UpdateRangeBoundaryBreakEven(side, tick);
+            Check(trade.m_ProtectiveStopPrice == originalStop, "adverse excursion cannot promote stop");
+            trade.Bars.Close[0] = entry;
+            trade.UpdateRangeBoundaryBreakEven(side, tick);
+            Check(trade.m_ProtectiveStopPrice == originalStop, "one range recovery to entry is not profit");
+            if (side > 0) trade.Bars.Low[0] = entry - (range - 1) * tick;
+            else trade.Bars.High[0] = entry + (range - 1) * tick;
+            trade.Bars.Close[0] = entry + side * tick;
+            trade.UpdateRangeBoundaryBreakEven(side, tick);
+            Check(trade.m_ProtectiveStopPrice == originalStop,
+                  "full range from adverse chart extreme with one tick profit cannot promote stop");
             trade.Bars.Close[0] = boundary - side * tick;
             trade.UpdateRangeBoundaryBreakEven(side, tick);
             Check(trade.m_ProtectiveStopPrice == originalStop,
@@ -52,7 +66,7 @@ class RangeBoundaryBreakEvenTests {
             trade.SubmitActiveExitOrders(side);
             Order stop = side > 0 ? trade.m_BuyExitStop : trade.m_SellExitStop;
             Check(trade.m_ProtectiveStopPrice == entry && stop.Sends == 1 && stop.Price == entry,
-                  "boundary touch immediately submits stop at exact entry without extra tick");
+                  "one range of profit from fill immediately submits stop at exact entry");
             Check(trade.m_ProfitTargetPrice == target, "target stays active and unchanged");
             trade.Bars.Close[0] = boundary - side * 2 * tick;
             trade.UpdateRangeBoundaryBreakEven(side, tick);
@@ -73,6 +87,6 @@ class RangeBoundaryBreakEvenTests {
                 Check(trade.m_ProtectiveStopPrice == originalStop, gate + " suppresses promotion");
             }
         }
-        Console.WriteLine("PASS: " + checks + " range-boundary break-even assertions");
+        Console.WriteLine("PASS: " + checks + " entry-relative break-even assertions");
     }
 }

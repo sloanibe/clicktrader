@@ -162,8 +162,8 @@ def main():
     original = original.replace(
         '        // Retained in its original input slot to preserve saved MultiCharts\n'
         '        // settings. Automatic break-even is intentionally no longer used.',
-        '        // Pin/manual trades move the stop to entry when live price touches\n'
-        '        // a favorable range-bar completion boundary. Enabled by default.')
+        '        // Pin/manual trades move the stop to entry after one chart range of\n'
+        '        // favorable movement from the actual fill. Enabled by default.')
     assert current.count('            UpdateRangeBoundaryBreakEven(currentPosition, tickSize);') == 1
     assert current.index('            UpdateRangeBoundaryBreakEven(currentPosition, tickSize);') < current.index(
         '                SubmitActiveExitOrders(currentPosition);')
